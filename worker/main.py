@@ -3,7 +3,8 @@ import logging
 import signal
 
 from backend.app.config import get_settings
-from worker.lifecycle import Worker, worker_lock
+from worker.diagnostics import DiagnosticManager
+from worker.lifecycle import Worker, connect_runtime, worker_lock
 
 
 async def run():
@@ -12,10 +13,13 @@ async def run():
     for signum in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(signum, stop.set)
     worker = Worker()
+    diagnostics = DiagnosticManager(worker.sessions, connect_runtime)
     task = None
     try:
         await asyncio.to_thread(worker.recover)
+        diagnostics.recover()
         while not stop.is_set():
+            await diagnostics.tick()
             if task is None or task.done():
                 if task is not None:
                     task.result()
@@ -25,6 +29,7 @@ async def run():
             except TimeoutError:
                 pass
     finally:
+        await diagnostics.close()
         if task is not None:
             await task
         worker.client.close()

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Boxes, Check, CircleAlert, Database, Network, RefreshCw, Server, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { AgentWorkspace } from "@/components/agent-workspace";
 
 type Status = {
   status: string;
@@ -97,7 +98,11 @@ export default function App() {
           </Button>
         </div>
 
-        <section aria-labelledby="status-heading" className="overflow-hidden rounded-xl border">
+        <AgentWorkspace />
+
+        <details className="overflow-hidden rounded-xl border">
+          <summary className="cursor-pointer bg-muted/40 px-6 py-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">Platform status{status ? ` · ${status.status}` : " · Unavailable"}</summary>
+        <section aria-labelledby="status-heading">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-muted/40 px-6 py-5">
             <h2 id="status-heading" className="font-semibold">Platform status</h2>
             <span className="text-xs text-muted-foreground">{status ? `Version ${status.version}` : "Waiting for the API"}</span>
@@ -118,10 +123,11 @@ export default function App() {
             {loading ? "Checking the local services…" : error ? "Status unavailable. Retrying every 15 seconds." : `Last checked ${checkedAt?.toLocaleTimeString()}. Updates every 15 seconds.`}
           </div>
         </section>
+        </details>
 
         <div className="mt-8 flex items-start gap-3 text-sm text-muted-foreground">
           <ShieldCheck className="mt-0.5 size-5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-          <p className="max-w-2xl leading-relaxed">This is the local foundation. Agent provisioning and access controls are not available yet. Keep this prototype on your own machine.</p>
+          <p className="max-w-2xl leading-relaxed">This is a local prototype using a fake model. Business permissions and employee accounts are not available yet. Keep it on your own machine.</p>
         </div>
         <footer className="mt-16 flex flex-wrap items-center justify-between gap-4 border-t pt-6 text-xs text-muted-foreground">
           <span>Talos foundation</span>

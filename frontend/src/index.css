@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import "tailwindcss" source(".");
 
 :root {
   font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;

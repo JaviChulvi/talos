@@ -21,6 +21,7 @@ from sqlalchemy import or_, select
 
 from backend.app.config import get_settings
 from backend.app.db import session_factory
+from backend.app.diagnostics import mark_runs_stopped
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     RUNTIME_RELEASE,
@@ -317,8 +318,8 @@ class Worker:
         raise TimeoutError("OpenClaw readiness deadline exceeded")
 
     def mark_stopped(self, session, agent: Agent):
-        # F5 adds diagnostic cancellation here after Docker confirms the stop.
         agent.observed_state = "stopped"
+        mark_runs_stopped(session, agent.id)
 
     def recover(self):
         """Reattach replaced platform containers before serving diagnostics."""
