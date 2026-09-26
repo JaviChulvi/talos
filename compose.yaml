@@ -5,7 +5,8 @@ x-platform: &platform
     dockerfile: deploy/Dockerfile
   image: talos-platform:local
   environment: &environment
-    TALOS_DATABASE_URL: postgresql+psycopg://talos:${POSTGRES_PASSWORD:?Copy .env.example to .env}@db:5432/talos
+    TALOS_DATABASE_URL: postgresql+psycopg://talos@db:5432/talos
+    TALOS_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Copy .env.example to .env}
   networks: [control]
   security_opt: ["no-new-privileges:true"]
   cap_drop: [ALL]

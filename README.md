@@ -116,4 +116,4 @@ pnpm --dir frontend typecheck
 pnpm --dir frontend build
 ```
 
-For frontend hot reload, run `pnpm --dir frontend dev` while Compose is running. Vite proxies API requests to localhost:8000. There are no browser or end-to-end test dependencies; UI verification is manual.
+For frontend hot reload, run `pnpm --dir frontend dev` while Compose is running. Vite proxies API requests to loopback using `TALOS_PORT` from the root `.env` file or environment (8000 by default). There are no browser or end-to-end test dependencies; UI verification is manual.
