@@ -125,7 +125,7 @@ RAM-backed test options (`TALOS_PROOF_RAM_VOLUMES=1` and `TALOS_TEST_TMPFS_VOLUM
 
 ## OpenRouter and the model picker
 
-The **Model for all agents** picker selects the model for new messages without
+The workspace **Settings** page selects the default model for new messages without
 restarting agents. Each admitted message stores its model choice, so queued and
 running requests keep that model even when the selection changes. The simulator
 remains an explicit option and is the initial setting; missing credentials never
@@ -146,20 +146,29 @@ To enable external inference:
    docker compose -f compose.yaml -f compose.openrouter.yaml up --build -d
    ```
 
-4. In **Agents → Model for all agents**, select the **DeepSeek** lab icon, then **DeepSeek V4 Flash 0731**
+4. In **Settings → Default model**, select the **DeepSeek** lab icon, then **DeepSeek V4 Flash 0731**
    (`deepseek/deepseek-v4-flash-0731`, the recommended entry) and click
-   **Apply settings**. Other compatible text models come from OpenRouter's public
+   **Save settings**. Other compatible text models come from OpenRouter's public
    catalog. If the catalog is unavailable, the saved selection keeps working
    and you can still select the local simulator.
 5. For agents created before this integration, stop/start once to switch their
    pinned fixture configuration to the Talos default route. The dashboard
    identifies those older runtimes. Subsequent model changes need no restart.
 
+The **Agents** page contains the agent list and each agent's **Conversation** and
+**Settings** views. Agent settings inherit the workspace configuration by default.
+Choose **Customize for this agent**, select a model and optional generation settings,
+then **Save settings** to store a complete override for that agent. Workspace changes
+will not change this override. **Use workspace defaults** removes it and follows the
+latest shared configuration again. Run admission resolves the configuration under
+the agent lock and snapshots its source, model, capabilities and parameters, so
+changing or clearing an override cannot reroute a queued or running message.
+
 The lab picker groups the live catalog by model author and shows locally bundled
 [Lobe Icons](https://github.com/lobehub/lobe-icons) logos. Hover labels and accessible
 names identify each lab; unrecognized labs use initials and remain selectable.
 Choosing a lab filters the model list without changing the active selection until
-**Apply settings** is clicked.
+**Save settings** is clicked.
 
 Use the same Compose file pair for subsequent updates and shutdowns. Only the
 gateway joins the additional outbound network and mounts the secret; agents
@@ -175,7 +184,7 @@ enforces its own limits. **Advanced settings** allows explicit reasoning effort,
 maximum output tokens (including reasoning), temperature and top P where supported.
 The API checks the current catalog, rejects disabling mandatory reasoning and
 requests a provider that supports all explicit settings. Switching models resets
-unsaved overrides. Apply settings once after upgrading an existing installation
+unsaved overrides. Save settings once after upgrading an existing installation
 to load its selected model's capabilities.
 
 Before sending a new run, the trusted worker atomically publishes the snapshotted

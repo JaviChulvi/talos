@@ -34,6 +34,7 @@ class Agent(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     display_name: Mapped[str] = mapped_column(String(120))
     employee_label: Mapped[str] = mapped_column(String(160))
+    inference_override: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     runtime_release: Mapped[str] = mapped_column(String(100), default=RUNTIME_RELEASE)
     desired_state: Mapped[str] = mapped_column(String(20), default="stopped")
     observed_state: Mapped[str] = mapped_column(String(20), default="pending")

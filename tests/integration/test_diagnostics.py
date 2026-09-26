@@ -503,3 +503,64 @@ def test_gateway_requires_admission_and_revokes_on_cancel(sessions, agent_id, mo
     with sessions.begin() as session:
         session.get(Run, run_id).cancel_requested = True
     assert not validate_token(token, require_run=True)
+
+
+def test_agent_overrides_inherit_reset_and_snapshot_independently(
+    client, sessions, agent_id, monkeypatch
+):
+    from backend.app.models import InferenceConfig
+
+    async def catalog():
+        return [
+            {
+                "id": name,
+                "name": name,
+                "context_length": 64000,
+                "max_completion_tokens": 8000,
+                "supported_parameters": ["temperature"],
+                "reasoning": {},
+            }
+            for name in ("lab/shared", "lab/custom", "lab/next")
+        ]
+
+    monkeypatch.setattr("backend.app.inference.catalog", catalog)
+    with sessions.begin() as session:
+        agent = session.get(Agent, agent_id)
+        session.get(WorkloadIncarnation, agent.current_incarnation_id).model_route = "default"
+        other = Agent(display_name="Another agent", employee_label="Test")
+        session.add(other)
+        session.flush()
+        other_id = other.id
+    path = f"/api/v1/inference/agents/{agent_id}"
+    assert client.put("/api/v1/inference", json={"model_id": "lab/shared"}).status_code == 200
+    assert client.get(path).json()["inherited"] is True
+    assert client.get(path).json()["model_id"] == "lab/shared"
+    assert (
+        client.put(
+            path, json={"model_id": "lab/custom", "settings": {"reasoning_effort": "high"}}
+        ).status_code
+        == 400
+    )
+    custom = {"model_id": "lab/custom", "settings": {"temperature": 0.6}}
+    assert client.put(path, json=custom).json()["inherited"] is False
+    assert client.get(f"/api/v1/inference/agents/{other_id}").json()["model_id"] == "lab/shared"
+    run = submit(client, agent_id).json()
+    assert run["model_id"] == "lab/custom"
+    assert run["inference"]["settings"] == {"temperature": 0.6}
+    assert run["inference"]["source"] == "agent"
+    assert client.put("/api/v1/inference", json={"model_id": "lab/next"}).status_code == 200
+    assert client.get(path).json()["model_id"] == "lab/custom"
+    reset = client.delete(path).json()
+    assert reset["inherited"] is True and reset["model_id"] == "lab/next"
+    assert client.get(f"/api/v1/runs/{run['id']}").json()["model_id"] == "lab/custom"
+    with sessions.begin() as session:
+        session.get(Run, UUID(run["id"])).status = "completed"
+    inherited = submit(client, agent_id, key="inherited").json()
+    assert inherited["model_id"] == "lab/next" and inherited["inference"]["source"] == "workspace"
+    missing = f"/api/v1/inference/agents/{uuid4()}"
+    assert client.get(missing).status_code == 404
+    assert client.put(missing, json={"model_id": "fixture"}).status_code == 404
+    assert client.delete(missing).status_code == 404
+    with sessions.begin() as session:
+        config = session.get(InferenceConfig, 1)
+        config.model_id, config.settings, config.capabilities = "fixture", {}, {}

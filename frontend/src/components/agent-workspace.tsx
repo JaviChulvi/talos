@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Bot, CircleAlert, LoaderCircle, Play, Plus, Send, Square, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { GenerationControls, UsageDetails, type GenerationSettings, type ModelCapabilities, type InferenceSelection, type InferenceCall } from "@/components/generation-settings";
-import { ModelPicker } from "@/components/model-picker";
+import { UsageDetails, type GenerationSettings, type InferenceSelection, type InferenceCall } from "@/components/generation-settings";
+import { InferenceSettings } from "@/components/inference-settings";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +15,7 @@ type Agent = {
   observed_state: string;
   last_error: string | null;
   model_route: string;
+  inference_override: InferenceSelection | null;
 };
 type Operation = { id: string; agent_id: string; status: string; error?: string | null };
 type Run = { inference_calls: InferenceCall[]; inference: { settings?: GenerationSettings }; model_id: string; id: string; agent_id: string; status: string; output?: string | null; error?: string | null; cancel_requested?: boolean };
@@ -53,18 +54,9 @@ function StateBadge({ state }: { state: string }) {
   return <Badge variant={healthy ? "success" : warning ? "warning" : "secondary"} className="capitalize">{state.replaceAll("_", " ")}</Badge>;
 }
 
-export function AgentWorkspace() {
+export function AgentWorkspace({ active = true }: { active?: boolean }) {
+  const [agentView, setAgentView] = useState("conversation");
   const [modelId, setModelId] = useState<string | null>(null);
-  const [draftModel, setDraftModel] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelCapabilities[]>([]);
-  const [savedSettings, setSavedSettings] = useState<GenerationSettings>({});
-  const [draftSettings, setDraftSettings] = useState<GenerationSettings | null>(null);
-  const [savedCapabilities, setSavedCapabilities] = useState<Partial<ModelCapabilities>>({});
-  const [modelError, setModelError] = useState<string | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [savingModel, setSavingModel] = useState(false);
-  const [catalogLoading, setCatalogLoading] = useState(false);
-  const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [operationIds, setOperationIds] = useState(() => readIds("talos.operationIds"));
@@ -85,6 +77,7 @@ export function AgentWorkspace() {
   const [message, setMessage] = useState("");
 
   const selected = agents.find((agent) => agent.id === selectedId);
+  const effectiveModel = selected?.inference_override?.model_id ?? modelId;
   const operationId = operationIds[selectedId];
   const runId = runIds[selectedId];
   const selectedOperation = operation?.id === operationId ? operation : null;
@@ -94,38 +87,6 @@ export function AgentWorkspace() {
   const busy = operationActive || runActive || agents.some((agent) => transitionalStates.has(agent.observed_state));
   const writesDisabled = submitting || !!retryRequest || !!pollError || loading;
   const runEvents = events.runId === runId ? events.items : [];
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      setCatalogLoading(true);
-      api<{ models: ModelCapabilities[] }>("/inference/models", {
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
-      }).then((data) => { if (!controller.signal.aborted) { setModels(data.models); setCatalogError(null); } })
-        .catch((error) => { if (!controller.signal.aborted) setCatalogError(errorMessage(error)); })
-        .finally(() => { if (!controller.signal.aborted) setCatalogLoading(false); });
-    }, 0);
-    return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [catalogRefresh]);
-
-  async function saveModel(event: FormEvent) {
-    event.preventDefault();
-    if (!modelId || savingModel) return;
-    setSavingModel(true);
-    setModelError(null);
-    try {
-      const result = await api<InferenceSelection>("/inference", {
-        method: "PUT", body: JSON.stringify({ model_id: draftModel ?? modelId, settings: draftSettings ?? savedSettings }), signal: AbortSignal.timeout(15_000),
-      });
-      setModelId(result.model_id);
-      setSavedSettings(result.settings);
-      setSavedCapabilities(result.capabilities);
-      setDraftModel(null);
-      setDraftSettings(null);
-      setRefresh((value) => value + 1);
-    } catch (error) { setModelError(`${errorMessage(error)} Check the active model below before retrying.`); }
-    finally { setSavingModel(false); }
-  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -150,8 +111,6 @@ export function AgentWorkspace() {
         if (stopped) return;
         setAgents(nextAgents);
         setModelId(nextModel.model_id);
-        setSavedSettings(nextModel.settings);
-        setSavedCapabilities(nextModel.capabilities);
         setSelectedId((current) => nextAgents.some((agent) => agent.id === current) ? current : nextAgents[0]?.id ?? "");
         setOperation(nextOperation);
         setRun(nextRun);
@@ -171,7 +130,7 @@ export function AgentWorkspace() {
     };
     timer = window.setTimeout(() => void poll(), 0);
     return () => { stopped = true; window.clearTimeout(timer); controller.abort(); };
-  }, [selectedId, operationId, runId, busy, refresh]);
+  }, [selectedId, operationId, runId, busy, refresh, active]);
 
   async function mutate(request: Mutation) {
     setSubmitting(true);
@@ -242,21 +201,6 @@ export function AgentWorkspace() {
         {retryRequest && <Button variant="outline" size="sm" disabled={submitting} onClick={() => void mutate(retryRequest)}>Retry same request</Button>}
       </div>}
 
-      <form onSubmit={saveModel} className="mb-6 border-y py-5" aria-label="Default model">
-        <h2 className="mb-4 text-sm font-semibold">Model for all agents</h2>
-        <div className="flex flex-wrap items-end gap-3">
-          <ModelPicker models={models} value={draftModel ?? modelId ?? "fixture"} onChange={(id) => { setDraftModel(id); setDraftSettings({}); }} disabled={savingModel || modelId === null} inputClass={inputClass} />
-          <Button type="submit" disabled={savingModel || modelId === null}>{savingModel ? "Saving…" : "Apply settings"}</Button>
-          <Button type="button" variant="outline" disabled={catalogLoading} onClick={() => setCatalogRefresh((value) => value + 1)}>{catalogLoading ? "Loading models…" : "Reload models"}</Button>
-        </div>
-        <p id="model-help" className="mt-3 text-xs leading-relaxed text-muted-foreground">Applies to new messages. Running and queued requests keep their original model and settings. OpenRouter requires a gateway API key.</p>
-        <p className="mt-2 break-words text-sm text-muted-foreground" role="status">Active selection: {modelId === null ? "Loading…" : modelId === "fixture" ? "Local simulator" : modelId}</p>
-        {(draftModel ?? modelId) !== "fixture" && <GenerationControls
-          model={models.find((m) => m.id === (draftModel ?? modelId)) ?? (savedCapabilities.id === (draftModel ?? modelId) ? savedCapabilities as ModelCapabilities : undefined)}
-          settings={draftSettings ?? savedSettings} onChange={setDraftSettings} disabled={savingModel || modelId === null} inputClass={inputClass} />}
-        {(modelError || catalogError) && <p role="alert" className="mt-2 text-sm text-danger">{modelError ?? catalogError}</p>}
-      </form>
-
       <dialog ref={createDialog} aria-labelledby="create-agent-title" className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto rounded-xl bg-panel p-6 text-foreground shadow-xl backdrop:bg-black/65" onCancel={(event) => { if (submitting) event.preventDefault(); }}>
         <form onSubmit={createAgent} className="space-y-5">
           <h2 id="create-agent-title" className="text-lg font-semibold tracking-tight">Create an agent</h2>
@@ -290,6 +234,7 @@ export function AgentWorkspace() {
           {!selected ? <div className="flex min-h-96 flex-col items-center justify-center px-6 py-16 text-center lg:min-h-[480px]"><span className="mb-5 flex size-14 items-center justify-center rounded-xl border bg-muted/40"><Bot className="size-7 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" /></span><h3 className="font-medium">No agent selected</h3><p className="mt-2 max-w-xs text-sm leading-relaxed text-muted-foreground">Create your first agent or select one from the list to manage its runtime.</p></div> : <>
             <div className="border-b p-6">
               <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h2 className="break-words text-lg font-semibold tracking-tight">{selected.display_name}</h2><p className="mt-1 text-sm text-muted-foreground">{selected.employee_label || "No employee label"}</p></div><StateBadge state={selected.observed_state} /></div>
+              <p className="mt-3 break-words text-xs text-muted-foreground">{selected.inference_override ? "Custom model" : "Workspace default"} · {effectiveModel === "fixture" ? "Local simulator" : effectiveModel ?? "Loading…"}</p>
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["ready", "running", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("start")}><Play aria-hidden="true" />Start</Button>
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["stopped", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("stop")}><Square aria-hidden="true" />Stop</Button>
@@ -299,12 +244,16 @@ export function AgentWorkspace() {
               {selected.last_error && <p role="alert" className="mt-3 text-sm text-danger">{selected.last_error}</p>}
             </div>
 
-            <div className="p-6">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">Diagnostic conversation</h3>{selectedRun && <StateBadge state={selectedRun.status} />}</div>
+            <nav aria-label="Agent views" className="flex gap-6 border-b px-6">
+              {["conversation", "settings"].map((view) => <button key={view} type="button" aria-pressed={agentView === view} onClick={() => setAgentView(view)} className={cn("border-b-2 px-1 py-3 text-sm capitalize outline-none focus-visible:ring-2 focus-visible:ring-ring", agentView === view ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>{view}</button>)}
+            </nav>
+            {active && agentView === "settings" && <div className="p-6"><InferenceSettings key={selected.id} agentId={selected.id} onSaved={(selection) => setAgents((current) => current.map((agent) => agent.id === selected.id ? { ...agent, inference_override: selection.inherited ? null : selection } : agent))} /></div>}
+            <div className="p-6" hidden={agentView !== "conversation"}>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">Conversation</h3>{selectedRun && <StateBadge state={selectedRun.status} />}</div>
               <p className="mb-5 text-sm leading-relaxed text-muted-foreground">{selected.model_route === "fixture"
                 ? "This runtime uses the local simulator. Stop and start it once to enable the model picker."
-                : modelId === "fixture" ? "Local simulator selected. No external provider is called."
-                : "Messages use the selected OpenRouter model. Responses and events are saved by Talos."}</p>
+                : effectiveModel === "fixture" ? "Local simulator selected. No external provider is called."
+                : "Messages use this agent’s model configuration. Responses and events are saved by Talos."}</p>
               <div className="max-h-80 min-h-40 overflow-y-auto rounded-md border bg-background p-4" role="log" aria-label="Recorded diagnostic output" aria-live="polite">
                 {selectedRun?.output ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{selectedRun.output}</p> : <p className="text-sm text-muted-foreground">{runActive ? "Waiting for recorded output…" : "Send a message to see recorded output here."}</p>}
               </div>

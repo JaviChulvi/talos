@@ -1,11 +1,13 @@
 """Server-owned model capabilities and optional generation settings."""
 
+from uuid import UUID
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.agents import Database
-from backend.app.models import InferenceConfig
+from backend.app.models import Agent, InferenceConfig
 
 router = APIRouter(prefix="/api/v1/inference")
 RECOMMENDED_MODEL = "deepseek/deepseek-v4-flash-0731"
@@ -114,8 +116,7 @@ async def models():
     return {"models": await catalog(), "recommended_model": RECOMMENDED_MODEL}
 
 
-@router.put("")
-async def update_selection(body: ModelSelection, session: Database):
+async def validated_selection(body: ModelSelection) -> dict:
     settings = body.settings.model_dump(exclude_none=True)
     capabilities = {}
     if body.model_id == "fixture":
@@ -126,11 +127,51 @@ async def update_selection(body: ModelSelection, session: Database):
         if capabilities is None:
             raise HTTPException(400, "Choose a supported text model from the OpenRouter catalog")
         validate_settings(settings, capabilities)
+    return {"model_id": body.model_id, "settings": settings, "capabilities": capabilities}
+
+
+@router.put("")
+async def update_selection(body: ModelSelection, session: Database):
+    selection = await validated_selection(body)
     with session.begin():
         config = session.get(InferenceConfig, 1, with_for_update=True)
-        config.model_id, config.settings, config.capabilities = (
-            body.model_id,
-            settings,
-            capabilities,
-        )
+        config.model_id = selection["model_id"]
+        config.settings = selection["settings"]
+        config.capabilities = selection["capabilities"]
     return config_response(config)
+
+
+def agent_config(session, agent_id, *, lock=False):
+    agent = session.get(Agent, agent_id, with_for_update=lock)
+    if agent is None or agent.desired_state == "deleted" or agent.observed_state == "deleted":
+        raise HTTPException(404, "Agent not found")
+    return agent
+
+
+def agent_config_response(session, agent):
+    return {
+        **(agent.inference_override or config_response(session.get(InferenceConfig, 1))),
+        "inherited": agent.inference_override is None,
+    }
+
+
+@router.get("/agents/{agent_id}")
+def agent_selection(agent_id: UUID, session: Database):
+    return agent_config_response(session, agent_config(session, agent_id))
+
+
+@router.put("/agents/{agent_id}")
+async def update_agent_selection(agent_id: UUID, body: ModelSelection, session: Database):
+    selection = await validated_selection(body)
+    with session.begin():
+        agent = agent_config(session, agent_id, lock=True)
+        agent.inference_override = selection
+        return agent_config_response(session, agent)
+
+
+@router.delete("/agents/{agent_id}")
+def reset_agent_selection(agent_id: UUID, session: Database):
+    with session.begin():
+        agent = agent_config(session, agent_id, lock=True)
+        agent.inference_override = None
+        return agent_config_response(session, agent)

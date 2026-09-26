@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.agents import Database, IdempotencyKey, request_hash
+from backend.app.inference import config_response
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     ACTIVE_RUN_STATUSES,
@@ -99,16 +100,20 @@ def create_run(
             select(Run.id).where(Run.agent_id == agent_id, Run.status.in_(ACTIVE_RUN_STATUSES))
         ):
             raise HTTPException(409, "Agent has an active or unresolved diagnostic run")
-        config = session.get(InferenceConfig, 1)
+        config = agent.inference_override or config_response(session.get(InferenceConfig, 1))
         managed = agent.model_route != "fixture"
-        if managed and config.model_id != "fixture" and not config.capabilities:
+        if managed and config["model_id"] != "fixture" and not config["capabilities"]:
             raise HTTPException(409, "Apply the model selection once to load its capabilities")
         run = Run(
             agent_id=agent_id,
             incarnation_id=agent.current_incarnation_id,
             message=body.message,
-            model_id=config.model_id if managed else "fixture",
-            inference={"settings": config.settings, "capabilities": config.capabilities}
+            model_id=config["model_id"] if managed else "fixture",
+            inference={
+                "settings": config["settings"],
+                "capabilities": config["capabilities"],
+                "source": "agent" if agent.inference_override else "workspace",
+            }
             if managed
             else {},
             idempotency_key=idempotency_key,

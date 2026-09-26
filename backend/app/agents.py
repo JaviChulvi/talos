@@ -48,6 +48,7 @@ class AgentResponse(BaseModel):
     id: UUID
     display_name: str
     employee_label: str
+    inference_override: dict | None
     runtime_release: str
     model_route: str
     desired_state: str
