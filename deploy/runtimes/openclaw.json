@@ -1,0 +1,11 @@
+{
+  "release": "2026.9.6",
+  "image": "ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15",
+  "platform_manifests": {
+    "linux/amd64": "sha256:66ed9d9bf9ecc02e2a2d5d4b7110b766ba535a64c802e9d20b0794ae062f82e5",
+    "linux/arm64": "sha256:62040ed3fe6f566adb39e60c5428cce078989a39cc713d63e873c4dccf166892"
+  },
+  "protocol": 4,
+  "driver_version": "0.1.0",
+  "source_revision": "eb377ac59e6c9fd6c7705028034812becf00271b"
+}

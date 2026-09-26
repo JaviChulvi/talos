@@ -20,3 +20,9 @@ COPY --from=frontend /build/frontend/dist frontend/dist/
 RUN useradd --uid 10001 --create-home talos
 USER talos
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
+
+FROM platform AS verification
+USER root
+COPY tests/ tests/
+RUN uv sync --frozen
+CMD ["python", "-m", "tests.runtime_proof"]

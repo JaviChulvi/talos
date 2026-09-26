@@ -117,3 +117,17 @@ pnpm --dir frontend build
 ```
 
 For frontend hot reload, run `pnpm --dir frontend dev` while Compose is running. Vite proxies API requests to localhost:8000. There are no browser or end-to-end test dependencies; UI verification is manual.
+
+## OpenClaw protocol check
+
+The pinned release and architecture digests are recorded in `deploy/runtimes/openclaw.json`. The Python driver handles signed device pairing, messages, history, events, and cancellation. The model route is a deterministic diagnostic fixture and never calls a real provider. The default gateway rejects all tokens until workload identity is configured by the lifecycle worker.
+
+The focused check runs two actual private OpenClaw containers and cleans its own resources. It requires Docker disk capacity for the runtime image and state volumes.
+
+```sh
+docker build --target verification -f deploy/Dockerfile -t talos-verification:local .
+docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock talos-verification:local
+```
+
+Only this trusted verification runner gets the Docker socket; employee runtimes do not. The check uses normal named volumes by default. A test-only `TALOS_PROOF_RAM_VOLUMES=1` option is available for constrained development machines, but does not establish disk or daemon-restart persistence.
