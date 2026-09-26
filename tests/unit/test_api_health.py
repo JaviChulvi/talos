@@ -15,8 +15,8 @@ def test_unready_api_does_not_hide_errors(monkeypatch):
     )
 
 
-def test_ready_api_reports_scaffold_honestly(monkeypatch):
+def test_ready_api_reports_configured_services(monkeypatch):
     monkeypatch.setattr("backend.app.main.database_ready", lambda: True)
     client = TestClient(create_app())
     assert client.get("/health/ready").status_code == 200
-    assert client.get("/api/v1/status").json()["worker"] == "scaffold"
+    assert client.get("/api/v1/status").json()["worker"] == "configured"
