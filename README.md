@@ -35,12 +35,17 @@ Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus
 
 ```sh
 cp .env.example .env
+```
+
+Edit the example database password in `.env` **before the first startup**. `POSTGRES_PASSWORD` initializes a new database; editing `.env` later does not change an existing database's password. For an initialized database, rotate the PostgreSQL role password and update `.env` together.
+
+```sh
 docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
 docker compose up --build -d
 docker compose ps
 ```
 
-Change the example database password in `.env` before retaining data. Open [http://127.0.0.1:8000](http://127.0.0.1:8000). PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the already-pulled runtime digest; it does not pull arbitrary agent images.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the already-pulled runtime digest; it does not pull arbitrary agent images.
 
 For a remote Linux development host, keep that binding and use a tunnel:
 
@@ -84,7 +89,7 @@ pnpm --dir frontend typecheck
 pnpm --dir frontend build
 ```
 
-Run `pnpm --dir frontend dev` for hot reload while Compose is running. Vite binds to loopback and proxies API requests to port 8000. UI verification is manual. There are no GitHub Actions workflows, browser-test dependencies, or end-to-end test suites.
+Run `pnpm --dir frontend dev` for hot reload while Compose is running. Vite binds to loopback and uses `TALOS_PORT` from the root `.env` file or environment for API requests (8000 by default). UI verification is manual. There are no GitHub Actions workflows, browser-test dependencies, or end-to-end test suites.
 
 The focused OpenClaw protocol check uses two real containers, synthetic model responses, and normal named volumes by default. Its trusted runner needs Docker access and removes its own runtime resources:
 
@@ -136,10 +141,13 @@ docker compose logs migrate api worker gateway
 ```
 
 - **Readiness fails:** inspect `migrate` and database health first. `/health/ready` requires the database schema to match the application migration head.
-- **Start fails:** confirm the exact runtime image was pulled, Docker has free disk/memory, and the worker can reach its socket. Lifecycle operations retry at most five times. After correcting a terminal failure, stop/start explicitly.
+- **Start fails:** confirm the exact runtime image was pulled, Docker has free disk/memory, and the worker can reach its socket. Docker/runtime operation failures retry up to five times. After correcting a terminal failure, stop/start explicitly.
+- **Database temporarily unavailable:** the worker waits and retries the same durable operation. Diagnostic delivery that cannot be confirmed becomes Unknown when the database returns; it is never automatically resent.
 - **Unknown diagnostic:** stop the agent and wait for confirmation before starting it again. Repeated message submission cannot resolve uncertain upstream work.
 - **Gateway access expires:** stop/start renews the 30-day incarnation identity. Never copy agent tokens into browser requests.
 - **Missing worker credentials or ownership mismatch:** inspect the error and restore matching installation state. Talos refuses to adopt resources that do not match its recorded identity and labels.
 - **Platform shutdown leaves agent containers running:** stop them through the dashboard before bringing the platform down, as described above.
+
+While idle, the worker checks running agents and reconnects replaced platform containers. Failed probes mark an agent Degraded; a successful later probe restores Ready. These checks yield to queued lifecycle work.
 
 The worker restarts automatically after a process failure; an explicit Compose stop keeps it stopped. Run only one worker per installation and preserve its private state. A lock prevents workers sharing that state directory from running concurrently; it does not coordinate separate worker volumes. Dashboard worker/gateway capability labels are not live heartbeats—use operation results and service logs.
