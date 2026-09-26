@@ -49,6 +49,7 @@ class AgentResponse(BaseModel):
     display_name: str
     employee_label: str
     runtime_release: str
+    model_route: str
     desired_state: str
     observed_state: str
     revision: int

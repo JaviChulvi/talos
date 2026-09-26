@@ -16,7 +16,9 @@ STATE_PATH = "/home/node/.openclaw"
 CONFIG_PATH = "/etc/talos/openclaw.json"
 
 
-def runtime_config(control_token: str, agent_token: str, gateway_url: str) -> dict:
+def runtime_config(
+    control_token: str, agent_token: str, gateway_url: str, model_route: str = "fixture"
+) -> dict:
     return {
         "gateway": {
             "mode": "local",
@@ -28,8 +30,8 @@ def runtime_config(control_token: str, agent_token: str, gateway_url: str) -> di
         "agents": {
             "defaults": {
                 "workspace": STATE_PATH + "/workspace",
-                "model": {"primary": "foundation/fixture"},
-                "models": {"foundation/fixture": {}},
+                "model": {"primary": f"foundation/{model_route}"},
+                "models": {f"foundation/{model_route}": {}},
                 "heartbeat": {"every": "0m"},
             }
         },
@@ -41,8 +43,10 @@ def runtime_config(control_token: str, agent_token: str, gateway_url: str) -> di
                     "api": "openai-completions",
                     "models": [
                         {
-                            "id": "fixture",
-                            "name": "Talos diagnostic fixture",
+                            "id": model_route,
+                            "name": "Talos selected model"
+                            if model_route == "default"
+                            else "Talos diagnostic fixture",
                             "reasoning": False,
                             "input": ["text"],
                             "contextWindow": 32000,

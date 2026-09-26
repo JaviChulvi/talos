@@ -254,6 +254,7 @@ class Worker:
                 id=uuid4(),
                 agent_id=agent.id,
                 generation=operation.target_revision,
+                model_route="default",
                 runtime_release=RUNTIME_RELEASE,
                 image_digest=IMAGE,
                 expires_at=datetime.now(UTC) + timedelta(days=30),
@@ -290,7 +291,10 @@ class Worker:
             finally:
                 os.close(descriptor)
         config = runtime_config(
-            credentials["control_token"], credentials["agent_token"], "http://talos-gateway:8001"
+            credentials["control_token"],
+            credentials["agent_token"],
+            "http://talos-gateway:8001",
+            model_route=incarnation.model_route,
         )
         digest = hashlib.sha256(credentials["agent_token"].encode()).hexdigest()
         config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()

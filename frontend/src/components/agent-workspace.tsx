@@ -12,9 +12,10 @@ type Agent = {
   desired_state: string;
   observed_state: string;
   last_error: string | null;
+  model_route: string;
 };
 type Operation = { id: string; agent_id: string; status: string; error?: string | null };
-type Run = { id: string; agent_id: string; status: string; output?: string | null; error?: string | null; cancel_requested?: boolean };
+type Run = { model_id: string; id: string; agent_id: string; status: string; output?: string | null; error?: string | null; cancel_requested?: boolean };
 type RunEvent = { sequence: number; type: string; payload: Record<string, unknown> };
 type Mutation = {
   path: string;
@@ -51,6 +52,14 @@ function StateBadge({ state }: { state: string }) {
 }
 
 export function AgentWorkspace() {
+  const [modelId, setModelId] = useState<string | null>(null);
+  const [draftModel, setDraftModel] = useState<string | null>(null);
+  const [models, setModels] = useState<{ id: string; name: string }[]>([]);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [savingModel, setSavingModel] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogRefresh, setCatalogRefresh] = useState(0);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [operationIds, setOperationIds] = useState(() => readIds("talos.operationIds"));
@@ -82,6 +91,35 @@ export function AgentWorkspace() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setCatalogLoading(true);
+      api<{ models: { id: string; name: string }[] }>("/inference/models", {
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+      }).then((data) => { if (!controller.signal.aborted) { setModels(data.models); setCatalogError(null); } })
+        .catch((error) => { if (!controller.signal.aborted) setCatalogError(errorMessage(error)); })
+        .finally(() => { if (!controller.signal.aborted) setCatalogLoading(false); });
+    }, 0);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [catalogRefresh]);
+
+  async function saveModel(event: FormEvent) {
+    event.preventDefault();
+    if (!draftModel || savingModel) return;
+    setSavingModel(true);
+    setModelError(null);
+    try {
+      const result = await api<{ model_id: string }>("/inference", {
+        method: "PUT", body: JSON.stringify({ model_id: draftModel }), signal: AbortSignal.timeout(15_000),
+      });
+      setModelId(result.model_id);
+      setDraftModel(null);
+      setRefresh((value) => value + 1);
+    } catch (error) { setModelError(`${errorMessage(error)} Check the active model below before retrying.`); }
+    finally { setSavingModel(false); }
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
     let timer: number;
     let stopped = false;
     const poll = async () => {
@@ -95,13 +133,14 @@ export function AgentWorkspace() {
           if (error instanceof ApiError && error.status === 404) return null;
           throw error;
         }) : Promise.resolve(null);
-        const [nextAgents, nextOperation, nextRun] = await Promise.all([
-          api<Agent[]>("/agents", options), latestOperation, latestRun,
+        const [nextAgents, nextOperation, nextRun, nextModel] = await Promise.all([
+          api<Agent[]>("/agents", options), latestOperation, latestRun, api<{ model_id: string }>("/inference", options),
         ]);
         const after = cursor.current.runId === runId ? cursor.current.sequence : 0;
         const nextEvents = nextRun ? await api<RunEvent[]>(`/runs/${runId}/events?after=${after}`, options) : [];
         if (stopped) return;
         setAgents(nextAgents);
+        setModelId(nextModel.model_id);
         setSelectedId((current) => nextAgents.some((agent) => agent.id === current) ? current : nextAgents[0]?.id ?? "");
         setOperation(nextOperation);
         setRun(nextRun);
@@ -137,7 +176,7 @@ export function AgentWorkspace() {
         const next = { ...runIds, [result.agent_id]: result.id };
         setRunIds(next);
         saveIds("talos.runIds", next);
-        setRun(result);
+        setRun(result as Run);
         setMessage("");
       } else if (request.kind !== "cancel") {
         const next = { ...operationIds, [result.agent_id]: result.id };
@@ -192,6 +231,24 @@ export function AgentWorkspace() {
         {retryRequest && <Button variant="outline" size="sm" disabled={submitting} onClick={() => void mutate(retryRequest)}>Retry same request</Button>}
       </div>}
 
+      <form onSubmit={saveModel} className="mb-6 border-y py-5" aria-label="Default model">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-0 flex-1 basis-64">
+            <label htmlFor="default-model" className="mb-2 block text-sm font-semibold">Model for all agents</label>
+            <select id="default-model" className={inputClass} value={draftModel ?? modelId ?? "fixture"} onChange={(event) => setDraftModel(event.target.value)} disabled={savingModel || modelId === null} aria-describedby="model-help">
+              <option value="fixture">Local simulator — no AI inference</option>
+              {modelId && modelId !== "fixture" && !models.some((model) => model.id === modelId) && <option value={modelId}>{modelId}</option>}
+              {models.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}
+            </select>
+          </div>
+          <Button type="submit" disabled={savingModel || modelId === null || !draftModel || draftModel === modelId}>{savingModel ? "Saving…" : "Apply model"}</Button>
+          <Button type="button" variant="outline" disabled={catalogLoading} onClick={() => setCatalogRefresh((value) => value + 1)}>{catalogLoading ? "Loading models…" : "Reload models"}</Button>
+        </div>
+        <p id="model-help" className="mt-3 text-xs leading-relaxed text-muted-foreground">Applies to new messages. Running and queued requests keep their original model. OpenRouter requires a gateway API key.</p>
+        <p className="mt-2 break-words text-sm text-muted-foreground" role="status">Active selection: {modelId === null ? "Loading…" : modelId === "fixture" ? "Local simulator" : modelId}</p>
+        {(modelError || catalogError) && <p role="alert" className="mt-2 text-sm text-danger">{modelError ?? catalogError}</p>}
+      </form>
+
       <div className="agent-layout">
         <aside className="agent-list-panel" aria-label="Agents">
           <div className="flex items-center justify-between border-b px-5 py-4"><h2 className="text-sm font-semibold">All agents</h2><Badge variant="secondary">{agents.length}</Badge></div>
@@ -226,10 +283,14 @@ export function AgentWorkspace() {
 
             <div className="p-6">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">Diagnostic conversation</h3>{selectedRun && <StateBadge state={selectedRun.status} />}</div>
-              <p className="mb-5 text-sm leading-relaxed text-muted-foreground">Check the runtime with the local fake model. No external provider is connected.</p>
+              <p className="mb-5 text-sm leading-relaxed text-muted-foreground">{selected.model_route === "fixture"
+                ? "This runtime uses the local simulator. Stop and start it once to enable the model picker."
+                : modelId === "fixture" ? "Local simulator selected. No external provider is called."
+                : "Messages use the selected OpenRouter model. Responses and events are saved by Talos."}</p>
               <div className="max-h-80 min-h-40 overflow-y-auto rounded-md border bg-background p-4" role="log" aria-label="Recorded diagnostic output" aria-live="polite">
                 {selectedRun?.output ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{selectedRun.output}</p> : <p className="text-sm text-muted-foreground">{runActive ? "Waiting for recorded output…" : "Send a message to see recorded output here."}</p>}
               </div>
+              {selectedRun && <p className="mt-2 break-words text-xs text-muted-foreground">Recorded model: {selectedRun.model_id === "fixture" ? "Local simulator" : selectedRun.model_id}</p>}
               {runEvents.length > 0 && <details className="mt-3 text-xs text-muted-foreground"><summary className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{runEvents.length} recorded events</summary><ol className="mt-2 max-h-36 space-y-1 overflow-y-auto pl-4">{runEvents.map((event) => <li key={event.sequence}>{event.sequence}. {event.type.replaceAll("_", " ")}</li>)}</ol></details>}
               {selectedRun?.error && <p role="alert" className="mt-3 text-sm text-danger">{selectedRun.error}</p>}
               {selectedRun?.status === "unknown" && <p role="status" className="mt-3 text-sm text-warning">Delivery could not be confirmed. Talos will not resend this message automatically. Stop the agent before starting another diagnostic.</p>}

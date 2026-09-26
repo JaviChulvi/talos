@@ -9,9 +9,11 @@ import uuid
 from pathlib import Path
 
 import docker
+import httpx
 import uvicorn
 from fastapi import FastAPI
 
+from gateway import openrouter
 from gateway.fake_model import model_router
 from worker.openclaw import DeviceIdentity, GatewayError, OpenClawClient
 from worker.runtime import (
@@ -64,8 +66,56 @@ async def main():
     docker_client = docker.from_env()
     runner = docker_client.containers.get(os.environ["HOSTNAME"])
     tokens = [secrets.token_urlsafe(32), secrets.token_urlsafe(32)]
+    selected = {"model": "fixture"}
+    slow_started, slow_closed = threading.Event(), threading.Event()
+    key_file = Path("/tmp") / (PROOF_ID + "-openrouter-key")
+    key_file.write_text("synthetic-provider-key")
+    os.environ["TALOS_OPENROUTER_KEY_FILE"] = str(key_file)
+
+    class ProviderStream(httpx.AsyncByteStream):
+        def __init__(self, message, model):
+            self.message, self.model = message, model
+
+        async def __aiter__(self):
+            if "[openrouter-slow]" in self.message:
+                slow_started.set()
+                await asyncio.sleep(60)
+            if "[openrouter-error]" in self.message:
+                yield b'data: {"error":{"message":"synthetic upstream failure"}}\n\n'
+                return
+            payload = {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content": "OpenRouter transport reply from " + self.model,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+            yield ("data: " + json.dumps(payload) + "\n\ndata: [DONE]\n\n").encode()
+
+        async def aclose(self):
+            if "[openrouter-slow]" in self.message:
+                slow_closed.set()
+
+    async def provider(request):
+        assert request.headers["authorization"] == "Bearer synthetic-provider-key"
+        body = json.loads(request.content)
+        message = next(m["content"] for m in reversed(body["messages"]) if m["role"] == "user")
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ProviderStream(message, body["model"]),
+        )
+
+    real_client = httpx.AsyncClient
+    openrouter.httpx.AsyncClient = lambda **kw: real_client(
+        transport=httpx.MockTransport(provider), **kw
+    )
     app = FastAPI()
-    app.include_router(model_router(lambda t: t in tokens))
+    app.include_router(model_router(lambda t: t in tokens, lambda _: selected["model"]))
     server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -81,7 +131,12 @@ async def main():
             resources.append(network)
             network.connect(runner, aliases=["fake-model"])
             control = secrets.token_urlsafe(32)
-            config = runtime_config(control, tokens[number], "http://fake-model:8000")
+            config = runtime_config(
+                control,
+                tokens[number],
+                "http://fake-model:8000",
+                model_route="default" if number == 1 else "fixture",
+            )
             if os.environ.get("TALOS_PROOF_RAM_VOLUMES") == "1":
                 for kind in ("state", "config"):
                     docker_client.volumes.create(
@@ -154,6 +209,29 @@ async def main():
                 "connect/send/events/history/abort/restart/private-state",
                 flush=True,
             )
+        # The same pinned runtime must understand real gateway streaming and failures.
+        client = clients[-1]
+        for model in ("deepseek/deepseek-v4-flash-0731", "other/approved-model"):
+            selected["model"] = model
+            run_id = str(uuid.uuid4())
+            await client.send(session, "Check the selected model", run_id)
+            result = await terminal(client, run_id)
+            assert result["state"] == "final", result
+            assert model in json.dumps(result), result
+        run_id = str(uuid.uuid4())
+        await client.send(session, "[openrouter-error]", run_id)
+        result = await terminal(client, run_id)
+        assert result["state"] == "error", result
+        run_id = str(uuid.uuid4())
+        await client.send(session, "[openrouter-slow]", run_id)
+        assert await asyncio.to_thread(slow_started.wait, 10)
+        await client.abort(session, run_id)
+        assert (await terminal(client, run_id))["state"] == "aborted"
+        assert await asyncio.to_thread(slow_closed.wait, 5), "Upstream connection remained open"
+        print(
+            "PASS OpenRouter transport / hot model switch / stream error / upstream cancellation",
+            flush=True,
+        )
         print("ALL RUNTIME CHECKS PASSED", IMAGE, flush=True)
     finally:
         for client in clients:
@@ -167,6 +245,8 @@ async def main():
         for volume_name in volumes:
             docker_client.volumes.get(volume_name).remove(force=True)
         server.should_exit = True
+        openrouter.httpx.AsyncClient = real_client
+        key_file.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

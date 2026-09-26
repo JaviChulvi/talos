@@ -1,4 +1,4 @@
-"""Deterministic model fixture. This module never forwards to a real provider."""
+"""Authenticated model routing, retaining the deterministic offline fixture."""
 
 import asyncio
 import json
@@ -9,8 +9,12 @@ from collections.abc import Callable
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from gateway.openrouter import completion as openrouter_completion
 
-def model_router(validate_token: Callable[[str], bool]) -> APIRouter:
+
+def model_router(
+    validate_token: Callable[[str], bool], selected_model: Callable[[str], str] | None = None
+) -> APIRouter:
     router = APIRouter()
 
     @router.post("/v1/chat/completions")
@@ -24,11 +28,25 @@ def model_router(validate_token: Callable[[str], bool]) -> APIRouter:
         ):
             raise HTTPException(401, "Invalid or inactive agent identity")
         try:
-            body = await request.json()
+            raw = bytearray()
+            async for part in request.stream():
+                raw.extend(part)
+                if len(raw) > 262144:
+                    raise HTTPException(413, "Model request exceeds the size limit")
+            body = json.loads(raw)
         except ValueError as exc:
             raise HTTPException(400, "Expected JSON request body") from exc
-        if not isinstance(body, dict) or body.get("model") != "fixture":
-            raise HTTPException(400, "Only the foundation fixture model is supported")
+        if not isinstance(body, dict) or body.get("model") not in ("fixture", "default"):
+            raise HTTPException(400, "Only the Talos default or fixture model is supported")
+        if body["model"] == "default":
+            if selected_model is None:
+                raise HTTPException(503, "Model selection is unavailable")
+            try:
+                model = await asyncio.to_thread(selected_model, token)
+            except Exception:
+                raise HTTPException(503, "No admitted model request is available") from None
+            if model != "fixture":
+                return await openrouter_completion(request, body, model, validate_token, token)
         messages = body.get("messages", [])
         if not isinstance(messages, list):
             raise HTTPException(400, "messages must be a list")

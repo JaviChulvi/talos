@@ -16,7 +16,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db import Base
 
@@ -41,6 +41,14 @@ class Agent(Base):
     current_incarnation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("workload_incarnations.id", name="fk_agents_current_incarnation", use_alter=True)
     )
+    current_incarnation: Mapped["WorkloadIncarnation | None"] = relationship(
+        foreign_keys=[current_incarnation_id], lazy="selectin"
+    )
+
+    @property
+    def model_route(self) -> str:
+        return self.current_incarnation.model_route if self.current_incarnation else "default"
+
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -60,6 +68,7 @@ class WorkloadIncarnation(Base):
     generation: Mapped[int] = mapped_column(Integer)
     runtime_release: Mapped[str] = mapped_column(String(100), default=RUNTIME_RELEASE)
     image_digest: Mapped[str | None] = mapped_column(String(255))
+    model_route: Mapped[str] = mapped_column(String(20), default="fixture")
     config_hash: Mapped[str | None] = mapped_column(String(64))
     container_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     container_name: Mapped[str | None] = mapped_column(String(128), unique=True)
@@ -135,6 +144,7 @@ class Run(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
     incarnation_id: Mapped[UUID] = mapped_column(ForeignKey("workload_incarnations.id"))
+    model_id: Mapped[str] = mapped_column(String(255), default="fixture")
     message: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="queued")
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -159,3 +169,11 @@ class RunEvent(Base):
     type: Mapped[str] = mapped_column(String(30))
     payload: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class InferenceConfig(Base):
+    __tablename__ = "inference_config"
+    __table_args__ = (CheckConstraint("id = 1"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    model_id: Mapped[str] = mapped_column(String(255), default="fixture")

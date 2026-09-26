@@ -12,6 +12,7 @@ from backend.app.agents import router as agents_router
 from backend.app.config import get_settings
 from backend.app.db import get_engine
 from backend.app.diagnostics import router as diagnostics_router
+from backend.app.inference import router as inference_router
 
 
 def database_ready() -> bool:
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
 
     app.include_router(agents_router)
     app.include_router(diagnostics_router)
+    app.include_router(inference_router)
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     def missing_api(path: str):

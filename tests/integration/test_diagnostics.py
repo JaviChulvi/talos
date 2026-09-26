@@ -391,3 +391,75 @@ def test_recovery_preserves_a_live_streaming_task(client, sessions, agent_id):
     assert driver.sent == 1
     events = client.get(f"/api/v1/runs/{run_id}/events").json()
     assert not any(event["type"] == "unknown" for event in events)
+
+
+def test_model_selection_snapshots_requests_and_old_runtimes_stay_fixture(
+    client, sessions, agent_id, monkeypatch
+):
+    from backend.app.models import InferenceConfig
+
+    async def catalog():
+        return [
+            {"id": "deepseek/deepseek-v4-flash-0731", "name": "DeepSeek"},
+            {"id": "other/model", "name": "Other"},
+        ]
+
+    monkeypatch.setattr("backend.app.inference.catalog", catalog)
+    first = "deepseek/deepseek-v4-flash-0731"
+    assert client.put("/api/v1/inference", json={"model_id": "unknown"}).status_code == 400
+    assert client.put("/api/v1/inference", json={"model_id": first}).status_code == 200
+    # A pre-upgrade incarnation keeps its existing fixture configuration until stop/start.
+    assert submit(client, agent_id).json()["model_id"] == "fixture"
+    with sessions.begin() as session:
+        run = session.scalar(select(Run))
+        run.status = "completed"
+        incarnation = session.get(WorkloadIncarnation, run.incarnation_id)
+        incarnation.model_route = "default"
+    response = submit(client, agent_id, key="real-model")
+    assert response.status_code == 202
+    run_id = response.json()["id"]
+    assert response.json()["model_id"] == first
+    assert client.put("/api/v1/inference", json={"model_id": "other/model"}).status_code == 200
+    assert client.get(f"/api/v1/runs/{run_id}").json()["model_id"] == first
+    with sessions.begin() as session:
+        session.get(Run, UUID(run_id)).status = "completed"
+    assert submit(client, agent_id, key="next-model").json()["model_id"] == "other/model"
+    # Restore the singleton for other tests sharing this isolated schema.
+    with sessions.begin() as session:
+        session.get(InferenceConfig, 1).model_id = "fixture"
+
+
+def test_gateway_requires_admission_and_revokes_on_cancel(sessions, agent_id, monkeypatch):
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    from gateway.identity import selected_model, validate_token
+
+    token = "test-workload-token-at-least-twenty-chars"
+    monkeypatch.setattr("gateway.identity.session_factory", lambda: sessions)
+    with sessions.begin() as session:
+        agent = session.get(Agent, agent_id)
+        incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        incarnation.gateway_token_hash = hashlib.sha256(token.encode()).hexdigest()
+        incarnation.expires_at = datetime.now(UTC) + timedelta(days=1)
+        incarnation_id = incarnation.id
+    assert validate_token(token)
+    assert not validate_token(token, require_run=True)
+    with sessions.begin() as session:
+        run = Run(
+            agent_id=agent_id,
+            incarnation_id=incarnation_id,
+            message="test",
+            idempotency_key="test",
+            request_hash="hash",
+            status="dispatching",
+            model_id="deepseek/deepseek-v4-flash-0731",
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+    assert validate_token(token, require_run=True)
+    assert selected_model(token) == "deepseek/deepseek-v4-flash-0731"
+    with sessions.begin() as session:
+        session.get(Run, run_id).cancel_requested = True
+    assert not validate_token(token, require_run=True)

@@ -2,7 +2,7 @@
 
 A self-hosted control plane for personal employee agents. The goal is to let companies manage agent integrations, permissions, credentials, spending, and offboarding.
 
-**Current status: local Foundation prototype.** Talos creates and operates pinned OpenClaw containers, persists lifecycle operations and diagnostic results, and provides a small dashboard. Diagnostics use a deterministic fake model; no provider credentials or real integrations are needed. User authentication, employee access, business permissions, budgets, and Hermes support are future work.
+**Current status: local Foundation prototype.** Talos creates and operates pinned OpenClaw containers, persists lifecycle operations and diagnostic results, and provides a small dashboard. Diagnostics default to a deterministic simulator. An opt-in OpenRouter gateway and dashboard model picker enable real text conversations; only the gateway receives the provider key. User authentication, employee access, business permissions, budgets, and Hermes support are future work.
 
 ## What works
 
@@ -23,7 +23,7 @@ This prototype is for one organization with trusted host administrators. Keep th
 | API | Python 3.13, FastAPI, Pydantic; serves the frontend production build |
 | Persistence | PostgreSQL 17, SQLAlchemy, Alembic |
 | Worker | Python and Docker SDK; one worker per installation |
-| Gateway | Separate FastAPI process; authenticated synthetic model fixture |
+| Gateway | Separate FastAPI process; authenticated simulator and OpenRouter text inference |
 | Runtime | OpenClaw 2026.9.6, pinned by image digest; Gateway protocol v4 |
 | Packaging | uv, pnpm, Docker Compose |
 
@@ -122,6 +122,65 @@ docker rm --force --volumes talos-test-db
 For an existing disposable PostgreSQL instance, set `TALOS_TEST_DATABASE_URL` and run `uv run pytest tests/integration`; add `TALOS_TEST_DOCKER=1` for actual Docker-resource checks. Default Compose does not expose its database to host tests.
 
 RAM-backed test options (`TALOS_PROOF_RAM_VOLUMES=1` and `TALOS_TEST_TMPFS_VOLUMES=1`) exist for constrained development machines. Such runs verify process-level behavior, not physical disk or Docker-daemon restart persistence. Linux-container checks also do not establish a clean native-Linux installation or production readiness. A disk-backed backup/restore and daemon-restart acceptance run remains necessary before retaining important data.
+
+## OpenRouter and the model picker
+
+The **Model for all agents** picker selects the model for new messages without
+restarting agents. Each admitted message stores its model choice, so queued and
+running requests keep that model even when the selection changes. The simulator
+remains an explicit option and is the initial setting; missing credentials never
+silently fall back to it. Model settings and run snapshots persist in PostgreSQL.
+
+To enable external inference:
+
+1. Store your OpenRouter API key in a private file outside this repository
+   (for example, `~/.config/talos/openrouter.key`, readable by the container's
+   gateway user, UID 10001). With local Compose file secrets, one workable
+   arrangement is a host directory with mode `0700` and a key file with mode
+   `0444`: the private directory protects host access, while the gateway can
+   read the mounted file. Do not put the key itself in `.env` or the dashboard.
+2. Set `TALOS_OPENROUTER_SECRET_FILE` in `.env` to the absolute path of that file.
+3. Start the platform with the optional overlay:
+
+   ```sh
+   docker compose -f compose.yaml -f compose.openrouter.yaml up --build -d
+   ```
+
+4. In **Agents → Model for all agents**, choose **DeepSeek V4 Flash 0731**
+   (`deepseek/deepseek-v4-flash-0731`, the recommended entry) and click
+   **Apply model**. Other compatible text models come from OpenRouter's public
+   catalog. If the catalog is unavailable, the saved selection keeps working
+   and you can still select the local simulator.
+5. For agents created before this integration, stop/start once to switch their
+   pinned fixture configuration to the Talos default route. The dashboard
+   identifies those older runtimes. Subsequent model changes need no restart.
+
+Use the same Compose file pair for subsequent updates and shutdowns. Only the
+gateway joins the additional outbound network and mounts the secret; agents
+remain on private internal networks with their own revocable Talos credentials.
+The public model catalog is fetched by the API without a provider credential.
+Key rotation requires replacing the secret and recreating the gateway; the worker
+reconnects it to agent networks during reconciliation.
+
+The gateway accepts only the `default` and `fixture` aliases. Real inference uses
+the admitted run's server-owned model snapshot, a fixed HTTPS OpenRouter endpoint,
+text-only messages, a 1,024-token completion cap, a 16,000-character output cap,
+and a 120-second total timeout. Reasoning is disabled for this initial text-chat
+integration. Caller-supplied routing, credentials, tools and token-limit overrides
+are not forwarded. Tool, browser, and plugin access remains disabled.
+
+The gateway checks admission, expiry, cancellation and revocation during requests,
+including while waiting for a silent provider. Disconnects close the upstream
+connection. Streaming errors and truncated responses fail explicitly; the gateway
+does not retry potentially billed requests. Provider-side cancellation and billing
+vary, so cancelling cannot undo charges already incurred.
+
+The picker is part of the existing **local-only, unauthenticated** operator UI.
+Do not expose it publicly; employee accounts and authorization remain future work.
+No provider-management, subscription sharing, spending budgets, or API fallback
+is included. The protocol proof covers the real pinned OpenClaw container with a
+controlled upstream transport, including model changes, provider failures and
+cancellation. A paid OpenRouter smoke additionally requires your own key.
 
 ## Stop, back up, and update
 

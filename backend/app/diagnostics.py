@@ -14,6 +14,7 @@ from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     ACTIVE_RUN_STATUSES,
     Agent,
+    InferenceConfig,
     Operation,
     Run,
     RunEvent,
@@ -36,6 +37,7 @@ class RunResponse(BaseModel):
     incarnation_id: UUID
     message: str
     status: str
+    model_id: str
     cancel_requested: bool
     output: str
     error: str | None
@@ -99,6 +101,11 @@ def create_run(
             agent_id=agent_id,
             incarnation_id=agent.current_incarnation_id,
             message=body.message,
+            model_id=(
+                session.get(InferenceConfig, 1).model_id
+                if agent.model_route == "default"
+                else "fixture"
+            ),
             idempotency_key=idempotency_key,
             request_hash=digest,
         )
