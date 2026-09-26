@@ -13,7 +13,13 @@ from sqlalchemy.exc import OperationalError
 
 from backend.app.models import Agent, Operation, WorkloadIncarnation
 from gateway.identity import validate_token
-from worker.lifecycle import Worker, credential_path, read_credentials, worker_lock
+from worker.lifecycle import (
+    StorageFullError,
+    Worker,
+    credential_path,
+    read_credentials,
+    worker_lock,
+)
 from worker.main import run
 from worker.runtime import IMAGE
 
@@ -22,6 +28,7 @@ database_engine = test_agents.database_engine
 session_maker = test_agents.session_maker
 client = test_agents.client
 create = test_agents.create
+REAL_WAIT_READY = Worker.wait_ready
 
 
 class ProcessDied(BaseException):
@@ -239,6 +246,44 @@ def test_transient_docker_failures_stop_after_bounded_retries(
             assert current.status == ("failed" if attempt == 5 else "retry_wait")
             current.next_retry_at = None
     assert not worker.process_one()
+
+
+@pytest.mark.parametrize("disk_full", [True, False])
+def test_exited_runtime_reports_disk_full_without_exposing_logs(
+    client, worker, session_maker, monkeypatch, disk_full
+):
+    agent_id, operation_id = provision(client, worker)
+    # Exercise the real readiness path; bootstrap has exited before the first probe.
+    monkeypatch.setattr(worker, "wait_ready", REAL_WAIT_READY.__get__(worker))
+    original_create = worker.client.containers.create
+
+    def create_runtime(*args, **kwargs):
+        container = original_create(*args, **kwargs)
+        container.start = lambda: setattr(container, "status", "exited")
+        container.logs = lambda **_: (
+            b"ENOSPC: cannot create state; private-token-must-not-escape"
+            if disk_full
+            else b"Unexpected exit: private-token-must-not-escape"
+        )
+        return container
+
+    monkeypatch.setattr(worker.client.containers, "create", create_runtime)
+    assert worker.process_one()
+    with session_maker() as session:
+        operation = session.get(Operation, UUID(operation_id))
+        agent = session.get(Agent, UUID(agent_id))
+        assert operation.status == ("failed" if disk_full else "retry_wait")
+        assert operation.attempts == 1
+        assert operation.error == (
+            StorageFullError.message if disk_full else "RuntimeError: lifecycle operation failed"
+        )
+        assert agent.last_error == operation.error
+        assert "private-token" not in operation.error
+        if disk_full:
+            assert operation.next_retry_at is None
+            assert session.get(WorkloadIncarnation, agent.current_incarnation_id).revoked_at
+    if disk_full:
+        assert not worker.process_one()
 
 
 def test_reconciliation_reattaches_gateway_recovers_and_detects_exit(client, worker, session_maker):
