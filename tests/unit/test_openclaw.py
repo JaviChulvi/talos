@@ -35,7 +35,7 @@ def test_fake_model_rejects_inactive_identity_and_unsupported_model():
             "/v1/chat/completions", json={**payload, "stream": True}, headers=headers
         )
         assert response.status_code == 200
-        assert "Talos diagnostic: hello" in response.text
+        assert "Talos diagnostic: local fixture response received." in response.text
         assert response.text.endswith("data: [DONE]\n\n")
         assert (
             client.post(
