@@ -220,7 +220,7 @@ export function AgentWorkspace() {
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["stopped", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("stop")}><Square aria-hidden="true" />Stop</Button>
                 <Button variant="outline" size="sm" className="ml-auto text-danger hover:bg-danger/10" disabled={writesDisabled || operationActive || selected.observed_state === "deleted"} onClick={() => lifecycle("delete")}><Trash2 aria-hidden="true" />Delete</Button>
               </div>
-              {selectedOperation && <p className="mt-4 flex items-center gap-2 text-xs text-muted-foreground" aria-live="polite">{operationActive && <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />}Latest operation: {selectedOperation.status.replaceAll("_", " ")}{selectedOperation.error ? `. ${selectedOperation.error}` : ""}</p>}
+              {selectedOperation && <p className="mt-4 flex items-center gap-2 text-xs text-muted-foreground" aria-live="polite">{operationActive && <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />}Latest operation: {selectedOperation.status.replaceAll("_", " ")}{selectedOperation.error && selectedOperation.error !== selected.last_error ? `. ${selectedOperation.error}` : ""}</p>}
               {selected.last_error && <p role="alert" className="mt-3 text-sm text-danger">{selected.last_error}</p>}
             </div>
 
