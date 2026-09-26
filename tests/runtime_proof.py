@@ -232,6 +232,19 @@ async def main():
             "PASS OpenRouter transport / hot model switch / stream error / upstream cancellation",
             flush=True,
         )
+        live_key = os.environ.get("TALOS_PROOF_OPENROUTER_KEY_FILE")
+        if live_key:
+            openrouter.httpx.AsyncClient = real_client
+            os.environ["TALOS_OPENROUTER_KEY_FILE"] = live_key
+            selected["model"] = "deepseek/deepseek-v4-flash-0731"
+            run_id = str(uuid.uuid4())
+            await client.send(
+                "agent:main:talos-live-proof", "Reply with exactly TALOS_OPENROUTER_OK", run_id
+            )
+            result = await terminal(client, run_id)
+            assert result["state"] == "final", result
+            assert "TALOS_OPENROUTER_OK" in json.dumps(result), result
+            print("PASS live OpenRouter / DeepSeek V4 Flash 0731 / pinned OpenClaw", flush=True)
         print("ALL RUNTIME CHECKS PASSED", IMAGE, flush=True)
     finally:
         for client in clients:

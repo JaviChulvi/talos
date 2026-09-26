@@ -180,7 +180,19 @@ Do not expose it publicly; employee accounts and authorization remain future wor
 No provider-management, subscription sharing, spending budgets, or API fallback
 is included. The protocol proof covers the real pinned OpenClaw container with a
 controlled upstream transport, including model changes, provider failures and
-cancellation. A paid OpenRouter smoke additionally requires your own key.
+cancellation. To opt into one bounded, paid DeepSeek V4 Flash check as well, run
+the verifier with your key mounted read-only (never pass the key value on the
+command line):
+
+```sh
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  --mount type=bind,source=/absolute/private/path/openrouter.key,target=/run/secrets/live_openrouter,readonly \
+  --env TALOS_PROOF_OPENROUTER_KEY_FILE=/run/secrets/live_openrouter \
+  talos-verification:local
+```
+
+The live check uses the pinned OpenClaw container and the gateway transport; it
+makes a short request with a 1,024-token maximum. Normal tests use no provider key.
 
 ## Stop, back up, and update
 
