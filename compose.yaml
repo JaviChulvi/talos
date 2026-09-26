@@ -3,6 +3,7 @@ x-platform: &platform
   build:
     context: .
     dockerfile: deploy/Dockerfile
+    target: platform
   image: talos-platform:local
   environment: &environment
     TALOS_DATABASE_URL: postgresql+psycopg://talos@db:5432/talos
