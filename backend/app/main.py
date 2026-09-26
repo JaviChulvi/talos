@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from backend.app.agents import router as agents_router
 from backend.app.config import get_settings
 from backend.app.db import get_engine
 
@@ -63,6 +64,8 @@ def create_app() -> FastAPI:
             "gateway": "scaffold",
             "version": "0.1.0",
         }
+
+    app.include_router(agents_router)
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     def missing_api(path: str):
