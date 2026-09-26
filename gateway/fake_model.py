@@ -40,7 +40,7 @@ def model_router(validate_token: Callable[[str], bool]) -> APIRouter:
             last = " ".join(str(p.get("text", "")) for p in last if isinstance(p, dict))
         if not isinstance(last, str):
             raise HTTPException(400, "Expected text input")
-        text = "Talos diagnostic: " + last[-256:]
+        text = "Talos diagnostic: local fixture response received."
         delay = 15 if "[slow]" in last else 0
         response_id = "chatcmpl-" + uuid.uuid4().hex
         created = int(time.time())
