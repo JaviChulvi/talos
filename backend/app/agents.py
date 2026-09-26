@@ -38,8 +38,8 @@ LifecycleAction = Literal["start", "stop", "delete"]
 class CreateAgent(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    display_name: str = Field(min_length=1, max_length=120)
-    employee_label: str = Field(min_length=1, max_length=160)
+    display_name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
+    employee_label: str = Field(min_length=1, max_length=160, pattern=r"^[^\x00]*$")
 
 
 class AgentResponse(BaseModel):

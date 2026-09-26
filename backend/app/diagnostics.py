@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/v1")
 class DiagnosticRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    message: str = Field(min_length=1, max_length=4000)
+    message: str = Field(min_length=1, max_length=4000, pattern=r"^[^\x00]*$")
 
 
 class RunResponse(BaseModel):

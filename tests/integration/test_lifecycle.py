@@ -1,16 +1,21 @@
+import asyncio
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
 import test_agents
 from docker.errors import NotFound
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from test_diagnostics import FakeDriver
 
-from backend.app.models import Agent, Operation, WorkloadIncarnation
+from backend.app.models import Agent, Operation, Run, WorkloadIncarnation
 from gateway.identity import validate_token
 from worker.lifecycle import Worker, credential_path, read_credentials, worker_lock
+from worker.main import run
 from worker.runtime import IMAGE
 
 pytestmark = pytest.mark.integration
@@ -235,3 +240,258 @@ def test_transient_docker_failures_stop_after_bounded_retries(
             assert current.status == ("failed" if attempt == 5 else "retry_wait")
             current.next_retry_at = None
     assert not worker.process_one()
+
+
+def test_reconciliation_reattaches_gateway_recovers_and_detects_exit(client, worker, session_maker):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    with session_maker() as session:
+        incarnation = session.scalar(select(WorkloadIncarnation))
+        token = read_credentials(incarnation)["agent_token"]
+    network = worker.client.networks.get(worker.names(UUID(agent_id))[1])
+    old_gateway = worker.client.containers.get("platform-gateway")
+    network.disconnect(old_gateway)
+    old_gateway.remove()
+    worker.recover()
+    assert client.get(f"/api/v1/agents/{agent_id}").json()["observed_state"] == "degraded"
+    assert not validate_token(token)
+    replacement = worker.client.containers.create(
+        name="platform-gateway", labels=worker.service_labels("gateway")
+    )
+    replacement.start()
+    worker.recover()
+    assert replacement.id in network.attrs["Containers"]
+    assert client.get(f"/api/v1/agents/{agent_id}").json()["observed_state"] == "ready"
+    assert validate_token(token)
+    runtime = worker.client.containers.get(incarnation.container_name)
+    runtime.stop()
+    worker.recover()
+    worker.recover()
+    assert client.get(f"/api/v1/agents/{agent_id}").json()["observed_state"] == "degraded"
+    assert runtime.status == "exited"
+    assert not validate_token(token)
+
+
+@pytest.mark.parametrize("gateway_state", ["missing", "mismatched", "multiple"])
+def test_missing_gateway_retries_but_ownership_conflicts_are_terminal(
+    client, worker, session_maker, gateway_state
+):
+    operation = create(client).json()
+    gateway = worker.client.containers.get("platform-gateway")
+    if gateway_state == "missing":
+        gateway.remove()
+    elif gateway_state == "mismatched":
+        gateway.labels["io.talos.installation"] = "foreign"
+    else:
+        worker.client.containers.create(
+            name="duplicate-gateway", labels=worker.service_labels("gateway")
+        ).start()
+    worker.process_one()
+    with session_maker() as session:
+        operation = session.get(Operation, UUID(operation["id"]))
+        assert operation.status == ("retry_wait" if gateway_state == "missing" else "failed")
+
+
+def test_reconciliation_skips_agents_with_active_start(client, worker, session_maker, monkeypatch):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    with session_maker.begin() as session:
+        session.get(Agent, UUID(agent_id)).observed_state = "degraded"
+    assert (
+        client.post(
+            f"/api/v1/agents/{agent_id}/start", headers={"Idempotency-Key": "another-start"}
+        ).status_code
+        == 202
+    )
+    ensure_network = Mock(side_effect=AssertionError("Active lifecycle must not be probed"))
+    monkeypatch.setattr(worker, "ensure_network", ensure_network)
+    worker.recover()
+    ensure_network.assert_not_called()
+    assert client.get(f"/api/v1/agents/{agent_id}").json()["observed_state"] == "degraded"
+
+
+def test_reconciliation_yields_to_unrelated_lifecycle_work(client, worker, monkeypatch):
+    provision(client, worker)
+    worker.process_one()
+    operation = create(client, key="unrelated-agent").json()
+    probe = AsyncMock(side_effect=AssertionError("Pending work must run before probing"))
+    monkeypatch.setattr(worker, "wait_ready", probe)
+    worker.recover()
+    probe.assert_not_called()
+    assert worker.process_one()
+    assert client.get(f"/api/v1/operations/{operation['id']}").json()["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("probe_fails", [False, True])
+def test_reconciliation_does_not_overwrite_concurrent_stop(
+    client, worker, session_maker, monkeypatch, probe_fails
+):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+
+    async def probe(*_, **__):
+        assert (
+            client.post(
+                f"/api/v1/agents/{agent_id}/stop", headers={"Idempotency-Key": "concurrent-stop"}
+            ).status_code
+            == 202
+        )
+        if probe_fails:
+            raise OSError("Probe lost connection")
+
+    monkeypatch.setattr(worker, "wait_ready", probe)
+    worker.recover()
+    with session_maker() as session:
+        agent = session.get(Agent, UUID(agent_id))
+        assert agent.desired_state == "stopped"
+        assert agent.revision == 3
+        assert agent.observed_state == "ready"
+        assert agent.last_error is None
+
+
+@pytest.mark.parametrize("failure_stage", ["recover", "claim", "execute", "record"])
+def test_worker_loop_retries_database_outages_without_replacing_operation(
+    client, worker, session_maker, monkeypatch, failure_stage
+):
+    created = create(client).json()
+    operation_id = UUID(created["id"])
+    outage = OperationalError("fixture", {}, OSError("Database restarting"))
+    failed = False
+    fail_transaction = failure_stage == "claim"
+    original_begin = session_maker.begin
+    original_recover = worker.recover
+    original_ensure_network = worker.ensure_network
+
+    @contextmanager
+    def begin():
+        nonlocal fail_transaction, failed
+        if fail_transaction:
+            fail_transaction, failed = False, True
+            raise outage
+        with original_begin() as session:
+            yield session
+
+    def recover(**kwargs):
+        nonlocal failed
+        if failure_stage == "recover" and not failed:
+            failed = True
+            raise outage
+        original_recover(**kwargs)
+
+    def ensure_network(agent_id):
+        nonlocal fail_transaction, failed
+        if not failed and failure_stage == "execute":
+            failed = True
+            raise outage
+        if not failed and failure_stage == "record":
+            fail_transaction = True
+            raise OSError("Docker temporarily unavailable")
+        return original_ensure_network(agent_id)
+
+    monkeypatch.setattr(session_maker, "begin", begin)
+    monkeypatch.setattr(worker, "recover", recover)
+    monkeypatch.setattr(worker, "ensure_network", ensure_network)
+    worker.client.close = Mock()
+    monkeypatch.setattr("worker.main.Worker", lambda: worker)
+    monkeypatch.setattr(
+        "worker.main.get_settings", lambda: SimpleNamespace(lifecycle_poll_seconds=0.01)
+    )
+    original_wait_for = asyncio.wait_for
+    delays = []
+
+    async def wait_for(awaitable, timeout):
+        delays.append(timeout)
+        return await original_wait_for(awaitable, min(timeout, 0.01))
+
+    monkeypatch.setattr("worker.main.asyncio.wait_for", wait_for)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        stop_callbacks = []
+        monkeypatch.setattr(
+            loop, "add_signal_handler", lambda _, callback: stop_callbacks.append(callback)
+        )
+        task = asyncio.create_task(run())
+        try:
+            for _ in range(300):
+                await asyncio.sleep(0.01)
+                if task.done():
+                    task.result()
+                with session_maker() as session:
+                    operation = session.get(Operation, operation_id)
+                    if operation.status == "succeeded":
+                        break
+            else:
+                pytest.fail("Worker did not resume the durable operation")
+        finally:
+            stop_callbacks[0]()
+            await task
+
+    asyncio.run(scenario())
+    assert failed
+    assert 2 in delays
+    worker.client.close.assert_called_once()
+    with session_maker() as session:
+        operations = session.scalars(select(Operation)).all()
+        assert len(operations) == 1
+        assert operations[0].id == operation_id
+        assert operations[0].status == "succeeded"
+
+
+def test_replacement_worker_recovers_network_before_queued_diagnostic(
+    client, worker, session_maker, monkeypatch
+):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    run_id = client.post(
+        f"/api/v1/agents/{agent_id}/diagnostic-runs",
+        json={"message": "Queued before replacement"},
+        headers={"Idempotency-Key": "before-replacement"},
+    ).json()["id"]
+    # Ordinary periodic recovery yields to this unrelated operation; startup
+    # must still attach the replacement worker before dispatching the run.
+    assert create(client, key="unrelated-agent").status_code == 202
+    network = worker.client.networks.get(worker.names(UUID(agent_id))[1])
+    previous = worker.client.containers.get("platform-worker")
+    network.disconnect(previous)
+    previous.remove()
+    replacement = worker.client.containers.create(
+        name="platform-worker", labels=worker.service_labels("worker")
+    )
+    replacement.start()
+    driver = FakeDriver()
+
+    async def connector(_sessions, _agent_id):
+        assert replacement.id in network.attrs["Containers"]
+        return driver
+
+    worker.client.close = Mock()
+    monkeypatch.setattr("worker.main.Worker", lambda: worker)
+    monkeypatch.setattr("worker.main.connect_runtime", connector)
+    monkeypatch.setattr(
+        "worker.main.get_settings", lambda: SimpleNamespace(lifecycle_poll_seconds=0.01)
+    )
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        stop_callbacks = []
+        monkeypatch.setattr(
+            loop, "add_signal_handler", lambda _, callback: stop_callbacks.append(callback)
+        )
+        task = asyncio.create_task(run())
+        try:
+            for _ in range(300):
+                await asyncio.sleep(0.01)
+                if task.done():
+                    task.result()
+                with session_maker() as session:
+                    if session.get(Run, UUID(run_id)).status == "completed":
+                        break
+            else:
+                pytest.fail("Queued diagnostic did not complete after worker replacement")
+        finally:
+            stop_callbacks[0]()
+            await task
+
+    asyncio.run(scenario())
+    assert driver.sent == 1
