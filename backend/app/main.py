@@ -60,8 +60,8 @@ def create_app() -> FastAPI:
         return {
             "status": "ok" if ok else "degraded",
             "database": "ready" if ok else "unavailable",
-            "worker": "scaffold",
-            "gateway": "scaffold",
+            "worker": "configured",
+            "gateway": "configured",
             "version": "0.1.0",
         }
 

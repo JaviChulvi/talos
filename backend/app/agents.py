@@ -1,7 +1,7 @@
 import hashlib
 import json
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -12,7 +12,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.db import session_factory
-from backend.app.models import ACTIVE_OPERATION_STATUSES, RUNTIME_RELEASE, Agent, Operation
+from backend.app.models import (
+    ACTIVE_OPERATION_STATUSES,
+    RUNTIME_RELEASE,
+    Agent,
+    Operation,
+    WorkloadIncarnation,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -186,6 +192,9 @@ def request_lifecycle(
             agent.desired_state = {"start": "running", "stop": "stopped", "delete": "deleted"}[
                 action
             ]
+            if action in {"stop", "delete"} and agent.current_incarnation_id:
+                incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+                incarnation.revoked_at = datetime.now(UTC)
             agent.last_error = None
             return enqueue_operation(session, agent, action, scope, idempotency_key, digest)
     except IntegrityError as error:

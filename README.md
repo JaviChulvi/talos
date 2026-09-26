@@ -88,6 +88,7 @@ Requires Docker Engine with Compose on Linux, or Docker Desktop for development.
 
 ```sh
 cp .env.example .env
+docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
 docker compose up --build -d
 ```
 
@@ -120,7 +121,7 @@ For frontend hot reload, run `pnpm --dir frontend dev` while Compose is running.
 
 ## OpenClaw protocol check
 
-The pinned release and architecture digests are recorded in `deploy/runtimes/openclaw.json`. The Python driver handles signed device pairing, messages, history, events, and cancellation. The model route is a deterministic diagnostic fixture and never calls a real provider. The default gateway rejects all tokens until workload identity is configured by the lifecycle worker.
+The pinned release and architecture digests are recorded in `deploy/runtimes/openclaw.json`. The Python driver handles signed device pairing, messages, history, events, and cancellation. The model route is a deterministic diagnostic fixture and never calls a real provider. The gateway accepts only a ready agent’s current, unexpired, unrevoked workload identity; database failures deny access.
 
 The focused check runs two actual private OpenClaw containers and cleans its own resources. It requires Docker disk capacity for the runtime image and state volumes.
 
@@ -136,10 +137,23 @@ Only this trusted verification runner gets the Docker socket; employee runtimes 
 
 `POST /api/v1/agents` accepts `display_name` and `employee_label`. Create, start, stop, and delete requests require an `Idempotency-Key` header and return a durable operation with HTTP 202. Read its status through `GET /api/v1/operations/{id}`. Replaying the same key returns the original operation; changing its request or submitting conflicting work returns HTTP 409.
 
-In this API-only layer, operations stay queued until the lifecycle worker is implemented. Queued means accepted, not running. Agent and operation records survive API process restarts. A fresh start request on an already ready agent is rejected; stop it first.
+The single worker executes queued operations. Queued means accepted, not running. Agent and operation records survive API process restarts. A fresh start request on an already ready agent is rejected; stop it first.
 
 PostgreSQL checks use a random schema and remove only that schema afterward:
 
 ```sh
 TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos uv run pytest tests/integration/test_agents.py
+```
+
+## Docker lifecycle
+
+Create allocates an owned private network and state volume, leaving the agent stopped. Start boots the pinned runtime and completes only after authenticated device pairing and readiness. Stop revokes gateway access immediately and retains state. Starting again creates a new identity and container over the same state. Delete removes only that agent's labeled resources and private credentials; audit records remain.
+
+The worker keeps private credentials in its named volume and only credential hashes in PostgreSQL. Do not run a second worker with different private state against the same installation. A lock prevents two workers using the same state directory. Restarting the worker adopts an existing container by its persisted identity and ownership labels. Failed operations retry at most five times; stop/start explicitly after correcting a terminal failure. Runtime identities expire after 30 days; stop/start renews them.
+
+The API's `configured` worker/gateway status describes installed capability, not a live heartbeat. Inspect operation results and `docker compose logs worker gateway` for health.
+
+```sh
+TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos uv run pytest tests/integration/test_lifecycle.py
+TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos TALOS_TEST_DOCKER=1 uv run pytest tests/integration/test_lifecycle_docker.py
 ```

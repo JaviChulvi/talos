@@ -6,6 +6,8 @@ x-platform: &platform
     target: platform
   image: talos-platform:local
   environment: &environment
+    TALOS_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-talos}
+    TALOS_INSTALLATION_ID: ${TALOS_INSTALLATION_ID:-local}
     TALOS_DATABASE_URL: postgresql+psycopg://talos:${POSTGRES_PASSWORD:?Copy .env.example to .env}@db:5432/talos
   networks: [control]
   security_opt: ["no-new-privileges:true"]
@@ -43,6 +45,8 @@ services:
       retries: 5
   worker:
     <<: *platform
+    labels:
+      io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
     user: "0:0"
     command: ["python", "-m", "worker.main"]
     volumes: ["/var/run/docker.sock:/var/run/docker.sock", "worker-state:/var/lib/talos"]
@@ -50,6 +54,8 @@ services:
       migrate: {condition: service_completed_successfully}
   gateway:
     <<: *platform
+    labels:
+      io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
     command: ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8001", "--no-proxy-headers"]
     depends_on:
       migrate: {condition: service_completed_successfully}
