@@ -1,0 +1,59 @@
+name: talos
+x-platform: &platform
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile
+  image: talos-platform:local
+  environment: &environment
+    TALOS_DATABASE_URL: postgresql+psycopg://talos:${POSTGRES_PASSWORD:?Copy .env.example to .env}@db:5432/talos
+  networks: [control]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
+services:
+  db:
+    image: postgres:17-bookworm@sha256:639ab7ceb90e13123085b741fb31ef493fba25463002f6da665352e7b534b652
+    environment:
+      POSTGRES_DB: talos
+      POSTGRES_USER: talos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Copy .env.example to .env}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    networks: [control]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talos -d talos"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *platform
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db: {condition: service_healthy}
+  api:
+    <<: *platform
+    ports: ["127.0.0.1:${TALOS_PORT:-8000}:8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *platform
+    user: "0:0"
+    command: ["python", "-m", "worker.main"]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "worker-state:/var/lib/talos"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  gateway:
+    <<: *platform
+    command: ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8001", "--no-proxy-headers"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+networks:
+  control:
+    internal: true
+volumes:
+  postgres-data:
+  worker-state:

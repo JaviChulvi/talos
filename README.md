@@ -4,7 +4,7 @@ A self-hosted platform for managing personal employee agents while a company con
 
 The project is planned as an open-source platform inspired by Coolify's approach to deploying and operating workloads. It focuses on giving each employee a useful personal agent with company-managed access to external services.
 
-**Status:** architecture and planning. The stack and capabilities below describe the intended implementation; the application is not implemented yet.
+**Status:** Foundation development. This branch provides the local service stack and status screen. Agent lifecycle, permissions, and integrations are being added in dependent PRs; this is not ready for shared employee access.
 
 ## Project Overview
 
@@ -57,7 +57,6 @@ Containers on one host share a kernel. This initial deployment targets a single 
 | Installation | Docker Compose on one Linux machine |
 | Frontend serving | Vite production build served by FastAPI initially |
 | Backend tests | pytest |
-| Browser tests | Playwright |
 | Infrastructure tests | Integration tests against actual Docker containers |
 
 Node.js is required only for frontend tooling. The platform backend, gateway, and host management will use Python. OpenClaw retains its own runtime dependencies inside its container.
@@ -80,7 +79,41 @@ backend/        API, database models, and shared Python code
 worker/         Docker lifecycle and background operations
 gateway/        Credentials, integrations, policies, and budgets
 deploy/         Docker Compose and installation configuration
-tests/          API, browser, and isolation tests
+tests/          Focused backend and runtime checks
 ```
 
-These directories describe the intended implementation layout. Installation commands and development instructions will be added when a runnable version is available.
+## Run locally
+
+Requires Docker Engine with Compose on Linux, or Docker Desktop for development. No provider credentials are needed.
+
+```sh
+cp .env.example .env
+docker compose up --build -d
+```
+
+Open http://127.0.0.1:8000. PostgreSQL is private; the API is published on loopback only. The migration service must finish before the API, worker, and gateway start. The status screen identifies the worker and gateway as scaffolds until their later implementation steps.
+
+```sh
+docker compose ps
+docker compose logs api worker gateway
+docker compose down
+```
+
+`down` preserves named volumes. `down --volumes` deletes the local database and worker state; use it only for disposable installations. The worker has privileged Docker-daemon access. Do not expose this unauthenticated prototype to other users.
+
+## Development checks
+
+Use Python 3.13, uv 0.11.21, Node 22.13 or later, and pnpm 11.19.0.
+
+```sh
+uv sync --locked
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest -m 'not integration'
+pnpm --dir frontend install --frozen-lockfile
+pnpm --dir frontend lint
+pnpm --dir frontend typecheck
+pnpm --dir frontend build
+```
+
+For frontend hot reload, run `pnpm --dir frontend dev` while Compose is running. Vite proxies API requests to localhost:8000. There are no browser or end-to-end test dependencies; UI verification is manual.
