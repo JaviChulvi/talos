@@ -2,6 +2,8 @@ import asyncio
 import logging
 import signal
 
+from sqlalchemy.exc import OperationalError
+
 from backend.app.config import get_settings
 from worker.lifecycle import Worker, worker_lock
 
@@ -13,21 +15,36 @@ async def run():
         loop.add_signal_handler(signum, stop.set)
     worker = Worker()
     task = None
-    try:
+    failures = 0
+
+    async def cycle():
         await asyncio.to_thread(worker.recover)
+        await asyncio.to_thread(worker.process_one)
+
+    try:
         while not stop.is_set():
-            if task is None or task.done():
-                if task is not None:
-                    task.result()
-                task = asyncio.create_task(asyncio.to_thread(worker.process_one))
+            delay = get_settings().lifecycle_poll_seconds
             try:
-                await asyncio.wait_for(stop.wait(), timeout=get_settings().lifecycle_poll_seconds)
+                if task is None or task.done():
+                    if task is not None:
+                        completed, task = task, None
+                        completed.result()
+                        failures = 0
+                    task = asyncio.create_task(cycle())
+            except OperationalError:
+                failures = min(failures + 1, 5)
+                delay = min(2**failures, 30)
+                logging.warning("Worker database unavailable; retrying in %s seconds", delay)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=delay)
             except TimeoutError:
                 pass
     finally:
-        if task is not None:
-            await task
-        worker.client.close()
+        try:
+            if task is not None:
+                await task
+        finally:
+            worker.client.close()
 
 
 def main():

@@ -17,7 +17,11 @@ def model_router(validate_token: Callable[[str], bool]) -> APIRouter:
     async def completion(request: Request):
         authorization = request.headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
-        if scheme.lower() != "bearer" or not token or not validate_token(token):
+        if (
+            scheme.lower() != "bearer"
+            or not token
+            or not await asyncio.to_thread(validate_token, token)
+        ):
             raise HTTPException(401, "Invalid or inactive agent identity")
         try:
             body = await request.json()
@@ -48,7 +52,7 @@ def model_router(validate_token: Callable[[str], bool]) -> APIRouter:
         if not body.get("stream"):
             if delay:
                 await asyncio.sleep(delay)
-            if not validate_token(token):
+            if not await asyncio.to_thread(validate_token, token):
                 raise HTTPException(401, "Invalid or inactive agent identity")
             return {
                 **base,
@@ -82,7 +86,7 @@ def model_router(validate_token: Callable[[str], bool]) -> APIRouter:
             if delay:
                 await asyncio.sleep(delay)
             # Check again before returning content; revocation also affects slow calls.
-            if not validate_token(token):
+            if not await asyncio.to_thread(validate_token, token):
                 return
             yield event({"content": text})
             yield event({}, "stop")
