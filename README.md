@@ -141,7 +141,8 @@ docker compose logs migrate api worker gateway
 ```
 
 - **Readiness fails:** inspect `migrate` and database health first. `/health/ready` requires the database schema to match the application migration head.
-- **Start fails:** confirm the exact runtime image was pulled, Docker has free disk/memory, and the worker can reach its socket. Docker/runtime operation failures retry up to five times. After correcting a terminal failure, stop/start explicitly.
+- **Start fails:** confirm the exact runtime image was pulled, Docker has free disk/memory, and the worker can reach its socket. Transient Docker/runtime operation failures retry up to five times. After correcting a terminal failure, start the agent again.
+- **Docker storage is full:** if OpenClaw exits with `ENOSPC` during startup, Talos stops retrying and reports the storage error. Inspect Docker usage with `docker system df`, free space in Docker's own disk, then start the agent again. On Docker Desktop, free host disk space does not necessarily mean its VM has free space. Preserve agent and database volumes when cleaning up.
 - **Database temporarily unavailable:** the worker waits and retries the same durable operation. Diagnostic delivery that cannot be confirmed becomes Unknown when the database returns; it is never automatically resent.
 - **Unknown diagnostic:** stop the agent and wait for confirmation before starting it again. Repeated message submission cannot resolve uncertain upstream work.
 - **Gateway access expires:** stop/start renews the 30-day incarnation identity. Never copy agent tokens into browser requests.
