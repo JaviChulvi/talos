@@ -15,7 +15,7 @@ async def run():
     for signum in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(signum, stop.set)
     worker = Worker()
-    diagnostics = DiagnosticManager(worker.sessions, connect_runtime)
+    diagnostics = None
     task = None
     failures = 0
 
@@ -24,10 +24,14 @@ async def run():
         await asyncio.to_thread(worker.process_one)
 
     try:
-        diagnostics.recover()
         while not stop.is_set():
             delay = get_settings().lifecycle_poll_seconds
             try:
+                if diagnostics is None:
+                    # A replacement worker must attach to existing agent networks
+                    # before it can dispatch their persisted diagnostic queue.
+                    await asyncio.to_thread(worker.recover, yield_to_operations=False)
+                    diagnostics = DiagnosticManager(worker.sessions, connect_runtime)
                 await diagnostics.tick()
                 if task is None or task.done():
                     if task is not None:
@@ -45,7 +49,8 @@ async def run():
                 pass
     finally:
         try:
-            await diagnostics.close()
+            if diagnostics is not None:
+                await diagnostics.close()
             if task is not None:
                 await task
         finally:

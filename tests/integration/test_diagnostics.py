@@ -10,6 +10,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agents import get_db
@@ -94,6 +95,9 @@ def submit(client, agent_id, key="diagnostic-1", message="Hello"):
 
 
 def test_idempotency_and_admission(client, sessions, agent_id):
+    assert submit(client, agent_id, message="A\x00B").status_code == 422
+    with sessions() as session:
+        assert session.scalars(select(Run)).all() == []
     barrier = Barrier(4)
 
     def call(_):
@@ -330,3 +334,60 @@ def test_oversized_output_becomes_unknown_without_persisting_raw_payload(
     events = client.get(f"/api/v1/runs/{run_id}/events").json()
     assert not any(e["type"] == "delta" for e in events)
     assert submit(client, agent_id, key="new").status_code == 409
+
+
+@pytest.mark.parametrize("failure_point", ["_claim", "_can_send", "_ack"])
+def test_database_recovery_respects_durable_send_intent(
+    client, sessions, agent_id, monkeypatch, failure_point
+):
+    run_id = UUID(submit(client, agent_id).json()["id"])
+    driver = FakeDriver()
+    manager = manager_for(sessions, driver)
+    original = getattr(manager, failure_point)
+
+    def fail_once(*args):
+        monkeypatch.setattr(manager, failure_point, original)
+        raise OperationalError("fixture", {}, OSError("Database restarting"))
+
+    monkeypatch.setattr(manager, failure_point, fail_once)
+
+    async def scenario():
+        await manager.tick()
+        await asyncio.gather(*manager.tasks.values(), return_exceptions=True)
+        with pytest.raises(OperationalError):
+            await manager.tick()
+        assert run_id not in manager.tasks
+        # After the database returns, only an unclaimed queued run may dispatch.
+        await manager.tick()
+        await asyncio.gather(*manager.tasks.values())
+        await manager.tick()
+        await manager.tick()
+        await manager.close()
+
+    asyncio.run(scenario())
+    status = "completed" if failure_point == "_claim" else "unknown"
+    assert client.get(f"/api/v1/runs/{run_id}").json()["status"] == status
+    assert driver.sent == (0 if failure_point == "_can_send" else 1)
+
+
+def test_recovery_preserves_a_live_streaming_task(client, sessions, agent_id):
+    run_id = UUID(submit(client, agent_id).json()["id"])
+    driver = FakeDriver(streaming=True)
+    manager = manager_for(sessions, driver)
+
+    async def scenario():
+        await manager.tick()
+        while driver.sent == 0:
+            await asyncio.sleep(0)
+        await manager.tick()
+        assert client.get(f"/api/v1/runs/{run_id}").json()["status"] == "running"
+        driver.event({"state": "final", "message": {"content": "Completed"}})
+        await asyncio.gather(*manager.tasks.values())
+        await manager.tick()
+        await manager.close()
+
+    asyncio.run(scenario())
+    assert client.get(f"/api/v1/runs/{run_id}").json()["status"] == "completed"
+    assert driver.sent == 1
+    events = client.get(f"/api/v1/runs/{run_id}/events").json()
+    assert not any(event["type"] == "unknown" for event in events)

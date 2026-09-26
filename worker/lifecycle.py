@@ -333,7 +333,7 @@ class Worker:
         agent.observed_state = "stopped"
         mark_runs_stopped(session, agent.id)
 
-    def recover(self):
+    def recover(self, *, yield_to_operations=True):
         """Reconcile existing runtimes without restarting them or replaying work."""
         active = (
             select(Operation.id)
@@ -356,7 +356,7 @@ class Worker:
             try:
                 with self.sessions() as session:
                     # Yield between probes when lifecycle work becomes runnable.
-                    if session.scalar(
+                    if yield_to_operations and session.scalar(
                         select(Operation.id)
                         .where(
                             Operation.status.in_(ACTIVE_OPERATION_STATUSES),

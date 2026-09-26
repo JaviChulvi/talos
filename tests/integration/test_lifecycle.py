@@ -10,8 +10,9 @@ import test_agents
 from docker.errors import NotFound
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
+from test_diagnostics import FakeDriver
 
-from backend.app.models import Agent, Operation, WorkloadIncarnation
+from backend.app.models import Agent, Operation, Run, WorkloadIncarnation
 from gateway.identity import validate_token
 from worker.lifecycle import Worker, credential_path, read_credentials, worker_lock
 from worker.main import run
@@ -370,12 +371,12 @@ def test_worker_loop_retries_database_outages_without_replacing_operation(
         with original_begin() as session:
             yield session
 
-    def recover():
+    def recover(**kwargs):
         nonlocal failed
         if failure_stage == "recover" and not failed:
             failed = True
             raise outage
-        original_recover()
+        original_recover(**kwargs)
 
     def ensure_network(agent_id):
         nonlocal fail_transaction, failed
@@ -435,3 +436,62 @@ def test_worker_loop_retries_database_outages_without_replacing_operation(
         assert len(operations) == 1
         assert operations[0].id == operation_id
         assert operations[0].status == "succeeded"
+
+
+def test_replacement_worker_recovers_network_before_queued_diagnostic(
+    client, worker, session_maker, monkeypatch
+):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    run_id = client.post(
+        f"/api/v1/agents/{agent_id}/diagnostic-runs",
+        json={"message": "Queued before replacement"},
+        headers={"Idempotency-Key": "before-replacement"},
+    ).json()["id"]
+    # Ordinary periodic recovery yields to this unrelated operation; startup
+    # must still attach the replacement worker before dispatching the run.
+    assert create(client, key="unrelated-agent").status_code == 202
+    network = worker.client.networks.get(worker.names(UUID(agent_id))[1])
+    previous = worker.client.containers.get("platform-worker")
+    network.disconnect(previous)
+    previous.remove()
+    replacement = worker.client.containers.create(
+        name="platform-worker", labels=worker.service_labels("worker")
+    )
+    replacement.start()
+    driver = FakeDriver()
+
+    async def connector(_sessions, _agent_id):
+        assert replacement.id in network.attrs["Containers"]
+        return driver
+
+    worker.client.close = Mock()
+    monkeypatch.setattr("worker.main.Worker", lambda: worker)
+    monkeypatch.setattr("worker.main.connect_runtime", connector)
+    monkeypatch.setattr(
+        "worker.main.get_settings", lambda: SimpleNamespace(lifecycle_poll_seconds=0.01)
+    )
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        stop_callbacks = []
+        monkeypatch.setattr(
+            loop, "add_signal_handler", lambda _, callback: stop_callbacks.append(callback)
+        )
+        task = asyncio.create_task(run())
+        try:
+            for _ in range(300):
+                await asyncio.sleep(0.01)
+                if task.done():
+                    task.result()
+                with session_maker() as session:
+                    if session.get(Run, UUID(run_id)).status == "completed":
+                        break
+            else:
+                pytest.fail("Queued diagnostic did not complete after worker replacement")
+        finally:
+            stop_callbacks[0]()
+            await task
+
+    asyncio.run(scenario())
+    assert driver.sent == 1

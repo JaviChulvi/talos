@@ -6,6 +6,7 @@ from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from backend.app.diagnostics import append_event
 from backend.app.models import ACTIVE_RUN_STATUSES, Agent, Run
@@ -38,26 +39,30 @@ class DiagnosticManager:
         self.tasks: dict[UUID, asyncio.Task] = {}
 
     def recover(self):
-        # No blind retry: the previous worker could have sent a request and died
-        # before persisting either its acknowledgment or its terminal event.
+        # Unowned send intent is ambiguous after a restart or database failure.
+        # Live tasks still own their delivery and must not be interrupted here.
         with self.sessions.begin() as session:
             runs = session.scalars(
                 select(Run)
-                .where(Run.status.in_(("dispatching", "running", "cancel_requested")))
+                .where(
+                    Run.status.in_(("dispatching", "running", "cancel_requested")),
+                    Run.id.not_in(list(self.tasks)),
+                )
                 .with_for_update()
             ).all()
             for run in runs:
                 run.status = "unknown"
-                run.error = "Worker restarted during delivery; stop the agent before retrying"
-                append_event(session, run, "unknown", {"reason": "worker_restarted"})
+                run.error = "Worker lost delivery tracking; stop the agent before retrying"
+                append_event(session, run, "unknown", {"reason": "worker_recovery"})
 
     async def tick(self):
         for run_id, task in list(self.tasks.items()):
             if task.done():
+                del self.tasks[run_id]
                 # Surface persistence failures to the worker, rather than
                 # silently abandoning an in-progress database record.
                 task.result()
-                del self.tasks[run_id]
+        self.recover()
         with self.sessions() as session:
             queued = session.scalars(select(Run.id).where(Run.status == "queued")).all()
         for run_id in queued:
@@ -226,6 +231,9 @@ class DiagnosticManager:
                 "unknown" if sent else "interrupted",
                 "Worker stopped; no automatic diagnostic retry",
             )
+            raise
+        except OperationalError:
+            # Let tick recover durable intent after the database returns.
             raise
         except Exception:
             # Store no raw exception or protocol payload: either may contain
