@@ -3,12 +3,14 @@ from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL, make_url
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TALOS_")
 
     database_url: str = "postgresql+psycopg://talos:talos-local-development@localhost:5432/talos"
+    database_password: str | None = None
     static_dir: Path = Path("frontend/dist")
     allowed_hosts: list[str] = ["127.0.0.1", "localhost", "testserver"]
     worker_state_dir: Path = Path("/var/lib/talos")
@@ -17,6 +19,11 @@ class Settings(BaseSettings):
     worker_container: str | None = None
     lifecycle_poll_seconds: float = Field(default=1, ge=0.1, le=60)
     readiness_timeout_seconds: int = Field(default=120, ge=10, le=600)
+
+    @property
+    def connection_url(self) -> URL:
+        url = make_url(self.database_url)
+        return url if self.database_password is None else url.set(password=self.database_password)
 
 
 @lru_cache

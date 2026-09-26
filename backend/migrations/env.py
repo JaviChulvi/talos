@@ -17,7 +17,9 @@ def run_migrations():
     if connection is not None:
         migrate(connection)
         return
-    engine = create_engine(get_settings().database_url, poolclass=pool.NullPool)
+    engine = create_engine(
+        get_settings().connection_url, poolclass=pool.NullPool, hide_parameters=True
+    )
     with engine.connect() as connection:
         migrate(connection)
     engine.dispose()

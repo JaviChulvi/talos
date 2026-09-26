@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import docker
 from docker.errors import NotFound
 from sqlalchemy import or_, select
+from sqlalchemy.exc import OperationalError
 
 from backend.app.config import get_settings
 from backend.app.db import session_factory
@@ -124,11 +125,17 @@ class Worker:
         require_labels(worker.labels, self.service_labels("worker"))
         gateways = self.client.containers.list(
             filters={
-                "label": [f"{key}={value}" for key, value in self.service_labels("gateway").items()]
+                "label": [
+                    f"com.docker.compose.project={self.settings.compose_project}",
+                    "com.docker.compose.service=gateway",
+                ]
             }
         )
+        if not gateways:
+            raise RuntimeError("Gateway is temporarily unavailable")
         if len(gateways) != 1:
             raise OwnershipError("Expected exactly one running gateway for this installation")
+        require_labels(gateways[0].labels, self.service_labels("gateway"))
         return worker, gateways[0]
 
     def ensure_network(self, agent_id: UUID):
@@ -293,7 +300,7 @@ class Worker:
         incarnation.gateway_token_hash, incarnation.config_hash = digest, config_hash
         return credentials, config
 
-    async def wait_ready(self, container, token: str):
+    async def wait_ready(self, container, token: str, *, retry=True):
         identity = DeviceIdentity.load_or_create(
             self.settings.worker_state_dir / "control-device.pem"
         )
@@ -302,18 +309,23 @@ class Worker:
             await asyncio.to_thread(container.reload)
             if container.status != "running":
                 raise RuntimeError("Runtime exited before readiness")
-            client = OpenClawClient(f"ws://{container.name}:18789", token, identity, timeout=10)
+            client = OpenClawClient(
+                f"ws://{container.name}:18789", token, identity, timeout=10 if retry else 2
+            )
             try:
                 await client.connect()
                 await client.close()
                 return
             except GatewayError as error:
+                if not retry:
+                    raise
                 if error.code == "NOT_PAIRED" or error.details.get("code") == "PAIRING_REQUIRED":
                     await asyncio.to_thread(approve_device, container, identity)
                 elif error.code != "UNAVAILABLE":
                     raise
             except (OSError, TimeoutError, EOFError):
-                pass
+                if not retry:
+                    raise
             await asyncio.sleep(1)
         raise TimeoutError("OpenClaw readiness deadline exceeded")
 
@@ -322,39 +334,75 @@ class Worker:
         mark_runs_stopped(session, agent.id)
 
     def recover(self):
-        """Reattach replaced platform containers before serving diagnostics."""
+        """Reconcile existing runtimes without restarting them or replaying work."""
+        active = (
+            select(Operation.id)
+            .where(
+                Operation.agent_id == Agent.id,
+                Operation.status.in_(ACTIVE_OPERATION_STATUSES),
+            )
+            .exists()
+        )
         with self.sessions() as session:
-            agents = session.scalars(select(Agent).where(Agent.observed_state != "deleted")).all()
+            agents = session.scalars(
+                select(Agent).where(
+                    Agent.desired_state == "running",
+                    Agent.observed_state.in_(("ready", "degraded")),
+                    ~active,
+                )
+            ).all()
         for agent in agents:
+            error_message = None
             try:
-                try:
-                    self.client.networks.get(self.names(agent.id)[1])
-                except NotFound:
-                    if agent.observed_state == "ready":
-                        raise RuntimeError("Ready agent network is missing") from None
-                    continue
-                self.ensure_network(agent.id)
-                if agent.observed_state == "ready":
-                    with self.sessions() as session:
-                        incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
-                    if (
-                        incarnation is None
-                        or incarnation.revoked_at is not None
-                        or incarnation.expires_at is None
-                        or incarnation.expires_at <= datetime.now(UTC)
+                with self.sessions() as session:
+                    # Yield between probes when lifecycle work becomes runnable.
+                    if session.scalar(
+                        select(Operation.id)
+                        .where(
+                            Operation.status.in_(ACTIVE_OPERATION_STATUSES),
+                            or_(
+                                Operation.next_retry_at.is_(None),
+                                Operation.next_retry_at <= datetime.now(UTC),
+                            ),
+                        )
+                        .limit(1)
                     ):
-                        raise RuntimeError("Ready runtime identity is inactive")
-                    container = self.owned_container(incarnation)
-                    if container is None or container.status != "running":
-                        raise RuntimeError("Ready runtime is not running")
-                    credentials = read_credentials(incarnation)
-                    asyncio.run(self.wait_ready(container, credentials["control_token"]))
+                        return
+                    incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+                self.client.networks.get(self.names(agent.id)[1])
+                self.ensure_network(agent.id)
+                if (
+                    incarnation is None
+                    or incarnation.revoked_at is not None
+                    or incarnation.expires_at is None
+                    or incarnation.expires_at <= datetime.now(UTC)
+                ):
+                    raise RuntimeError("Runtime identity is inactive")
+                container = self.owned_container(incarnation)
+                if container is None:
+                    raise RuntimeError("Runtime is missing")
+                container.reload()
+                if container.status != "running":
+                    raise RuntimeError("Runtime is not running")
+                credentials = read_credentials(incarnation)
+                asyncio.run(self.wait_ready(container, credentials["control_token"], retry=False))
+            except OperationalError:
+                raise
             except Exception as error:
-                with self.sessions.begin() as session:
-                    current = session.get(Agent, agent.id)
-                    current.observed_state = "degraded"
-                    current.last_error = f"{type(error).__name__}: runtime recovery failed"
+                error_message = f"{type(error).__name__}: runtime recovery failed"
                 logging.error("Recovery failed for agent %s: %s", agent.id, type(error).__name__)
+            with self.sessions.begin() as session:
+                current = session.get(Agent, agent.id, with_for_update=True)
+                if (
+                    current is not None
+                    and current.revision == agent.revision
+                    and current.desired_state == "running"
+                    and current.current_incarnation_id == agent.current_incarnation_id
+                    and current.observed_state == agent.observed_state
+                    and not session.scalar(select(active).where(Agent.id == agent.id))
+                ):
+                    current.observed_state = "degraded" if error_message else "ready"
+                    current.last_error = error_message
 
     def execute(self, operation: Operation):
         with self.sessions() as session:
@@ -483,6 +531,8 @@ class Worker:
             }[operation.action]
         try:
             self.execute(operation)
+        except OperationalError:
+            raise
         except Exception as error:
             logging.error(
                 "Lifecycle %s failed for operation %s: %s",
