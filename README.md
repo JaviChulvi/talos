@@ -1,110 +1,82 @@
 # Talos
 
-A self-hosted platform for managing personal employee agents while a company controls their integrations, permissions, credentials, spending, and lifecycle.
+A self-hosted control plane for personal employee agents. The goal is to let companies manage agent integrations, permissions, credentials, spending, and offboarding.
 
-The project is planned as an open-source platform inspired by Coolify's approach to deploying and operating workloads. It focuses on giving each employee a useful personal agent with company-managed access to external services.
+**Current status: local Foundation prototype.** Talos creates and operates pinned OpenClaw containers, persists lifecycle operations and diagnostic results, and provides a small dashboard. Diagnostics use a deterministic fake model; no provider credentials or real integrations are needed. User authentication, employee access, business permissions, budgets, and Hermes support are future work.
 
-**Status:** Local foundation prototype. Create, start, stop, and delete OpenClaw agents, then send a synthetic diagnostic message and inspect its persisted result. Business permissions, real integrations, budgets, and user authentication are not implemented. This is not ready for shared employee access.
+## What works
 
-## Project Overview
+- Create, inspect, start, stop, and delete an agent with a display name and employee label.
+- One OpenClaw container, private internal network, and private state volume per agent.
+- Durable PostgreSQL operations, idempotent requests, bounded retries, and adoption of owned Docker resources after a worker crash.
+- Signed OpenClaw device pairing, diagnostic messages, ordered events, history support in the driver, and cancellation.
+- Per-incarnation gateway credentials, checked against the current agent state and revocation/expiry on each fake-model request. Database failures deny access.
+- Diagnostic delivery uncertainty is retained explicitly; messages are never automatically resent after a lost acknowledgment.
 
-Administrators will be able to create agents, assign permission profiles, manage integrations, set spending limits, inspect activity, and revoke access. Employees will eventually interact with their own agents through a web chat interface and personalize approved preferences without changing company permissions.
+This prototype is for one organization with trusted host administrators. Keep the unauthenticated dashboard/API local. Agent containers have no published ports or Docker socket; only the trusted worker controls Docker. Containers share a host kernel, and Foundation does not establish the later enterprise permission or hostile-tenant isolation guarantees.
 
-The first version will run on a single customer-managed Linux machine. Each agent will use a pinned OpenClaw image, its own Docker container, and private persistent state. A small runtime adapter will keep OpenClaw-specific behavior separate from platform and container management.
+## Stack and layout
 
-The integration gateway is a central part of the design. It will keep provider credentials outside agent containers, authenticate each agent, and check its current permissions before performing an external operation. Agents will receive only scoped platform credentials and permitted results. The model gateway will similarly enforce approved models and spending limits.
-
-## Initial Scope
-
-- One organization on one Linux host.
-- OpenClaw as the first supported agent runtime.
-- Local Docker management implemented in Python.
-- Agent creation, inspection, start, stop, deletion, and access revocation.
-- Private persistent state for each agent.
-- A React dashboard and employee chat interface.
-- A separate gateway for integration credentials, action permissions, and model budgets.
-- Durable background operations and activity records in PostgreSQL.
-- A documented installation, backup, and pinned-update workflow.
-
-User authentication is deferred for the local development prototype. Its dashboard and administrative API must remain local-only, with an SSH tunnel available for remote development. Employee access and administrator/employee role enforcement will require authentication before a shared rollout.
-
-Per-agent gateway authentication remains part of the initial design. Agent containers must not be able to reach the unauthenticated administrative API, access the Docker socket, obtain provider credentials, or bypass gateway policy through unrestricted network access. Only the trusted Docker worker will control the local Docker daemon.
-
-Containers on one host share a kernel. This initial deployment targets a single organization with trusted host administrators; it does not claim strong isolation between hostile organizations.
-
-## Technology Stack
-
-| Layer | Technology / Approach |
+| Component | Implementation |
 | --- | --- |
-| Frontend | React + TypeScript |
-| Frontend tooling | Vite |
-| UI components | shadcn/ui |
-| Styling | Tailwind CSS |
-| Backend API | Python + FastAPI |
-| Request and response validation | Pydantic |
-| Database | PostgreSQL |
-| ORM | SQLAlchemy |
-| Database migrations | Alembic |
-| Background operations | Python worker with durable operation records in PostgreSQL |
-| Container management | Docker SDK for Python, controlling the local Docker daemon |
-| Agent runtime | OpenClaw with a pinned image, one container and private state per agent |
-| Integration gateway | Separate Python/FastAPI process enforcing permissions and holding provider credentials |
-| Model access | Python gateway enforcing approved models and spending limits |
-| API transport | REST/JSON |
-| Diagnostic updates | REST polling |
-| User authentication | Deferred for the local prototype |
-| Agent authentication | Per-agent gateway credentials from the beginning |
-| Installation | Docker Compose on one Linux machine |
-| Frontend serving | Vite production build served by FastAPI initially |
-| Backend tests | pytest |
-| Infrastructure tests | Integration tests against actual Docker containers |
+| Dashboard | React, TypeScript, Vite, shadcn/ui, Tailwind CSS; REST polling |
+| API | Python 3.13, FastAPI, Pydantic; serves the frontend production build |
+| Persistence | PostgreSQL 17, SQLAlchemy, Alembic |
+| Worker | Python and Docker SDK; one worker per installation |
+| Gateway | Separate FastAPI process; authenticated synthetic model fixture |
+| Runtime | OpenClaw 2026.9.6, pinned by image digest; Gateway protocol v4 |
+| Packaging | uv, pnpm, Docker Compose |
 
-Node.js is required only for frontend tooling. The platform backend, gateway, and host management will use Python. OpenClaw retains its own runtime dependencies inside its container.
-
-## Application Structure
-
-The platform will use one repository with separate processes for the API, Docker worker, and integration gateway. These components may share Python models and contracts while keeping their operational privileges separate.
-
-- **API:** receives dashboard and chat requests, validates input, and records requested operations.
-- **Worker:** processes durable operations, manages local Docker resources, and records observed agent state. Long-running operations such as image pulls happen outside HTTP request handlers.
-- **Gateway:** authenticates agents, checks current permissions and budgets, and performs approved provider calls without exposing provider credentials to agents.
-- **PostgreSQL:** stores agents, profiles, grants, operation progress, spending records, and audit metadata.
-- **Agent containers:** run isolated OpenClaw instances with private state and constrained access to platform services.
-
-## Planned Repository Layout
-
-```text
-frontend/       React application
-backend/        API, database models, and shared Python code
-worker/         Docker lifecycle and background operations
-gateway/        Credentials, integrations, policies, and budgets
-deploy/         Docker Compose and installation configuration
-tests/          Focused backend and runtime checks
-```
+`frontend/` contains the dashboard; `backend/` owns the API and database models; `worker/` owns Docker and OpenClaw control; `gateway/` owns workload authentication and the fake model. `compose.yaml` starts the platform, `deploy/` contains its image build and runtime pin, and `tests/` contains focused backend and runtime checks. Node.js is used for frontend tooling; OpenClaw carries its own runtime dependencies.
 
 ## Run locally
 
-Requires Docker Engine with Compose on Linux, or Docker Desktop for development. No provider credentials are needed.
+Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus Python 3 to read the runtime pin. Allow disk space for the pinned runtime image and persistent volumes; each agent has a 2 GiB memory limit. Run these commands from the repository root:
 
 ```sh
 cp .env.example .env
-docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
-docker compose up --build -d
 ```
 
-Open http://127.0.0.1:8000. PostgreSQL is private; the API is published on loopback only. The migration service must finish before the API, worker, and gateway start. The dashboard polls durable agent, operation, and diagnostic state. Worker and gateway capability labels are not live heartbeats.
+Edit the example database password in `.env` **before the first startup**. `POSTGRES_PASSWORD` initializes a new database; editing `.env` later does not change an existing database's password. For an initialized database, rotate the PostgreSQL role password and update `.env` together.
 
 ```sh
+docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
+docker compose up --build -d
 docker compose ps
-docker compose logs api worker gateway
-docker compose down
 ```
 
-`down` preserves named volumes. `down --volumes` deletes the local database and worker state; use it only for disposable installations. The worker has privileged Docker-daemon access. Do not expose this unauthenticated prototype to other users.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the already-pulled runtime digest; it does not pull arbitrary agent images.
 
-## Development checks
+For a remote Linux development host, keep that binding and use a tunnel:
 
-Use Python 3.13, uv 0.11.21, Node 22.13 or later, and pnpm 11.19.0.
+```sh
+ssh -N -L 8000:127.0.0.1:8000 user@your-host
+```
+
+In the dashboard, create an agent, wait for **Stopped**, start it, and wait for **Ready**. Send a short synthetic diagnostic message; include `[slow]` to exercise cancellation. A new start request on an already-ready agent is rejected: stop it first.
+
+## Operations and diagnostics
+
+Create/start/stop/delete return HTTP 202 and an operation ID. **Queued means accepted**, not completed. They require `Idempotency-Key`; replaying a key returns its existing operation, while conflicting work or a changed request returns HTTP 409. Inspect `GET /api/v1/operations/{id}` for the result.
+
+| Request | Purpose |
+| --- | --- |
+| `POST /api/v1/agents` | Create with `display_name` and `employee_label` |
+| `GET /api/v1/agents` | List agents |
+| `POST /api/v1/agents/{id}/start` or `/stop` | Change desired runtime state |
+| `DELETE /api/v1/agents/{id}` | Delete the agent's owned runtime resources |
+| `POST /api/v1/agents/{id}/diagnostic-runs` | Submit `{ "message": "hello" }` with `Idempotency-Key` |
+| `GET /api/v1/runs/{id}` | Inspect persisted diagnostic status and output |
+| `GET /api/v1/runs/{id}/events?after=0` | Read ordered events; advance the cursor to the last sequence returned |
+| `POST /api/v1/runs/{id}/cancel` | Request cancellation |
+
+Only one unresolved diagnostic is admitted per agent. Messages are limited to 4,000 characters; event pages contain up to 100 records. Cancellation remains a request until confirmed by the runtime. **Unknown** means delivery or completion could not be confirmed; stop the agent, wait for the stop operation, then start it before sending another message. Restarting a worker never retries an uncertain message.
+
+Stop closes gateway admission and preserves private agent state. A subsequent start creates a fresh container and credentials over the existing state volume. Gateway credentials expire after 30 days; stop/start renews them. Delete removes that agent's labeled resources and private credentials while retaining database history. Diagnostic input and output are stored in PostgreSQL; use synthetic data here. The dashboard remembers recent operation/run IDs in browser storage; full history browsing is deferred.
+
+## Local checks
+
+Host development uses Python 3.13, uv 0.11.21, Node 22.13 or later, and pnpm 11.19.0:
 
 ```sh
 uv sync --locked
@@ -117,55 +89,66 @@ pnpm --dir frontend typecheck
 pnpm --dir frontend build
 ```
 
-For frontend hot reload, run `pnpm --dir frontend dev` while Compose is running. Vite proxies API requests to loopback using `TALOS_PORT` from the root `.env` file or environment (8000 by default). There are no browser or end-to-end test dependencies; UI verification is manual.
+Run `pnpm --dir frontend dev` for hot reload while Compose is running. Vite binds to loopback and uses `TALOS_PORT` from the root `.env` file or environment for API requests (8000 by default). UI verification is manual. There are no GitHub Actions workflows, browser-test dependencies, or end-to-end test suites.
 
-## OpenClaw protocol check
-
-The pinned release and architecture digests are recorded in `deploy/runtimes/openclaw.json`. The Python driver handles signed device pairing, messages, history, events, and cancellation. The model route is a deterministic diagnostic fixture and never calls a real provider. The gateway accepts only a ready agent’s current, unexpired, unrevoked workload identity; database failures deny access.
-
-The focused check runs two actual private OpenClaw containers and cleans its own resources. It requires Docker disk capacity for the runtime image and state volumes.
+The focused OpenClaw protocol check uses two real containers, synthetic model responses, and normal named volumes by default. Its trusted runner needs Docker access and removes its own runtime resources:
 
 ```sh
 docker build --target verification -f deploy/Dockerfile -t talos-verification:local .
-docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock talos-verification:local
 ```
 
-Only this trusted verification runner gets the Docker socket; employee runtimes do not. The check uses normal named volumes by default. A test-only `TALOS_PROOF_RAM_VOLUMES=1` option is available for constrained development machines, but does not establish disk or daemon-restart persistence.
-
-## Durable agent API
-
-`POST /api/v1/agents` accepts `display_name` and `employee_label`. Create, start, stop, and delete requests require an `Idempotency-Key` header and return a durable operation with HTTP 202. Read its status through `GET /api/v1/operations/{id}`. Replaying the same key returns the original operation; changing its request or submitting conflicting work returns HTTP 409.
-
-The single worker executes queued operations. Queued means accepted, not running. Agent and operation records survive API process restarts. A fresh start request on an already ready agent is rejected; stop it first.
-
-PostgreSQL checks use a random schema and remove only that schema afterward:
+PostgreSQL tests create random schemas and drop only those schemas afterward. The following commands use a disposable database and run the API, recovery, diagnostic, and Docker-resource checks inside the Linux verification container. `--network host` here assumes native Linux:
 
 ```sh
-TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos uv run pytest tests/integration/test_agents.py
+docker run --detach --name talos-test-db \
+  --publish 127.0.0.1:55432:5432 \
+  --env POSTGRES_PASSWORD=talos-test-password \
+  postgres:17-bookworm@sha256:639ab7ceb90e13123085b741fb31ef493fba25463002f6da665352e7b534b652
+docker exec talos-test-db pg_isready -h 127.0.0.1 -U postgres
 ```
 
-## Docker lifecycle
-
-Create allocates an owned private network and state volume, leaving the agent stopped. Start boots the pinned runtime and completes only after authenticated device pairing and readiness. Stop revokes gateway access immediately and retains state. Starting again creates a new identity and container over the same state. Delete removes only that agent's labeled resources and private credentials; audit records remain.
-
-The worker keeps private credentials in its named volume and only credential hashes in PostgreSQL. Do not run a second worker with different private state against the same installation. A lock prevents two workers using the same state directory. Restarting the worker adopts an existing container by its persisted identity and ownership labels. Failed operations retry at most five times; stop/start explicitly after correcting a terminal failure. Runtime identities expire after 30 days; stop/start renews them.
-
-The API's `configured` worker/gateway status describes installed capability, not a live heartbeat. Inspect operation results and `docker compose logs worker gateway` for health.
+Wait until `pg_isready` reports accepting connections, then run:
 
 ```sh
-TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos uv run pytest tests/integration/test_lifecycle.py
-TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos TALOS_TEST_DOCKER=1 uv run pytest tests/integration/test_lifecycle_docker.py
+docker run --rm --network host \
+  --env TALOS_TEST_DATABASE_URL=postgresql+psycopg://postgres:talos-test-password@127.0.0.1:55432/postgres \
+  --env TALOS_TEST_DOCKER=1 \
+  --volume /var/run/docker.sock:/var/run/docker.sock \
+  talos-verification:local python -m pytest -q
+docker rm --force --volumes talos-test-db
 ```
 
-## Diagnostic workflow
+For an existing disposable PostgreSQL instance, set `TALOS_TEST_DATABASE_URL` and run `uv run pytest tests/integration`; add `TALOS_TEST_DOCKER=1` for actual Docker-resource checks. Default Compose does not expose its database to host tests.
 
-In the dashboard, create an agent with its display name and employee label, wait for **Stopped**, then start it and wait for **Ready**. Send a short diagnostic message to see the deterministic fixture response. Add `[slow]` to exercise cancellation. No real model or integration is called.
+RAM-backed test options (`TALOS_PROOF_RAM_VOLUMES=1` and `TALOS_TEST_TMPFS_VOLUMES=1`) exist for constrained development machines. Such runs verify process-level behavior, not physical disk or Docker-daemon restart persistence. Linux-container checks also do not establish a clean native-Linux installation or production readiness. A disk-backed backup/restore and daemon-restart acceptance run remains necessary before retaining important data.
 
-The API is `POST /api/v1/agents/{id}/diagnostic-runs` with `{ "message": "hello" }` and an `Idempotency-Key`. Read `GET /api/v1/runs/{id}`, poll `GET /api/v1/runs/{id}/events?after=0`, or request `POST /api/v1/runs/{id}/cancel`. Events are ordered and paginated in batches of 100. One unresolved diagnostic is permitted per agent; messages are limited to 4,000 characters.
+## Stop, back up, and update
 
-Cancellation is a request until OpenClaw confirms the terminal state. A lost acknowledgment or worker restart during delivery produces **Unknown**, never an automatic resend. Stop the agent to resolve an unknown run, then start it before submitting another. Diagnostic messages and output are stored in PostgreSQL; use only synthetic input in this prototype. The UI remembers the most recent operation/run IDs in local browser storage; full history browsing is deferred.
+**Stop or delete agents through Talos first and wait for their operations.** Then use `docker compose down` to stop the platform. Dynamically created agent containers are not Compose services: `down` alone does not stop them. Normal `down` preserves named volumes.
+
+`docker compose down --volumes` destroys the platform database and worker credentials, but does not clean up dynamically created agent volumes. Do not use it to uninstall an installation with agents still present; delete agents through Talos while the database and worker are available. Avoid broad Docker prune commands.
+
+Backups are manual. After stopping agents, stop API/worker/gateway writes, then take a consistent PostgreSQL backup and volume snapshots. Preserve the `worker-state` volume, each agent's state/config volumes, `.env`, the checked-out commit, and runtime digest alongside the database. Default platform volume names are `talos_postgres-data` and `talos_worker-state`; dynamic agent resources carry `io.talos.project`, `io.talos.installation`, and `io.talos.agent` labels. Protect these backups: worker-state and configuration volumes contain workload credentials. A database dump alone cannot restore the installation.
+
+For updates, retain those backups, keep the Compose project and installation identifiers unchanged, check out a reviewed commit, pull its approved runtime digest, and rerun `docker compose up --build -d`. Migrations run before services start. Do not edit the pin to a newer OpenClaw image without updating and validating its driver contract. Automated rollback, runtime upgrades, and backup/restore orchestration are not implemented; restore the matching database, volumes, and code together if rollback is needed.
+
+## Troubleshooting
 
 ```sh
-TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos uv run pytest tests/integration/test_diagnostics.py
+docker compose ps -a
+docker compose logs migrate api worker gateway
 ```
+
+- **Readiness fails:** inspect `migrate` and database health first. `/health/ready` requires the database schema to match the application migration head.
+- **Start fails:** confirm the exact runtime image was pulled, Docker has free disk/memory, and the worker can reach its socket. Transient Docker/runtime operation failures retry up to five times. After correcting a terminal failure, start the agent again.
+- **Docker storage is full:** if OpenClaw exits with `ENOSPC` during startup, Talos stops retrying and reports the storage error. Inspect Docker usage with `docker system df`, free space in Docker's own disk, then start the agent again. On Docker Desktop, free host disk space does not necessarily mean its VM has free space. Preserve agent and database volumes when cleaning up.
+- **Database temporarily unavailable:** the worker waits and retries the same durable operation. Diagnostic delivery that cannot be confirmed becomes Unknown when the database returns; it is never automatically resent.
+- **Unknown diagnostic:** stop the agent and wait for confirmation before starting it again. Repeated message submission cannot resolve uncertain upstream work.
+- **Gateway access expires:** stop/start renews the 30-day incarnation identity. Never copy agent tokens into browser requests.
+- **Missing worker credentials or ownership mismatch:** inspect the error and restore matching installation state. Talos refuses to adopt resources that do not match its recorded identity and labels.
+- **Platform shutdown leaves agent containers running:** stop them through the dashboard before bringing the platform down, as described above.
+
+While idle, the worker checks running agents and reconnects replaced platform containers. Failed probes mark an agent Degraded; a successful later probe restores Ready. These checks yield to queued lifecycle work.
+
+The worker restarts automatically after a process failure; an explicit Compose stop keeps it stopped. Run only one worker per installation and preserve its private state. A lock prevents workers sharing that state directory from running concurrently; it does not coordinate separate worker volumes. Dashboard worker/gateway capability labels are not live heartbeats—use operation results and service logs.
