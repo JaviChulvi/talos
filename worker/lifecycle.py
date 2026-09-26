@@ -40,6 +40,10 @@ class OwnershipError(RuntimeError):
     pass
 
 
+class StorageFullError(RuntimeError):
+    message = "Docker storage is full. Free Docker disk space, then start the agent again."
+
+
 def require_labels(actual: dict, expected: dict):
     if any(actual.get(key) != value for key, value in expected.items()):
         raise OwnershipError("Docker resource does not belong to this agent installation")
@@ -308,6 +312,9 @@ class Worker:
         while time.monotonic() < deadline:
             await asyncio.to_thread(container.reload)
             if container.status != "running":
+                output = await asyncio.to_thread(container.logs, tail=40)
+                if b"ENOSPC" in output:
+                    raise StorageFullError()
                 raise RuntimeError("Runtime exited before readiness")
             client = OpenClawClient(
                 f"ws://{container.name}:18789", token, identity, timeout=10 if retry else 2
@@ -534,17 +541,24 @@ class Worker:
         except OperationalError:
             raise
         except Exception as error:
+            message = (
+                StorageFullError.message
+                if isinstance(error, StorageFullError)
+                else f"{type(error).__name__}: lifecycle operation failed"
+            )
             logging.error(
                 "Lifecycle %s failed for operation %s: %s",
                 operation.action,
                 operation.id,
-                type(error).__name__,
+                message,
             )
             with self.sessions.begin() as session:
                 current = session.get(Operation, operation.id)
-                terminal = current.attempts >= MAX_ATTEMPTS or isinstance(error, OwnershipError)
+                terminal = current.attempts >= MAX_ATTEMPTS or isinstance(
+                    error, (OwnershipError, StorageFullError)
+                )
                 current.status = "failed" if terminal else "retry_wait"
-                current.error = f"{type(error).__name__}: lifecycle operation failed"
+                current.error = message
                 current.next_retry_at = (
                     None
                     if terminal
