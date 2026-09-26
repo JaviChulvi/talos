@@ -22,6 +22,7 @@ from sqlalchemy.exc import OperationalError
 
 from backend.app.config import get_settings
 from backend.app.db import session_factory
+from backend.app.diagnostics import mark_runs_stopped
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     RUNTIME_RELEASE,
@@ -336,10 +337,10 @@ class Worker:
         raise TimeoutError("OpenClaw readiness deadline exceeded")
 
     def mark_stopped(self, session, agent: Agent):
-        # F5 adds diagnostic cancellation here after Docker confirms the stop.
         agent.observed_state = "stopped"
+        mark_runs_stopped(session, agent.id)
 
-    def recover(self):
+    def recover(self, *, yield_to_operations=True):
         """Reconcile existing runtimes without restarting them or replaying work."""
         active = (
             select(Operation.id)
@@ -362,7 +363,7 @@ class Worker:
             try:
                 with self.sessions() as session:
                     # Yield between probes when lifecycle work becomes runnable.
-                    if session.scalar(
+                    if yield_to_operations and session.scalar(
                         select(Operation.id)
                         .where(
                             Operation.status.in_(ACTIVE_OPERATION_STATUSES),

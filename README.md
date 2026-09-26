@@ -4,7 +4,7 @@ A self-hosted platform for managing personal employee agents while a company con
 
 The project is planned as an open-source platform inspired by Coolify's approach to deploying and operating workloads. It focuses on giving each employee a useful personal agent with company-managed access to external services.
 
-**Status:** Foundation development. This branch provides the local service stack and status screen. Agent lifecycle, permissions, and integrations are being added in dependent PRs; this is not ready for shared employee access.
+**Status:** Local foundation prototype. Create, start, stop, and delete OpenClaw agents, then send a synthetic diagnostic message and inspect its persisted result. Business permissions, real integrations, budgets, and user authentication are not implemented. This is not ready for shared employee access.
 
 ## Project Overview
 
@@ -51,7 +51,7 @@ Containers on one host share a kernel. This initial deployment targets a single 
 | Integration gateway | Separate Python/FastAPI process enforcing permissions and holding provider credentials |
 | Model access | Python gateway enforcing approved models and spending limits |
 | API transport | REST/JSON |
-| Chat and activity streaming | Server-Sent Events (SSE) |
+| Diagnostic updates | REST polling |
 | User authentication | Deferred for the local prototype |
 | Agent authentication | Per-agent gateway credentials from the beginning |
 | Installation | Docker Compose on one Linux machine |
@@ -92,7 +92,7 @@ docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/op
 docker compose up --build -d
 ```
 
-Open http://127.0.0.1:8000. PostgreSQL is private; the API is published on loopback only. The migration service must finish before the API, worker, and gateway start. The status screen identifies the worker and gateway as scaffolds until their later implementation steps.
+Open http://127.0.0.1:8000. PostgreSQL is private; the API is published on loopback only. The migration service must finish before the API, worker, and gateway start. The dashboard polls durable agent, operation, and diagnostic state. Worker and gateway capability labels are not live heartbeats.
 
 ```sh
 docker compose ps
@@ -156,4 +156,16 @@ The API's `configured` worker/gateway status describes installed capability, not
 ```sh
 TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos uv run pytest tests/integration/test_lifecycle.py
 TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos TALOS_TEST_DOCKER=1 uv run pytest tests/integration/test_lifecycle_docker.py
+```
+
+## Diagnostic workflow
+
+In the dashboard, create an agent with its display name and employee label, wait for **Stopped**, then start it and wait for **Ready**. Send a short diagnostic message to see the deterministic fixture response. Add `[slow]` to exercise cancellation. No real model or integration is called.
+
+The API is `POST /api/v1/agents/{id}/diagnostic-runs` with `{ "message": "hello" }` and an `Idempotency-Key`. Read `GET /api/v1/runs/{id}`, poll `GET /api/v1/runs/{id}/events?after=0`, or request `POST /api/v1/runs/{id}/cancel`. Events are ordered and paginated in batches of 100. One unresolved diagnostic is permitted per agent; messages are limited to 4,000 characters.
+
+Cancellation is a request until OpenClaw confirms the terminal state. A lost acknowledgment or worker restart during delivery produces **Unknown**, never an automatic resend. Stop the agent to resolve an unknown run, then start it before submitting another. Diagnostic messages and output are stored in PostgreSQL; use only synthetic input in this prototype. The UI remembers the most recent operation/run IDs in local browser storage; full history browsing is deferred.
+
+```sh
+TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos uv run pytest tests/integration/test_diagnostics.py
 ```

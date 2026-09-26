@@ -2,7 +2,9 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -106,3 +108,54 @@ class Operation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+ACTIVE_RUN_STATUSES = ("queued", "dispatching", "running", "cancel_requested", "unknown")
+TERMINAL_RUN_STATUSES = ("completed", "cancelled", "failed", "interrupted")
+
+
+class Run(Base):
+    __tablename__ = "runs"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "idempotency_key", name="uq_run_idempotency"),
+        Index(
+            "uq_run_active_agent",
+            "agent_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('queued', 'dispatching', 'running', 'cancel_requested', 'unknown')"
+            ),
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'dispatching', 'running', 'completed', "
+            "'cancel_requested', 'cancelled', 'failed', 'unknown', 'interrupted')"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
+    incarnation_id: Mapped[UUID] = mapped_column(ForeignKey("workload_incarnations.id"))
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    upstream_run_id: Mapped[str | None] = mapped_column(String(128))
+    output: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(String(255))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    event_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RunEvent(Base):
+    __tablename__ = "run_events"
+    __table_args__ = (CheckConstraint("sequence > 0"),)
+
+    run_id: Mapped[UUID] = mapped_column(ForeignKey("runs.id"), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    type: Mapped[str] = mapped_column(String(30))
+    payload: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
