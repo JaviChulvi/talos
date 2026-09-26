@@ -133,7 +133,8 @@ class OpenClawClient:
         self._socket = await connect(
             self.url,
             open_timeout=self.timeout,
-            max_size=2 * 1024 * 1024,
+            # Match the pinned Gateway's frame limit, including history responses.
+            max_size=25 * 1024 * 1024,
             proxy=None,
         )
         try:
