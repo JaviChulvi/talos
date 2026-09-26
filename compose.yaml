@@ -31,6 +31,7 @@ services:
       db: {condition: service_healthy}
   api:
     <<: *platform
+    networks: [control, ingress]
     ports: ["127.0.0.1:${TALOS_PORT:-8000}:8000"]
     depends_on:
       migrate: {condition: service_completed_successfully}
@@ -52,6 +53,7 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
 networks:
+  ingress:
   control:
     internal: true
 volumes:
