@@ -131,3 +131,15 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock talos-verification:
 ```
 
 Only this trusted verification runner gets the Docker socket; employee runtimes do not. The check uses normal named volumes by default. A test-only `TALOS_PROOF_RAM_VOLUMES=1` option is available for constrained development machines, but does not establish disk or daemon-restart persistence.
+
+## Durable agent API
+
+`POST /api/v1/agents` accepts `display_name` and `employee_label`. Create, start, stop, and delete requests require an `Idempotency-Key` header and return a durable operation with HTTP 202. Read its status through `GET /api/v1/operations/{id}`. Replaying the same key returns the original operation; changing its request or submitting conflicting work returns HTTP 409.
+
+In this API-only layer, operations stay queued until the lifecycle worker is implemented. Queued means accepted, not running. Agent and operation records survive API process restarts. A fresh start request on an already ready agent is rejected; stop it first.
+
+PostgreSQL checks use a random schema and remove only that schema afterward:
+
+```sh
+TALOS_TEST_DATABASE_URL=postgresql+psycopg://talos:password@127.0.0.1:5432/talos uv run pytest tests/integration/test_agents.py
+```
