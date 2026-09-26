@@ -42,6 +42,8 @@ def gateway(monkeypatch, tmp_path):
     calls = []
     state = SimpleNamespace(
         status=200,
+        settings={},
+        reports=[],
         data=frame("Hello from upstream", "stop") + "data: [DONE]\n\n",
     )
 
@@ -61,7 +63,13 @@ def gateway(monkeypatch, tmp_path):
         ),
     )
     app = FastAPI()
-    app.include_router(model_router(lambda token: token == "talos-agent", lambda _: MODEL))
+    app.include_router(
+        model_router(
+            lambda token: token == "talos-agent",
+            lambda _: {"model_id": MODEL, "run_id": "run", "settings": state.settings},
+            record_usage=lambda _run, report: state.reports.append(report),
+        )
+    )
     with TestClient(app) as client:
         yield client, calls, state
 
@@ -95,8 +103,7 @@ def test_routes_only_admitted_model_and_never_forwards_caller_credentials(gatewa
         "model": MODEL,
         "messages": BODY["messages"],
         "stream": True,
-        "max_tokens": 1024,
-        "reasoning": {"enabled": False},
+        "stream_options": {"include_usage": True},
     }
     if stream:
         assert response.text.endswith("data: [DONE]\n\n")
@@ -112,7 +119,7 @@ def test_denies_identity_models_images_and_oversized_input_before_upstream(gatew
         {**BODY, "messages": [{"role": "user", "content": [{"type": "image_url"}]}]},
     ):
         assert client.post("/v1/chat/completions", headers=HEADERS, json=bad).status_code == 400
-    large = {**BODY, "messages": [{"role": "user", "content": "x" * 262145}]}
+    large = {**BODY, "messages": [{"role": "user", "content": "x" * 16_777_217}]}
     assert client.post("/v1/chat/completions", headers=HEADERS, json=large).status_code == 413
     assert calls == []
 
@@ -130,7 +137,7 @@ def test_provider_failures_are_sanitized_and_never_finish_successfully(gateway, 
     elif failure == "malformed":
         state.data = "data: {broken provider-secret\n\n"
     else:
-        state.data = frame("x" * 16001, "stop") + "data: [DONE]\n\n"
+        state.data = frame("x" * (openrouter.MAX_OUTPUT + 1), "stop") + "data: [DONE]\n\n"
     response = client.post("/v1/chat/completions", headers=HEADERS, json={**BODY, "stream": stream})
     assert "provider-secret" not in response.text
     assert "[DONE]" not in response.text
@@ -193,3 +200,75 @@ def test_silent_upstream_is_closed_on_revocation_timeout_or_disconnect(monkeypat
         assert closed.is_set() or not entered.is_set()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_explicit_settings_reasoning_usage_and_length_finish(gateway, stream):
+    client, calls, state = gateway
+    state.settings = {
+        "reasoning_effort": "high",
+        "max_output_tokens": 8000,
+        "temperature": 0.7,
+        "top_p": 0.9,
+    }
+    reasoning = {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "reasoning": "Thinking",
+                    "reasoning_details": [{"type": "reasoning.text", "text": "Thinking"}],
+                },
+            }
+        ]
+    }
+    usage = {
+        "id": "generation-1",
+        "model": MODEL,
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 8000,
+            "total_tokens": 8020,
+            "cost": 0.002,
+            "completion_tokens_details": {"reasoning_tokens": 8000},
+        },
+    }
+    state.data = (
+        "data: "
+        + json.dumps(reasoning)
+        + "\n\n"
+        + frame("", "length")
+        + "data: "
+        + json.dumps(usage)
+        + "\n\ndata: [DONE]\n\n"
+    )
+    response = client.post("/v1/chat/completions", headers=HEADERS, json={**BODY, "stream": stream})
+    assert response.status_code == 200
+    payload = json.loads(calls[0].content)
+    assert payload["reasoning"] == {"effort": "high"}
+    assert payload["max_tokens"] == 8000
+    assert payload["temperature"] == 0.7 and payload["top_p"] == 0.9
+    assert payload["provider"] == {"require_parameters": True}
+    report = state.reports[0]
+    assert report["outcome"] == "length" and report["finish_reason"] == "length"
+    assert report["input_tokens"] == 20 and report["reasoning_tokens"] == 8000
+    assert report["cost"] == 0.002 and report["duration_ms"] >= 0
+    assert "Thinking" in response.text
+    if not stream:
+        assert response.json()["usage"]["total_tokens"] == 8020
+
+
+def test_missing_usage_is_not_recorded_as_zero(gateway):
+    client, _, state = gateway
+    assert client.post("/v1/chat/completions", headers=HEADERS, json=BODY).status_code == 200
+    assert state.reports[0]["outcome"] == "completed"
+    assert "cost" not in state.reports[0] and "input_tokens" not in state.reports[0]
+
+
+def test_reasoning_counts_towards_operational_output_limit(gateway, monkeypatch):
+    client, _, state = gateway
+    monkeypatch.setattr(openrouter, "MAX_OUTPUT", 50)
+    state.data = "data: " + json.dumps({"choices": [{"delta": {"reasoning": "x" * 51}}]}) + "\n\n"
+    assert client.post("/v1/chat/completions", headers=HEADERS, json=BODY).status_code == 502
+    assert state.reports[0]["outcome"] == "output_limit"

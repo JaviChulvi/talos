@@ -148,7 +148,7 @@ To enable external inference:
 
 4. In **Agents → Model for all agents**, select the **DeepSeek** lab icon, then **DeepSeek V4 Flash 0731**
    (`deepseek/deepseek-v4-flash-0731`, the recommended entry) and click
-   **Apply model**. Other compatible text models come from OpenRouter's public
+   **Apply settings**. Other compatible text models come from OpenRouter's public
    catalog. If the catalog is unavailable, the saved selection keeps working
    and you can still select the local simulator.
 5. For agents created before this integration, stop/start once to switch their
@@ -159,7 +159,7 @@ The lab picker groups the live catalog by model author and shows locally bundled
 [Lobe Icons](https://github.com/lobehub/lobe-icons) logos. Hover labels and accessible
 names identify each lab; unrecognized labs use initials and remain selectable.
 Choosing a lab filters the model list without changing the active selection until
-**Apply model** is clicked.
+**Apply settings** is clicked.
 
 Use the same Compose file pair for subsequent updates and shutdowns. Only the
 gateway joins the additional outbound network and mounts the secret; agents
@@ -168,12 +168,41 @@ The public model catalog is fetched by the API without a provider credential.
 Key rotation requires replacing the secret and recreating the gateway; the worker
 reconnects it to agent networks during reconciliation.
 
-The gateway accepts only the `default` and `fixture` aliases. Real inference uses
-the admitted run's server-owned model snapshot, a fixed HTTPS OpenRouter endpoint,
-text-only messages, a 1,024-token completion cap, a 16,000-character output cap,
-and a 120-second total timeout. Reasoning is disabled for this initial text-chat
-integration. Caller-supplied routing, credentials, tools and token-limit overrides
-are not forwarded. Tool, browser, and plugin access remains disabled.
+Real inference uses the admitted run's server-owned model, capability and settings
+snapshot and a fixed HTTPS OpenRouter endpoint. By default Talos omits reasoning,
+output-token and sampling parameters: the provider chooses its defaults and still
+enforces its own limits. **Advanced settings** allows explicit reasoning effort,
+maximum output tokens (including reasoning), temperature and top P where supported.
+The API checks the current catalog, rejects disabling mandatory reasoning and
+requests a provider that supports all explicit settings. Switching models resets
+unsaved overrides. Apply settings once after upgrading an existing installation
+to load its selected model's capabilities.
+
+Before sending a new run, the trusted worker atomically publishes the snapshotted
+model profile into the existing read-only runtime config volume. It waits for
+OpenClaw's hot-reloaded model catalog, then selects that profile for the session.
+Context and output capacity come from the catalog, not the fixture's metadata.
+Only model configuration changes; runtime security and launch ownership labels
+remain unchanged. The gateway ignores runtime-supplied generation parameters and
+uses only the admitted operator settings. Tool, browser and plugin access remains
+disabled. Managed aliases (`default`, `talos-…`) resolve to the admitted model;
+`fixture` retains the offline simulator.
+
+Each provider call records reported input, output and reasoning tokens, cost in
+USD, duration and finish reason. Missing usage or cost stays unavailable rather
+than zero, including cancelled requests without final accounting. A provider
+`length` finish is shown as **Output limit reached**. Calls within the same run
+are recorded separately; these records are observability, not a billing ledger.
+
+Operational safeguards are separate from generation settings. Compose exposes
+`TALOS_INFERENCE_TIMEOUT_SECONDS` (1800),
+`TALOS_INFERENCE_IDLE_TIMEOUT_SECONDS` (300),
+`TALOS_INFERENCE_MAX_OUTPUT_CHARS` (4000000, including reasoning transport data),
+and `TALOS_INFERENCE_MAX_REQUEST_BYTES` (16777216). The runtime and worker deadlines
+include a small grace period after the gateway deadline. These generous defaults
+bound stalled requests and memory/storage use; there is no default Talos token
+budget and no 500-event cutoff. OpenClaw and the provider retain their own protocol
+and context limits. Explicit timeout and resource-limit failures are recorded.
 
 The gateway checks admission, expiry, cancellation and revocation during requests,
 including while waiting for a silent provider. Disconnects close the upstream
@@ -186,7 +215,7 @@ Do not expose it publicly; employee accounts and authorization remain future wor
 No provider-management, subscription sharing, spending budgets, or API fallback
 is included. The protocol proof covers the real pinned OpenClaw container with a
 controlled upstream transport, including model changes, provider failures and
-cancellation. To opt into one bounded, paid DeepSeek V4 Flash check as well, run
+cancellation. To opt into one paid DeepSeek V4 Flash check as well, run
 the verifier with your key mounted read-only (never pass the key value on the
 command line):
 
@@ -198,7 +227,7 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 ```
 
 The live check uses the pinned OpenClaw container and the gateway transport; it
-makes a short request with a 1,024-token maximum. Normal tests use no provider key.
+makes a short request with provider defaults (and therefore no fixed token budget). Normal tests use no provider key.
 
 ## Stop, back up, and update
 

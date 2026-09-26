@@ -8,7 +8,7 @@ from backend.app.db import session_factory
 from backend.app.models import Agent, Run, WorkloadIncarnation
 
 
-def validate_token(token: str, *, require_run: bool = False) -> bool:
+def validate_token(token: str, *, require_run: bool = False, run_id=None) -> bool:
     if not 20 <= len(token) <= 256:
         return False
     digest = hashlib.sha256(token.encode()).hexdigest()
@@ -33,6 +33,7 @@ def validate_token(token: str, *, require_run: bool = False) -> bool:
                         Run.incarnation_id == WorkloadIncarnation.id,
                         Run.status.in_(("dispatching", "running")),
                         Run.cancel_requested.is_(False),
+                        Run.id == run_id if run_id is not None else True,
                     )
                     .exists()
                 )
@@ -41,18 +42,26 @@ def validate_token(token: str, *, require_run: bool = False) -> bool:
         return False
 
 
-def selected_model(token: str) -> str:
-    """Use the admitted run snapshot, so changing selection cannot reroute an active run."""
+def selected_request(token: str) -> dict:
     digest = hashlib.sha256(token.encode()).hexdigest()
     with session_factory()() as session:
-        model = session.scalar(
-            select(Run.model_id)
+        run = session.scalar(
+            select(Run)
             .join(WorkloadIncarnation, Run.incarnation_id == WorkloadIncarnation.id)
             .where(
                 WorkloadIncarnation.gateway_token_hash == digest,
                 Run.status.in_(("dispatching", "running")),
+                Run.cancel_requested.is_(False),
             )
         )
-        if model is None:
+        if run is None:
             raise ValueError("No admitted inference request")
-        return model
+        return {"run_id": str(run.id), "model_id": run.model_id, **run.inference}
+
+
+def record_inference(run_id: str, report: dict):
+    from uuid import UUID
+
+    with session_factory().begin() as session:
+        run = session.get(Run, UUID(run_id), with_for_update=True)
+        run.inference_calls = [*run.inference_calls, report]

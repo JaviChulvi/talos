@@ -1,5 +1,6 @@
 """Server-owned OpenClaw launch contract; callers cannot supply Docker settings."""
 
+import hashlib
 import io
 import json
 import tarfile
@@ -63,6 +64,43 @@ def runtime_config(
     }
 
 
+def model_profile(config: dict, model_id: str, capabilities: dict) -> tuple[dict, str]:
+    """Only the trusted worker replaces inference fields in the launch contract."""
+    if model_id == "fixture":
+        return config, "default"
+    if not capabilities.get("context_length"):
+        raise ValueError("Apply the model selection to refresh its capabilities")
+    identifier = (
+        "talos-"
+        + hashlib.sha256(
+            json.dumps({"model": model_id, "capabilities": capabilities}, sort_keys=True).encode()
+        ).hexdigest()[:20]
+    )
+    provider = config["models"]["providers"]["foundation"]
+    provider["models"] = [
+        {
+            "id": identifier,
+            "name": capabilities.get("name", model_id),
+            "reasoning": bool(capabilities.get("reasoning"))
+            or bool(
+                {"reasoning", "reasoning_effort"}.intersection(
+                    capabilities.get("supported_parameters", [])
+                )
+            ),
+            "input": ["text"],
+            "contextWindow": capabilities["context_length"],
+            **(
+                {"maxTokens": capabilities["max_completion_tokens"]}
+                if capabilities.get("max_completion_tokens")
+                else {}
+            ),
+        }
+    ]
+    config["agents"]["defaults"]["model"] = {"primary": f"foundation/{identifier}"}
+    config["agents"]["defaults"]["models"] = {f"foundation/{identifier}": {}}
+    return config, identifier
+
+
 def launch_options(name: str, volume: str, network: str, config_volume: str, labels: dict) -> dict:
     return {
         "image": IMAGE,
@@ -120,6 +158,7 @@ def prepare_volumes(client, state_name: str, config_name: str, config: dict, lab
         entrypoint=["node", "-e"],
         command=[
             "const fs=require('fs');fs.chownSync('/state',1000,1000);fs.chmodSync('/state',448);"
+            "fs.renameSync('/config/openclaw.json.next','/config/openclaw.json');"
         ],
         volumes={
             state_name: {"bind": "/state", "mode": "rw"},
@@ -137,7 +176,7 @@ def prepare_volumes(client, state_name: str, config_name: str, config: dict, lab
         data = io.BytesIO()
         payload = json.dumps(config).encode()
         with tarfile.open(fileobj=data, mode="w") as archive:
-            entry = tarfile.TarInfo("openclaw.json")
+            entry = tarfile.TarInfo("openclaw.json.next")
             entry.size, entry.mode, entry.uid, entry.gid = len(payload), 0o400, 1000, 1000
             archive.addfile(entry, io.BytesIO(payload))
         initializer.put_archive("/config", data.getvalue())

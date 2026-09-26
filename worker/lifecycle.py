@@ -31,7 +31,14 @@ from backend.app.models import (
     WorkloadIncarnation,
 )
 from worker.openclaw import DeviceIdentity, GatewayError, OpenClawClient
-from worker.runtime import IMAGE, approve_device, launch_options, prepare_volumes, runtime_config
+from worker.runtime import (
+    IMAGE,
+    approve_device,
+    launch_options,
+    model_profile,
+    prepare_volumes,
+    runtime_config,
+)
 
 MAX_ATTEMPTS = 5
 
@@ -95,6 +102,70 @@ async def connect_runtime(sessions, agent_id: UUID) -> OpenClawClient:
     return await OpenClawClient(
         f"ws://{name}:18789", credentials["control_token"], identity
     ).connect()
+
+
+async def configure_inference(sessions, run, client):
+    """Publish a model profile before send, then wait for the runtime's active catalog."""
+    with sessions() as session:
+        incarnation = session.get(WorkloadIncarnation, run.incarnation_id)
+        if incarnation.model_route == "fixture":
+            return
+        credentials = read_credentials(incarnation)
+    config, identifier = model_profile(
+        runtime_config(
+            credentials["control_token"],
+            credentials["agent_token"],
+            "http://talos-gateway:8001",
+            model_route="default",
+        ),
+        run.model_id,
+        run.inference.get("capabilities", {}),
+    )
+
+    async def loaded():
+        try:
+            result = await client.request("models.list", {})
+        except GatewayError as error:
+            if "Model catalog is not ready" in str(error):
+                return False
+            raise
+        return any(
+            m.get("id") == identifier and m.get("provider") == "foundation"
+            for m in result.get("models", [])
+        )
+
+    if not await loaded():
+
+        def publish():
+            worker = Worker(sessions=sessions)
+            try:
+                # Reuse the same labeled, network-isolated volume writer as startup.
+                worker.owned_container(incarnation)
+                state, _ = worker.names(run.agent_id)
+                prepare_volumes(
+                    worker.client,
+                    state,
+                    incarnation.config_volume,
+                    config,
+                    worker.labels(run.agent_id),
+                )
+            finally:
+                worker.client.close()
+
+        await asyncio.to_thread(publish)
+        deadline = time.monotonic() + 30
+        while not await loaded():
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Runtime did not load the selected model profile")
+            await asyncio.sleep(0.25)
+    await client.request(
+        "sessions.patch",
+        {
+            "key": f"agent:main:talos:{run.agent_id}",
+            "model": f"foundation/{identifier}",
+            "thinkingLevel": None,
+        },
+    )
 
 
 class Worker:

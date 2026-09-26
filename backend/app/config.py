@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     lifecycle_poll_seconds: float = Field(default=1, ge=0.1, le=60)
     readiness_timeout_seconds: int = Field(default=120, ge=10, le=600)
 
+    # Operational resource limits, independent of model generation settings.
+    inference_timeout_seconds: int = Field(default=1800, ge=30)
+    inference_idle_timeout_seconds: int = Field(default=300, ge=30)
+    inference_max_output_chars: int = Field(default=4_000_000, ge=16000)
+    inference_max_request_bytes: int = Field(default=16_777_216, ge=262144)
+
     @property
     def connection_url(self) -> URL:
         url = make_url(self.database_url)

@@ -319,12 +319,14 @@ def test_cancel_while_connecting_prevents_send(client, sessions, agent_id):
 def test_oversized_output_becomes_unknown_without_persisting_raw_payload(
     client, sessions, agent_id
 ):
+    from worker.diagnostics import MAX_OUTPUT
+
     run_id = UUID(submit(client, agent_id).json()["id"])
 
     class OversizedDriver(FakeDriver):
         async def send(self, session_key, message, run_id):
             self.run_id = run_id
-            self.event({"state": "delta", "deltaText": "x" * 16001})
+            self.event({"state": "delta", "deltaText": "x" * (MAX_OUTPUT + 1)})
             return {"runId": run_id}
 
     asyncio.run(drain(manager_for(sessions, OversizedDriver())))
@@ -400,7 +402,14 @@ def test_model_selection_snapshots_requests_and_old_runtimes_stay_fixture(
 
     async def catalog():
         return [
-            {"id": "deepseek/deepseek-v4-flash-0731", "name": "DeepSeek"},
+            {
+                "id": "deepseek/deepseek-v4-flash-0731",
+                "name": "DeepSeek",
+                "context_length": 64000,
+                "max_completion_tokens": 8000,
+                "supported_parameters": ["reasoning", "max_tokens"],
+                "reasoning": {"mandatory": True, "supported_efforts": ["low", "high"]},
+            },
             {"id": "other/model", "name": "Other"},
         ]
 
@@ -408,6 +417,29 @@ def test_model_selection_snapshots_requests_and_old_runtimes_stay_fixture(
     first = "deepseek/deepseek-v4-flash-0731"
     assert client.put("/api/v1/inference", json={"model_id": "unknown"}).status_code == 400
     assert client.put("/api/v1/inference", json={"model_id": first}).status_code == 200
+    assert (
+        client.put(
+            "/api/v1/inference", json={"model_id": first, "settings": {"reasoning_effort": "none"}}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.put(
+            "/api/v1/inference", json={"model_id": first, "settings": {"max_output_tokens": 9000}}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.put(
+            "/api/v1/inference", json={"model_id": first, "settings": {"temperature": 1}}
+        ).status_code
+        == 400
+    )
+    overrides = {"reasoning_effort": "high", "max_output_tokens": 7000}
+    assert (
+        client.put("/api/v1/inference", json={"model_id": first, "settings": overrides}).status_code
+        == 200
+    )
     # A pre-upgrade incarnation keeps its existing fixture configuration until stop/start.
     assert submit(client, agent_id).json()["model_id"] == "fixture"
     with sessions.begin() as session:
@@ -419,8 +451,10 @@ def test_model_selection_snapshots_requests_and_old_runtimes_stay_fixture(
     assert response.status_code == 202
     run_id = response.json()["id"]
     assert response.json()["model_id"] == first
+    assert response.json()["inference"]["settings"] == overrides
     assert client.put("/api/v1/inference", json={"model_id": "other/model"}).status_code == 200
     assert client.get(f"/api/v1/runs/{run_id}").json()["model_id"] == first
+    assert client.get(f"/api/v1/runs/{run_id}").json()["inference"]["settings"] == overrides
     with sessions.begin() as session:
         session.get(Run, UUID(run_id)).status = "completed"
     assert submit(client, agent_id, key="next-model").json()["model_id"] == "other/model"
@@ -433,7 +467,7 @@ def test_gateway_requires_admission_and_revokes_on_cancel(sessions, agent_id, mo
     import hashlib
     from datetime import UTC, datetime, timedelta
 
-    from gateway.identity import selected_model, validate_token
+    from gateway.identity import record_inference, selected_request, validate_token
 
     token = "test-workload-token-at-least-twenty-chars"
     monkeypatch.setattr("gateway.identity.session_factory", lambda: sessions)
@@ -459,7 +493,13 @@ def test_gateway_requires_admission_and_revokes_on_cancel(sessions, agent_id, mo
         session.flush()
         run_id = run.id
     assert validate_token(token, require_run=True)
-    assert selected_model(token) == "deepseek/deepseek-v4-flash-0731"
+    assert selected_request(token)["model_id"] == "deepseek/deepseek-v4-flash-0731"
+    assert validate_token(token, require_run=True, run_id=str(run_id))
+    assert not validate_token(token, require_run=True, run_id=str(uuid4()))
+    report = {"outcome": "length", "reasoning_tokens": 1500, "cost": 0.01}
+    record_inference(str(run_id), report)
+    with sessions() as session:
+        assert session.get(Run, run_id).inference_calls == [report]
     with sessions.begin() as session:
         session.get(Run, run_id).cancel_requested = True
     assert not validate_token(token, require_run=True)

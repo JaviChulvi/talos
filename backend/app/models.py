@@ -145,6 +145,8 @@ class Run(Base):
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
     incarnation_id: Mapped[UUID] = mapped_column(ForeignKey("workload_incarnations.id"))
     model_id: Mapped[str] = mapped_column(String(255), default="fixture")
+    inference: Mapped[dict] = mapped_column(JSON, default=dict)
+    inference_calls: Mapped[list] = mapped_column(JSON, default=list)
     message: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="queued")
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -177,3 +179,5 @@ class InferenceConfig(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     model_id: Mapped[str] = mapped_column(String(255), default="fixture")
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict)

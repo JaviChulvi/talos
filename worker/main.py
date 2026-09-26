@@ -6,7 +6,7 @@ from sqlalchemy.exc import OperationalError
 
 from backend.app.config import get_settings
 from worker.diagnostics import DiagnosticManager
-from worker.lifecycle import Worker, connect_runtime, worker_lock
+from worker.lifecycle import Worker, configure_inference, connect_runtime, worker_lock
 
 
 async def run():
@@ -31,7 +31,9 @@ async def run():
                     # A replacement worker must attach to existing agent networks
                     # before it can dispatch their persisted diagnostic queue.
                     await asyncio.to_thread(worker.recover, yield_to_operations=False)
-                    diagnostics = DiagnosticManager(worker.sessions, connect_runtime)
+                    diagnostics = DiagnosticManager(
+                        worker.sessions, connect_runtime, configure=configure_inference
+                    )
                 await diagnostics.tick()
                 if task is None or task.done():
                     if task is not None:

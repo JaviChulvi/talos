@@ -504,7 +504,16 @@ def test_replacement_worker_recovers_network_before_queued_diagnostic(
         name="platform-worker", labels=worker.service_labels("worker")
     )
     replacement.start()
-    driver = FakeDriver()
+
+    class ProfileDriver(FakeDriver):
+        async def request(self, method, params):
+            if method == "models.list":
+                return {"models": [{"id": "default", "provider": "foundation"}]}
+            assert method == "sessions.patch"
+            assert params["model"] == "foundation/default"
+            return {}
+
+    driver = ProfileDriver()
 
     async def connector(_sessions, _agent_id):
         assert replacement.id in network.attrs["Containers"]

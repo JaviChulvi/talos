@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Bot, CircleAlert, LoaderCircle, Play, Plus, Send, Square, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { GenerationControls, UsageDetails, type GenerationSettings, type ModelCapabilities, type InferenceSelection, type InferenceCall } from "@/components/generation-settings";
 import { ModelPicker } from "@/components/model-picker";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -16,7 +17,7 @@ type Agent = {
   model_route: string;
 };
 type Operation = { id: string; agent_id: string; status: string; error?: string | null };
-type Run = { model_id: string; id: string; agent_id: string; status: string; output?: string | null; error?: string | null; cancel_requested?: boolean };
+type Run = { inference_calls: InferenceCall[]; inference: { settings?: GenerationSettings }; model_id: string; id: string; agent_id: string; status: string; output?: string | null; error?: string | null; cancel_requested?: boolean };
 type RunEvent = { sequence: number; type: string; payload: Record<string, unknown> };
 type Mutation = {
   path: string;
@@ -55,7 +56,10 @@ function StateBadge({ state }: { state: string }) {
 export function AgentWorkspace() {
   const [modelId, setModelId] = useState<string | null>(null);
   const [draftModel, setDraftModel] = useState<string | null>(null);
-  const [models, setModels] = useState<{ id: string; name: string }[]>([]);
+  const [models, setModels] = useState<ModelCapabilities[]>([]);
+  const [savedSettings, setSavedSettings] = useState<GenerationSettings>({});
+  const [draftSettings, setDraftSettings] = useState<GenerationSettings | null>(null);
+  const [savedCapabilities, setSavedCapabilities] = useState<Partial<ModelCapabilities>>({});
   const [modelError, setModelError] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [savingModel, setSavingModel] = useState(false);
@@ -94,7 +98,7 @@ export function AgentWorkspace() {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setCatalogLoading(true);
-      api<{ models: { id: string; name: string }[] }>("/inference/models", {
+      api<{ models: ModelCapabilities[] }>("/inference/models", {
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
       }).then((data) => { if (!controller.signal.aborted) { setModels(data.models); setCatalogError(null); } })
         .catch((error) => { if (!controller.signal.aborted) setCatalogError(errorMessage(error)); })
@@ -105,15 +109,18 @@ export function AgentWorkspace() {
 
   async function saveModel(event: FormEvent) {
     event.preventDefault();
-    if (!draftModel || savingModel) return;
+    if (!modelId || savingModel) return;
     setSavingModel(true);
     setModelError(null);
     try {
-      const result = await api<{ model_id: string }>("/inference", {
-        method: "PUT", body: JSON.stringify({ model_id: draftModel }), signal: AbortSignal.timeout(15_000),
+      const result = await api<InferenceSelection>("/inference", {
+        method: "PUT", body: JSON.stringify({ model_id: draftModel ?? modelId, settings: draftSettings ?? savedSettings }), signal: AbortSignal.timeout(15_000),
       });
       setModelId(result.model_id);
+      setSavedSettings(result.settings);
+      setSavedCapabilities(result.capabilities);
       setDraftModel(null);
+      setDraftSettings(null);
       setRefresh((value) => value + 1);
     } catch (error) { setModelError(`${errorMessage(error)} Check the active model below before retrying.`); }
     finally { setSavingModel(false); }
@@ -135,13 +142,15 @@ export function AgentWorkspace() {
           throw error;
         }) : Promise.resolve(null);
         const [nextAgents, nextOperation, nextRun, nextModel] = await Promise.all([
-          api<Agent[]>("/agents", options), latestOperation, latestRun, api<{ model_id: string }>("/inference", options),
+          api<Agent[]>("/agents", options), latestOperation, latestRun, api<InferenceSelection>("/inference", options),
         ]);
         const after = cursor.current.runId === runId ? cursor.current.sequence : 0;
         const nextEvents = nextRun ? await api<RunEvent[]>(`/runs/${runId}/events?after=${after}`, options) : [];
         if (stopped) return;
         setAgents(nextAgents);
         setModelId(nextModel.model_id);
+        setSavedSettings(nextModel.settings);
+        setSavedCapabilities(nextModel.capabilities);
         setSelectedId((current) => nextAgents.some((agent) => agent.id === current) ? current : nextAgents[0]?.id ?? "");
         setOperation(nextOperation);
         setRun(nextRun);
@@ -235,12 +244,15 @@ export function AgentWorkspace() {
       <form onSubmit={saveModel} className="mb-6 border-y py-5" aria-label="Default model">
         <h2 className="mb-4 text-sm font-semibold">Model for all agents</h2>
         <div className="flex flex-wrap items-end gap-3">
-          <ModelPicker models={models} value={draftModel ?? modelId ?? "fixture"} onChange={setDraftModel} disabled={savingModel || modelId === null} inputClass={inputClass} />
-          <Button type="submit" disabled={savingModel || modelId === null || !draftModel || draftModel === modelId}>{savingModel ? "Saving…" : "Apply model"}</Button>
+          <ModelPicker models={models} value={draftModel ?? modelId ?? "fixture"} onChange={(id) => { setDraftModel(id); setDraftSettings({}); }} disabled={savingModel || modelId === null} inputClass={inputClass} />
+          <Button type="submit" disabled={savingModel || modelId === null}>{savingModel ? "Saving…" : "Apply settings"}</Button>
           <Button type="button" variant="outline" disabled={catalogLoading} onClick={() => setCatalogRefresh((value) => value + 1)}>{catalogLoading ? "Loading models…" : "Reload models"}</Button>
         </div>
-        <p id="model-help" className="mt-3 text-xs leading-relaxed text-muted-foreground">Applies to new messages. Running and queued requests keep their original model. OpenRouter requires a gateway API key.</p>
+        <p id="model-help" className="mt-3 text-xs leading-relaxed text-muted-foreground">Applies to new messages. Running and queued requests keep their original model and settings. OpenRouter requires a gateway API key.</p>
         <p className="mt-2 break-words text-sm text-muted-foreground" role="status">Active selection: {modelId === null ? "Loading…" : modelId === "fixture" ? "Local simulator" : modelId}</p>
+        {(draftModel ?? modelId) !== "fixture" && <GenerationControls
+          model={models.find((m) => m.id === (draftModel ?? modelId)) ?? (savedCapabilities.id === (draftModel ?? modelId) ? savedCapabilities as ModelCapabilities : undefined)}
+          settings={draftSettings ?? savedSettings} onChange={setDraftSettings} disabled={savingModel || modelId === null} inputClass={inputClass} />}
         {(modelError || catalogError) && <p role="alert" className="mt-2 text-sm text-danger">{modelError ?? catalogError}</p>}
       </form>
 
@@ -286,6 +298,8 @@ export function AgentWorkspace() {
                 {selectedRun?.output ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{selectedRun.output}</p> : <p className="text-sm text-muted-foreground">{runActive ? "Waiting for recorded output…" : "Send a message to see recorded output here."}</p>}
               </div>
               {selectedRun && <p className="mt-2 break-words text-xs text-muted-foreground">Recorded model: {selectedRun.model_id === "fixture" ? "Local simulator" : selectedRun.model_id}</p>}
+              {selectedRun && <UsageDetails calls={selectedRun.inference_calls ?? []} />}
+              {selectedRun && selectedRun.model_id !== "fixture" && <p className="mt-2 text-xs text-muted-foreground">Run settings: {Object.keys(selectedRun.inference?.settings ?? {}).length ? Object.entries(selectedRun.inference.settings!).map(([key, value]) => `${key.replaceAll("_", " ")}: ${value}`).join(" · ") : "Model defaults"}</p>}
               {runEvents.length > 0 && <details className="mt-3 text-xs text-muted-foreground"><summary className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{runEvents.length} recorded events</summary><ol className="mt-2 max-h-36 space-y-1 overflow-y-auto pl-4">{runEvents.map((event) => <li key={event.sequence}>{event.sequence}. {event.type.replaceAll("_", " ")}</li>)}</ol></details>}
               {selectedRun?.error && <p role="alert" className="mt-3 text-sm text-danger">{selectedRun.error}</p>}
               {selectedRun?.status === "unknown" && <p role="status" className="mt-3 text-sm text-warning">Delivery could not be confirmed. Talos will not resend this message automatically. Stop the agent before starting another diagnostic.</p>}

@@ -20,6 +20,7 @@ from worker.runtime import (
     IMAGE,
     approve_device,
     launch_options,
+    model_profile,
     prepare_volumes,
     runtime_config,
 )
@@ -103,6 +104,7 @@ async def main():
     async def provider(request):
         assert request.headers["authorization"] == "Bearer synthetic-provider-key"
         body = json.loads(request.content)
+        assert "reasoning" not in body and "max_tokens" not in body
         message = next(m["content"] for m in reversed(body["messages"]) if m["role"] == "user")
         return httpx.Response(
             200,
@@ -115,7 +117,9 @@ async def main():
         transport=httpx.MockTransport(provider), **kw
     )
     app = FastAPI()
-    app.include_router(model_router(lambda t: t in tokens, lambda _: selected["model"]))
+    app.include_router(
+        model_router(lambda t: t in tokens, lambda _: {"model_id": selected["model"]})
+    )
     server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -211,13 +215,48 @@ async def main():
             )
         # The same pinned runtime must understand real gateway streaming and failures.
         client = clients[-1]
-        for model in ("deepseek/deepseek-v4-flash-0731", "other/approved-model"):
+        for model in ("deepseek/deepseek-v4-flash-0731", "fixture", "other/approved-model"):
             selected["model"] = model
+            config, identifier = model_profile(
+                runtime_config(
+                    control, tokens[-1], "http://fake-model:8000", model_route="default"
+                ),
+                model,
+                {
+                    "context_length": 64000,
+                    "max_completion_tokens": 8192,
+                    "reasoning": {"mandatory": True},
+                },
+            )
+            await asyncio.to_thread(
+                prepare_volumes,
+                docker_client,
+                prefix + "-state",
+                prefix + "-config",
+                config,
+                LABELS,
+            )
+            async with asyncio.timeout(35):
+                while True:
+                    try:
+                        entries = (await client.request("models.list", {}))["models"]
+                        if any(m["id"] == identifier for m in entries):
+                            break
+                    except GatewayError as error:
+                        if "Model catalog is not ready" not in str(error):
+                            raise
+                    await asyncio.sleep(0.5)
+            await client.request(
+                "sessions.patch",
+                {"key": session, "model": "foundation/" + identifier, "thinkingLevel": None},
+            )
             run_id = str(uuid.uuid4())
             await client.send(session, "Check the selected model", run_id)
             result = await terminal(client, run_id)
             assert result["state"] == "final", result
-            assert model in json.dumps(result), result
+            assert ("Talos diagnostic:" if model == "fixture" else model) in json.dumps(result), (
+                result
+            )
         run_id = str(uuid.uuid4())
         await client.send(session, "[openrouter-error]", run_id)
         result = await terminal(client, run_id)
