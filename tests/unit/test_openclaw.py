@@ -108,3 +108,43 @@ def test_gateway_permission_error_is_not_delivery_uncertainty():
                 ).connect()
 
     asyncio.run(scenario())
+
+
+def test_history_accepts_valid_large_runtime_responses():
+    async def scenario():
+        # Below the runtime's 6 MiB history budget and 128 KiB per-message limit.
+        messages = [{"role": "assistant", "content": "x" * (120 * 1024)} for _ in range(18)]
+
+        async def handler(ws):
+            await ws.send(
+                json.dumps(
+                    {"type": "event", "event": "connect.challenge", "payload": {"nonce": "fixture"}}
+                )
+            )
+            connect = json.loads(await ws.recv())
+            await ws.send(
+                json.dumps(
+                    {"type": "res", "id": connect["id"], "ok": True, "payload": {"protocol": 4}}
+                )
+            )
+            request = json.loads(await ws.recv())
+            assert request["method"] == "chat.history"
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "res",
+                        "id": request["id"],
+                        "ok": True,
+                        "payload": {"messages": messages},
+                    }
+                )
+            )
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            async with OpenClawClient(
+                f"ws://127.0.0.1:{port}", "fixture", DeviceIdentity(Ed25519PrivateKey.generate())
+            ) as client:
+                assert (await client.history("agent:main:diagnostic"))["messages"] == messages
+
+    asyncio.run(scenario())

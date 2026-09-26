@@ -119,6 +119,15 @@ def test_create_replay_validation_and_restart_persistence(client, session_maker)
     )
     assert create(client, key="blank", name="   ").status_code == 422
     assert create(client, key=" ").status_code == 422
+    for field in ("display_name", "employee_label"):
+        payload = {"display_name": "Agent", "employee_label": "Alex", field: "A\x00B"}
+        assert (
+            client.post(
+                "/api/v1/agents", json=payload, headers={"Idempotency-Key": "invalid-text"}
+            ).status_code
+            == 422
+        )
+    assert len(client.get("/api/v1/agents").json()) == 1
     with TestClient(api_for(session_maker)) as restarted:
         assert restarted.get(f"/api/v1/operations/{operation['id']}").json() == operation
         assert create(restarted).json() == operation
