@@ -146,7 +146,7 @@ To enable external inference:
    docker compose -f compose.yaml -f compose.openrouter.yaml up --build -d
    ```
 
-4. In **Agents → Model for all agents**, choose **DeepSeek V4 Flash 0731**
+4. In **Agents → Model for all agents**, select the **DeepSeek** lab icon, then **DeepSeek V4 Flash 0731**
    (`deepseek/deepseek-v4-flash-0731`, the recommended entry) and click
    **Apply model**. Other compatible text models come from OpenRouter's public
    catalog. If the catalog is unavailable, the saved selection keeps working
@@ -154,6 +154,12 @@ To enable external inference:
 5. For agents created before this integration, stop/start once to switch their
    pinned fixture configuration to the Talos default route. The dashboard
    identifies those older runtimes. Subsequent model changes need no restart.
+
+The lab picker groups the live catalog by model author and shows locally bundled
+[Lobe Icons](https://github.com/lobehub/lobe-icons) logos. Hover labels and accessible
+names identify each lab; unrecognized labs use initials and remain selectable.
+Choosing a lab filters the model list without changing the active selection until
+**Apply model** is clicked.
 
 Use the same Compose file pair for subsequent updates and shutdowns. Only the
 gateway joins the additional outbound network and mounts the secret; agents

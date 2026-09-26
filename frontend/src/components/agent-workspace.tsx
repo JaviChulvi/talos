@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Bot, CircleAlert, LoaderCircle, Play, Plus, Send, Square, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ModelPicker } from "@/components/model-picker";
 import { api, ApiError, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -232,15 +233,9 @@ export function AgentWorkspace() {
       </div>}
 
       <form onSubmit={saveModel} className="mb-6 border-y py-5" aria-label="Default model">
+        <h2 className="mb-4 text-sm font-semibold">Model for all agents</h2>
         <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-0 flex-1 basis-64">
-            <label htmlFor="default-model" className="mb-2 block text-sm font-semibold">Model for all agents</label>
-            <select id="default-model" className={inputClass} value={draftModel ?? modelId ?? "fixture"} onChange={(event) => setDraftModel(event.target.value)} disabled={savingModel || modelId === null} aria-describedby="model-help">
-              <option value="fixture">Local simulator — no AI inference</option>
-              {modelId && modelId !== "fixture" && !models.some((model) => model.id === modelId) && <option value={modelId}>{modelId}</option>}
-              {models.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.id}</option>)}
-            </select>
-          </div>
+          <ModelPicker models={models} value={draftModel ?? modelId ?? "fixture"} onChange={setDraftModel} disabled={savingModel || modelId === null} inputClass={inputClass} />
           <Button type="submit" disabled={savingModel || modelId === null || !draftModel || draftModel === modelId}>{savingModel ? "Saving…" : "Apply model"}</Button>
           <Button type="button" variant="outline" disabled={catalogLoading} onClick={() => setCatalogRefresh((value) => value + 1)}>{catalogLoading ? "Loading models…" : "Reload models"}</Button>
         </div>
