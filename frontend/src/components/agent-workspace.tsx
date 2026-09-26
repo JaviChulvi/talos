@@ -79,6 +79,7 @@ export function AgentWorkspace() {
   const [submitting, setSubmitting] = useState(false);
   const [retryRequest, setRetryRequest] = useState<Mutation | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const createDialog = useRef<HTMLDialogElement>(null);
   const [displayName, setDisplayName] = useState("");
   const [employeeLabel, setEmployeeLabel] = useState("");
   const [message, setMessage] = useState("");
@@ -194,7 +195,7 @@ export function AgentWorkspace() {
         saveIds("talos.operationIds", next);
         setOperation(result);
         setSelectedId(result.agent_id);
-        if (request.kind === "create") { setDisplayName(""); setEmployeeLabel(""); }
+        if (request.kind === "create") { setDisplayName(""); setEmployeeLabel(""); createDialog.current?.close(); }
       }
       setRetryRequest(null);
       setRefresh((value) => value + 1);
@@ -233,7 +234,7 @@ export function AgentWorkspace() {
     <section aria-label="Agent workspace" className="agent-workspace">
       <div className="page-heading">
         <div><h1>Agents</h1><p>Manage your agents and their runtime activity.</p></div>
-        <Button onClick={() => document.getElementById("agent-name")?.focus()}><Plus aria-hidden="true" />New agent</Button>
+        <Button disabled={writesDisabled} onClick={() => { setActionError(null); createDialog.current?.showModal(); }}><Plus aria-hidden="true" />New agent</Button>
       </div>
       {(actionError || pollError) && <div role="alert" className="notice notice-warning mb-5 flex-wrap">
         <CircleAlert className="size-4 shrink-0" aria-hidden="true" />
@@ -256,23 +257,33 @@ export function AgentWorkspace() {
         {(modelError || catalogError) && <p role="alert" className="mt-2 text-sm text-danger">{modelError ?? catalogError}</p>}
       </form>
 
+      <dialog ref={createDialog} aria-labelledby="create-agent-title" className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto rounded-xl bg-panel p-6 text-foreground shadow-xl backdrop:bg-black/65" onCancel={(event) => { if (submitting) event.preventDefault(); }}>
+        <form onSubmit={createAgent} className="space-y-5">
+          <h2 id="create-agent-title" className="text-lg font-semibold tracking-tight">Create an agent</h2>
+          <div><label htmlFor="agent-name" className="mb-1.5 block text-xs text-muted-foreground">Name</label><input id="agent-name" autoFocus className={inputClass} value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Sales assistant" maxLength={120} required disabled={writesDisabled} /></div>
+          <div><label htmlFor="employee-label" className="mb-1.5 block text-xs text-muted-foreground">Employee label</label><input id="employee-label" className={inputClass} value={employeeLabel} onChange={(event) => setEmployeeLabel(event.target.value)} placeholder="Alex" required minLength={1} maxLength={160} disabled={writesDisabled} /></div>
+          {(actionError || pollError) && <div role="alert" className="space-y-3 text-sm text-danger">
+            <p>{actionError ?? pollError}</p>
+            {retryRequest?.kind === "create" && <Button type="button" variant="outline" disabled={submitting} onClick={() => void mutate(retryRequest)}>Retry same request</Button>}
+          </div>}
+          <div className="flex justify-end gap-3 pt-2">
+            <Button type="button" variant="outline" disabled={submitting} onClick={() => createDialog.current?.close()}>Cancel</Button>
+            <Button type="submit" disabled={writesDisabled || !displayName.trim() || !employeeLabel.trim()}>{submitting ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}{submitting ? "Creating…" : "Create agent"}</Button>
+          </div>
+        </form>
+      </dialog>
+
       <div className="agent-layout">
         <aside className="agent-list-panel" aria-label="Agents">
           <div className="flex items-center justify-between border-b px-5 py-4"><h2 className="text-sm font-semibold">All agents</h2><Badge variant="secondary">{agents.length}</Badge></div>
           <div className="max-h-72 overflow-y-auto p-2">
-            {loading ? <p className="px-3 py-6 text-sm text-muted-foreground">Loading agents…</p> : agents.length === 0 ? <p className="px-3 py-6 text-sm leading-relaxed text-muted-foreground">No agents yet. Create one below to get started.</p> : agents.map((agent) => (
+            {loading ? <p className="px-3 py-6 text-sm text-muted-foreground">Loading agents…</p> : agents.length === 0 ? <p className="px-3 py-6 text-sm leading-relaxed text-muted-foreground">No agents yet. Select New agent to get started.</p> : agents.map((agent) => (
               <button key={agent.id} type="button" aria-pressed={selectedId === agent.id} onClick={() => setSelectedId(agent.id)} className={cn("mb-1 flex w-full items-start gap-3 rounded-md px-3 py-3 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring", selectedId === agent.id && "bg-primary/10 text-primary") }>
                 <Bot className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{agent.display_name}</span><span className="mt-1 block truncate text-xs text-muted-foreground">{agent.employee_label || "Unassigned"}</span><span className="mt-2 block"><StateBadge state={agent.observed_state} /></span></span>
               </button>
             ))}
           </div>
-          <form onSubmit={createAgent} className="space-y-4 border-t p-5">
-            <h3 className="text-sm font-semibold">Create an agent</h3>
-            <div><label htmlFor="agent-name" className="mb-1.5 block text-xs text-muted-foreground">Name</label><input id="agent-name" className={inputClass} value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Sales assistant" maxLength={120} required disabled={writesDisabled} /></div>
-            <div><label htmlFor="employee-label" className="mb-1.5 block text-xs text-muted-foreground">Employee label</label><input id="employee-label" className={inputClass} value={employeeLabel} onChange={(event) => setEmployeeLabel(event.target.value)} placeholder="Alex" required minLength={1} maxLength={160} disabled={writesDisabled} /></div>
-            <Button type="submit" className="w-full" disabled={writesDisabled || !displayName.trim() || !employeeLabel.trim()}><Plus aria-hidden="true" />Create agent</Button>
-          </form>
         </aside>
 
         <div className="min-w-0 bg-panel">
