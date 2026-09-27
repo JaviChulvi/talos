@@ -1,13 +1,24 @@
 """Server-owned model capabilities and optional generation settings."""
 
+from typing import Annotated
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from backend.app.agents import Database
-from backend.app.models import Agent, InferenceConfig
+from backend.app.agents import (
+    Database,
+    IdempotencyKey,
+    OperationResponse,
+    enqueue_operation,
+    find_replay,
+    recover_duplicate,
+    request_hash,
+)
+from backend.app.models import ACTIVE_OPERATION_STATUSES, Agent, InferenceConfig, Operation
 
 router = APIRouter(prefix="/api/v1/inference")
 RECOMMENDED_MODEL = "deepseek/deepseek-v4-flash-0731"
@@ -150,7 +161,14 @@ def agent_config(session, agent_id, *, lock=False):
 
 def agent_config_response(session, agent):
     return {
-        **(agent.inference_override or config_response(session.get(InferenceConfig, 1))),
+        **(
+            agent.inference_override
+            or (
+                {"model_id": None, "settings": {}, "capabilities": {}}
+                if agent.runtime_mode == "native"
+                else config_response(session.get(InferenceConfig, 1))
+            )
+        ),
         "inherited": agent.inference_override is None,
     }
 
@@ -165,6 +183,8 @@ async def update_agent_selection(agent_id: UUID, body: ModelSelection, session: 
     selection = await validated_selection(body)
     with session.begin():
         agent = agent_config(session, agent_id, lock=True)
+        if agent.runtime_mode == "native":
+            raise HTTPException(409, "Use the native model operation for this agent")
         agent.inference_override = selection
         return agent_config_response(session, agent)
 
@@ -173,5 +193,65 @@ async def update_agent_selection(agent_id: UUID, body: ModelSelection, session: 
 def reset_agent_selection(agent_id: UUID, session: Database):
     with session.begin():
         agent = agent_config(session, agent_id, lock=True)
+        if agent.runtime_mode == "native":
+            raise HTTPException(409, "Use the native model operation for this agent")
         agent.inference_override = None
         return agent_config_response(session, agent)
+
+
+@router.get("/provider")
+async def provider_status():
+    try:
+        async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+            response = await client.get("http://gateway:8001/health/provider")
+            response.raise_for_status()
+            return response.json()
+    except (httpx.HTTPError, ValueError):
+        return {"configured": False}
+
+
+@router.post("/agents/{agent_id}/native", status_code=202, response_model=OperationResponse)
+async def update_native_selection(
+    agent_id: UUID,
+    idempotency_key: IdempotencyKey,
+    session: Database,
+    body: Annotated[ModelSelection | None, Body()] = None,
+):
+    scope = f"agent:{agent_id}:configure_model"
+    digest = request_hash(body.model_dump() if body else {})
+    replay = find_replay(session, scope, idempotency_key, digest)
+    session.rollback()
+    if replay:
+        return replay
+    selection = await validated_selection(body) if body else {}
+    if body and (body.model_id == "fixture" or selection["settings"]):
+        raise HTTPException(
+            400, "Choose an OpenRouter model; native generation settings stay in the runtime"
+        )
+    try:
+        with session.begin():
+            agent = agent_config(session, agent_id, lock=True)
+            replay = find_replay(session, scope, idempotency_key, digest)
+            if replay:
+                return replay
+            if agent.runtime_mode != "native":
+                raise HTTPException(409, "This agent uses managed model settings")
+            if session.scalar(
+                select(Operation.id).where(
+                    Operation.agent_id == agent_id,
+                    Operation.status.in_(ACTIVE_OPERATION_STATUSES),
+                )
+            ):
+                raise HTTPException(409, "Wait for the current agent operation to finish")
+            operation = enqueue_operation(
+                session,
+                agent,
+                "configure_model",
+                scope,
+                idempotency_key,
+                digest,
+            )
+            operation.model_selection = selection
+            return operation
+    except IntegrityError as error:
+        return recover_duplicate(session, scope, idempotency_key, digest, error)

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from contextlib import aclosing
+from threading import Event
 from types import SimpleNamespace
 
 import httpx
@@ -14,6 +15,176 @@ from gateway.fake_model import model_router
 MODEL = "deepseek/deepseek-v4-flash-0731"
 HEADERS = {"Authorization": "Bearer talos-agent"}
 BODY = {"model": "default", "messages": [{"role": "user", "content": "hello"}]}
+
+
+def test_native_revocation_cancels_provider_before_headers(monkeypatch):
+    from gateway import main
+
+    state = {"allowed": True, "cancelled": False}
+    monkeypatch.setattr(main, "provider_key", lambda: "synthetic-key")
+    monkeypatch.setattr(
+        main, "native_selection", lambda _: {"model_id": "test/model"} if state["allowed"] else None
+    )
+
+    monkeypatch.setattr(main, "validate_token", lambda _: state["allowed"])
+
+    async def upstream(request):
+        state["allowed"] = False
+        try:
+            await asyncio.Event().wait()
+        finally:
+            state["cancelled"] = True
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    with TestClient(main.app) as client:
+        result = client.post("/native/v1/chat/completions", json=BODY, headers=HEADERS)
+    assert result.status_code == 401
+    assert state["cancelled"]
+
+
+@pytest.mark.parametrize("phase", ["headers", "body"])
+@pytest.mark.parametrize("revoke", [False, True])
+def test_native_reset_preserves_admitted_request_unless_token_revoked(monkeypatch, phase, revoke):
+    from gateway import main
+
+    state = {"selection": {"model_id": "original/model"}, "closed": False}
+    checked = Event()
+    calls = []
+
+    def valid_token(_):
+        if state["selection"] is None:
+            checked.set()
+            return not revoke
+        return True
+
+    monkeypatch.setattr(main, "provider_key", lambda: "synthetic-key")
+    monkeypatch.setattr(main, "native_selection", lambda _: state["selection"])
+    monkeypatch.setattr(main, "validate_token", valid_token)
+
+    class Reply(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            if phase == "body":
+                state["selection"] = None
+            yield b'data: {"choices": []}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            state["closed"] = True
+
+    async def upstream(request):
+        calls.append(json.loads(request.content))
+        if phase == "headers":
+            state["selection"] = None
+            assert await asyncio.to_thread(checked.wait, 5)
+        return httpx.Response(200, stream=Reply())
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    with TestClient(main.app) as client:
+        result = client.post(
+            "/native/v1/chat/completions", json={**BODY, "stream": True}, headers=HEADERS
+        )
+        assert (
+            client.post("/native/v1/chat/completions", json=BODY, headers=HEADERS).status_code
+            == 401
+        )
+    assert len(calls) == 1 and calls[0]["model"] == "original/model"
+    if revoke and phase == "headers":
+        assert result.status_code == 401
+    else:
+        assert result.status_code == 200
+        assert ("[DONE]" in result.text) is not revoke
+        assert state["closed"]
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_native_route_preserves_tools_and_owns_credentials_and_model(
+    monkeypatch, tmp_path, streaming
+):
+    from gateway import main
+
+    key = tmp_path / "key"
+    key.write_text("shared-provider-secret")
+    monkeypatch.setenv("TALOS_OPENROUTER_KEY_FILE", str(key))
+    monkeypatch.setattr(
+        main,
+        "native_selection",
+        lambda token: {"model_id": "chosen/model"} if token == "native-agent" else None,
+    )
+    monkeypatch.setattr(main, "validate_token", lambda token: token == "native-agent")
+    tool_call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "read", "arguments": "{}"},
+    }
+    reply = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "tool_calls": [tool_call]},
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    calls = []
+
+    async def upstream(request):
+        calls.append(request)
+        return httpx.Response(
+            200,
+            text="data: " + json.dumps(reply) + "\n\ndata: [DONE]\n\n"
+            if streaming
+            else json.dumps(reply),
+        )
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    )
+    body = {
+        "model": "untrusted/model",
+        "stream": streaming,
+        "messages": [{"role": "tool", "tool_call_id": "call-0", "content": "file contents"}],
+        "tools": [
+            {"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}
+        ],
+        "reasoning_effort": "high",
+        "api_key": "injected",
+        "provider": {"only": ["untrusted"]},
+    }
+    with TestClient(main.app) as client:
+        assert (
+            client.post(
+                "/native/v1/chat/completions",
+                json=body,
+                headers={"Authorization": "Bearer inactive"},
+            ).status_code
+            == 401
+        )
+        result = client.post(
+            "/native/v1/chat/completions",
+            json=body,
+            headers={"Authorization": "Bearer native-agent"},
+        )
+    assert result.status_code == 200
+    assert "tool_calls" in result.text
+    assert "shared-provider-secret" not in result.text
+    forwarded = json.loads(calls[0].content)
+    assert forwarded["messages"] == body["messages"] and forwarded["tools"] == body["tools"]
+    assert forwarded["model"] == "chosen/model"
+    assert forwarded["reasoning_effort"] == "high"
+    assert "api_key" not in forwarded and "provider" not in forwarded
+    assert calls[0].headers["authorization"] == "Bearer shared-provider-secret"
 
 
 def frame(content="", finish=None):

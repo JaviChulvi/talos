@@ -181,6 +181,7 @@ def test_role_config_validates_in_pinned_native_image_and_preserves_state(runtim
     from worker.runtime import (
         NATIVE_IMAGES,
         STATE_PATH,
+        apply_native_model,
         apply_native_permissions,
         native_config,
         prepare_volumes,
@@ -271,6 +272,56 @@ def test_role_config_validates_in_pinned_native_image_and_preserves_state(runtim
         for key, value in payload.items():
             if key not in {"tools", "agents"}:
                 assert current[key] == value
+        selection = {
+            "model_id": "test/model",
+            "capabilities": {
+                "name": "Test model",
+                "context_length": 32000,
+                "max_completion_tokens": 1024,
+            },
+        }
+        for model in ("test/model", "test/other"):
+            apply_native_model(
+                client,
+                prefix,
+                incarnation,
+                runtime_kind,
+                {**selection, "model_id": model},
+                "synthetic-agent-token",
+                labels,
+            )
+            configured = json.loads(
+                client.containers.run(
+                    incarnation.image_digest,
+                    entrypoint=command,
+                    network_mode="none",
+                    volumes={prefix: {"bind": mount, "mode": "ro"}},
+                    remove=True,
+                )
+            )
+            if runtime_kind == "hermes":
+                assert configured["model"]["default"] == model
+                assert configured["model"]["api_key"] == "synthetic-agent-token"
+                assert configured["platform_toolsets"] == current["platform_toolsets"]
+            else:
+                assert (
+                    configured["agents"]["defaults"]["model"]["primary"]
+                    == "talos-openrouter/" + model
+                )
+                assert configured["tools"] == current["tools"]
+        for _ in range(2):  # Reset is safe to resume after a worker crash.
+            apply_native_model(client, prefix, incarnation, runtime_kind, None, "unused", labels)
+        restored = json.loads(
+            client.containers.run(
+                incarnation.image_digest,
+                entrypoint=command,
+                network_mode="none",
+                volumes={prefix: {"bind": mount, "mode": "ro"}},
+                remove=True,
+            )
+        )
+        for key, value in current.items():
+            assert restored[key] == value
     finally:
         for name in (prefix, incarnation.config_volume):
             client.volumes.get(name).remove()

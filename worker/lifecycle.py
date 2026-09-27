@@ -39,6 +39,7 @@ from worker.runtime import (
     IMAGE,
     NATIVE_IMAGES,
     OwnershipError,
+    apply_native_model,
     apply_native_permissions,
     approve_device,
     launch_options,
@@ -54,6 +55,10 @@ MAX_ATTEMPTS = 5
 
 class StorageFullError(RuntimeError):
     message = "Docker storage is full. Free Docker disk space, then start the agent again."
+
+
+class NativeModelError(RuntimeError):
+    pass
 
 
 @contextmanager
@@ -119,7 +124,33 @@ async def configure_inference(sessions, run, client):
     """Publish a model profile before send, then wait for the runtime's active catalog."""
     with sessions() as session:
         incarnation = session.get(WorkloadIncarnation, run.incarnation_id)
-        if incarnation.model_route in {"fixture", "native"}:
+        if incarnation.model_route == "native":
+            agent = session.get(Agent, run.agent_id)
+            model_id = agent.inference_override["model_id"] if agent.inference_override else None
+            if agent.runtime_kind == "hermes":
+                client.model_id = model_id
+            else:
+                if model_id:
+                    deadline = time.monotonic() + 30
+                    while True:
+                        catalog = await client.request("models.list", {})
+                        if any(
+                            m.get("id") == model_id and m.get("provider") == "talos-openrouter"
+                            for m in catalog.get("models", [])
+                        ):
+                            break
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("Native runtime has not loaded the selected model")
+                        await asyncio.sleep(0.25)
+                await client.request(
+                    "sessions.patch",
+                    {
+                        "key": f"agent:main:talos:{run.agent_id}",
+                        "model": "talos-openrouter/" + model_id if model_id else None,
+                    },
+                )
+            return
+        if incarnation.model_route == "fixture":
             return
         credentials = read_credentials(incarnation)
     config, identifier = model_profile(
@@ -624,6 +655,40 @@ class Worker:
                 or agent.revision != operation.target_revision
             ):
                 raise OwnershipError("Operation does not match the approved agent revision")
+        if operation.action == "configure_model":
+            if agent.current_incarnation_id:
+                with self.sessions() as session:
+                    incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+                credentials = read_credentials(incarnation)
+                container = self.owned_container(incarnation)
+                if (
+                    container is not None
+                    and agent.observed_state == "ready"
+                    and operation.model_selection
+                ):
+                    environment = container.attrs["Config"].get("Env", [])
+                    if not any(
+                        v.startswith("no_proxy=") and "talos-gateway" in v for v in environment
+                    ):
+                        raise NativeModelError(
+                            "Stop and start this older agent once to enable OpenRouter routing, "
+                            "then save the model again."
+                        )
+                state, _ = self.names(agent.id)
+                apply_native_model(
+                    self.client,
+                    state,
+                    incarnation,
+                    agent.runtime_kind,
+                    operation.model_selection,
+                    credentials["agent_token"],
+                    self.labels(agent.id),
+                )
+            with self.sessions.begin() as session:
+                session.get(Agent, agent.id).inference_override = operation.model_selection or None
+                current = session.get(Operation, operation.id)
+                current.status, current.step, current.error = "succeeded", "complete", None
+            return
         if operation.action == "dashboard":
             if (
                 agent.runtime_mode != "native"
@@ -731,6 +796,16 @@ class Worker:
                         incarnation,
                         agent.runtime_kind,
                         operation.role_application["permissions"],
+                        self.labels(agent.id),
+                    )
+                if agent.runtime_mode == "native" and agent.inference_override:
+                    apply_native_model(
+                        self.client,
+                        state,
+                        incarnation,
+                        agent.runtime_kind,
+                        agent.inference_override,
+                        credentials["agent_token"],
                         self.labels(agent.id),
                     )
                 if not restart:
@@ -865,13 +940,20 @@ class Worker:
                     except Exception as cause:
                         stop_error = cause
             message = (
-                StorageFullError.message
+                str(error)
+                if isinstance(error, NativeModelError)
+                else StorageFullError.message
                 if isinstance(error, StorageFullError)
                 else (
                     f"Role application failed ({type(error).__name__}). Agent stopped; "
                     "check native configuration and retry Start or Apply."
                     if operation.role_application
-                    else f"{type(error).__name__}: lifecycle operation failed"
+                    else (
+                        f"Model configuration failed ({type(error).__name__}). "
+                        "Check native configuration and retry Save model."
+                        if operation.action == "configure_model"
+                        else f"{type(error).__name__}: lifecycle operation failed"
+                    )
                 )
             )
             if stop_error is not None:
@@ -888,9 +970,11 @@ class Worker:
             )
             with self.sessions.begin() as session:
                 current = session.get(Operation, operation.id)
-                terminal = current.attempts >= MAX_ATTEMPTS or isinstance(
-                    error, (OwnershipError, StorageFullError)
-                ) or isinstance(stop_error, OwnershipError)
+                terminal = (
+                    current.attempts >= MAX_ATTEMPTS
+                    or isinstance(error, (OwnershipError, StorageFullError, NativeModelError))
+                    or isinstance(stop_error, OwnershipError)
+                )
                 current.status = "failed" if terminal else "retry_wait"
                 current.error = message
                 current.next_retry_at = (
@@ -900,7 +984,7 @@ class Worker:
                 )
                 current.heartbeat_at = datetime.now(UTC)
                 agent = session.get(Agent, operation.agent_id)
-                if operation.action != "dashboard":
+                if operation.action not in {"dashboard", "configure_model"}:
                     agent.observed_state, agent.last_error = (
                         "stopped" if operation.role_application and stop_error is None else "error",
                         current.error,
@@ -910,7 +994,11 @@ class Worker:
                             self.mark_stopped(session, agent)
                         if terminal:
                             agent.desired_state = "stopped"
-                if agent.current_incarnation_id and terminal and operation.action != "dashboard":
+                if (
+                    agent.current_incarnation_id
+                    and terminal
+                    and operation.action not in {"dashboard", "configure_model"}
+                ):
                     session.get(
                         WorkloadIncarnation, agent.current_incarnation_id
                     ).revoked_at = datetime.now(UTC)

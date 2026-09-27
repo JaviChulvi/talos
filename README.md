@@ -9,7 +9,7 @@ A self-hosted control plane for personal employee agents. The goal is to let com
 - Create, inspect, start, stop, and delete an agent with a display name and employee label.
 - Choose OpenClaw or Hermes with the runtime icon picker; each agent has its own container, private internal network, and private state volume.
 - Native UI access through a loopback-only TCP relay: OpenClaw device pairing or Hermes password login.
-- Native tools and key-free search; provider and channel setup stays in the selected runtime.
+- Native tools and key-free search; choose an OpenRouter model in Talos or leave provider setup to the runtime.
 - Durable PostgreSQL operations, idempotent requests, bounded retries, and adoption of owned Docker resources after a worker crash.
 - Signed OpenClaw device pairing, diagnostic messages, ordered events, history support in the driver, and cancellation.
 - Per-incarnation gateway credentials, checked against the current agent state and revocation/expiry on each fake-model request. Database failures deny access.
@@ -150,7 +150,32 @@ RAM-backed test options (`TALOS_PROOF_RAM_VOLUMES=1` and `TALOS_TEST_TMPFS_VOLUM
 
 ## OpenRouter and the model picker
 
-This section applies to **Talos-managed conversation** agents only. Native agents configure providers in their own runtime.
+**Native agents:** Create an agent shows **Handled by agent** by default. This leaves
+provider/model setup in Hermes or OpenClaw; a fresh native workspace needs a provider
+before it can answer. Choose **OpenRouter** and a catalog model at creation or in the
+agent's Settings to use the installation key described below. Settings shows whether
+the key is mounted; selecting a model does not create credentials.
+
+Native model changes use the existing durable operation worker and can be saved while
+the agent runs. OpenRouter changes affect the next provider request; requests already
+sent retain their captured model. Native sessions with explicit model overrides may
+need a new session. Talos Test agent selects the saved model on every turn. Runtimes
+started before this feature need one stop/start to add the internal gateway proxy
+exclusion. Returning to **Handled by agent** restores the prior native model settings.
+Role permissions, other provider credentials, workspace and history are preserved.
+
+The shared OpenRouter key stays in the gateway. Native agents receive an incarnation
+token for `/native/v1/chat/completions`; this route preserves tool calls and results,
+and accepts only active native agents with an OpenRouter selection. Native runtimes
+still own tool dispatch and generation settings. Native inference usage accounting is
+not added here. The managed text-only route retains its no-tools contract.
+
+`POST /api/v1/agents` accepts optional `model_id`. For a native agent,
+`POST /api/v1/inference/agents/{id}/native` with `{ "model_id": "lab/model" }` (or
+JSON `null` to hand control back) requires `Idempotency-Key` and returns HTTP 202.
+Poll the returned operation; failed operations do not claim the selection was applied.
+
+**Talos-managed conversations:**
 
 The workspace **Settings** page selects the default model for new messages without
 restarting agents. Each admitted message stores its model choice, so queued and

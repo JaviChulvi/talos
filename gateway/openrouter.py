@@ -28,6 +28,27 @@ class InferenceError(Exception):
         self.outcome = outcome
 
 
+def provider_key() -> str:
+    try:
+        key = (
+            Path(
+                os.environ.get(
+                    "TALOS_OPENROUTER_KEY_FILE",
+                    "/run/secrets/openrouter_api_key",
+                )
+            )
+            .read_text()
+            .strip()
+        )
+        if not key or any(c.isspace() for c in key):
+            raise ValueError
+        return key
+    except (OSError, ValueError):
+        raise HTTPException(
+            503, "OpenRouter is not configured; mount the gateway API key secret"
+        ) from None
+
+
 def text_messages(body: dict) -> list[dict]:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -265,18 +286,7 @@ async def completion(
     streaming = body.get("stream", False)
     if not isinstance(streaming, bool):
         raise HTTPException(400, "stream must be a boolean")
-    try:
-        key = (
-            Path(os.environ.get("TALOS_OPENROUTER_KEY_FILE", "/run/secrets/openrouter_api_key"))
-            .read_text()
-            .strip()
-        )
-        if not key or any(c.isspace() for c in key):
-            raise ValueError
-    except (OSError, ValueError):
-        raise HTTPException(
-            503, "OpenRouter is not configured; mount the gateway API key secret"
-        ) from None
+    key = provider_key()
     base = {"id": "chatcmpl-" + uuid.uuid4().hex, "created": int(time.time()), "model": model}
 
     async def chunks():

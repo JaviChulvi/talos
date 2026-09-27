@@ -154,7 +154,8 @@ class Operation(Base):
         ),
         Index("ix_operations_pending", "status", "next_retry_at", "created_at"),
         CheckConstraint(
-            "action IN ('create', 'start', 'stop', 'delete', 'dashboard', 'apply_role')"
+            "action IN ('create', 'start', 'stop', 'delete', 'dashboard', "
+            "'apply_role', 'configure_model')"
         ),
         CheckConstraint("status IN ('queued', 'running', 'retry_wait', 'succeeded', 'failed')"),
         CheckConstraint("target_revision > 0"),
@@ -164,6 +165,7 @@ class Operation(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
     role_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    model_selection: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     dashboard_url: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(String(20))
     target_revision: Mapped[int] = mapped_column(BigInteger)

@@ -195,8 +195,8 @@ def launch_options(
                 "HTTPS_PROXY": "http://talos-egress:3128",
                 "http_proxy": "http://talos-egress:3128",
                 "https_proxy": "http://talos-egress:3128",
-                "NO_PROXY": "localhost,127.0.0.1,::1",
-                "no_proxy": "localhost,127.0.0.1,::1",
+                "NO_PROXY": "localhost,127.0.0.1,::1,talos-gateway",
+                "no_proxy": "localhost,127.0.0.1,::1,talos-gateway",
                 "NODE_USE_ENV_PROXY": "1",
             }
         )
@@ -337,14 +337,6 @@ def approve_device(container, identity: DeviceIdentity):
 
 def apply_native_permissions(client, state, incarnation, runtime_kind, permissions, labels):
     """Patch only native permission fields in an offline, pinned-image initializer."""
-    name = incarnation.config_volume + "-permissions"
-    try:
-        previous = client.containers.get(name)
-    except NotFound:
-        pass
-    else:
-        require_labels(previous.labels, labels)
-        previous.remove(force=True)
     if runtime_kind == "hermes":
         entrypoint = ["python", "-c"]
         script = """
@@ -377,9 +369,6 @@ next_path.write_text(yaml.safe_dump(config, sort_keys=False))
 next_path.chmod(0o600)
 os.replace(next_path, path)
 """
-        volumes = {state: {"bind": "/opt/data", "mode": "rw"}}
-        environment = {"HOME": "/opt/data", "HERMES_HOME": "/opt/data"}
-        user = "10000:10000"
     else:
         entrypoint = ["node", "-e"]
         script = """
@@ -401,6 +390,119 @@ cp.execFileSync('node', ['openclaw.mjs', 'config', 'validate'], {
 });
 fs.renameSync(next, path);
 """
+    write_native_config(
+        client,
+        state,
+        incarnation,
+        runtime_kind,
+        labels,
+        "permissions",
+        entrypoint,
+        script,
+        permissions,
+    )
+
+
+def apply_native_model(client, state, incarnation, runtime_kind, selection, token, labels):
+    """Change model defaults, retaining the prior native choice for handing control back."""
+    payload = {"selection": selection or None, "token": token}
+    if runtime_kind == "hermes":
+        entrypoint = ["python", "-c"]
+        script = """
+import json, os, pathlib, sys, yaml
+from hermes_cli.config import validate_config_structure
+payload = json.loads(sys.argv[1])
+selection = payload['selection']
+path = pathlib.Path('/opt/data/config.yaml')
+backup = path.with_name('talos-model-backup.json')
+config = yaml.safe_load(path.read_text())
+if selection:
+    if not backup.exists():
+        backup.write_text(json.dumps({k: config.get(k) for k in ('model', 'fallback_model')}))
+        backup.chmod(0o600)
+    config['model'] = {'provider': 'custom', 'default': selection['model_id'],
+                       'base_url': 'http://talos-gateway:8001/native/v1',
+                       'api_key': payload['token'], 'api_mode': 'chat_completions'}
+    config.pop('fallback_model', None)
+elif backup.exists():
+    for key, value in json.loads(backup.read_text()).items():
+        if value is None:
+            config.pop(key, None)
+        else:
+            config[key] = value
+issues = validate_config_structure(config)
+assert not any(i.severity == 'error' for i in issues), 'Invalid native model configuration'
+next_path = path.with_suffix('.talos-model-next')
+next_path.write_text(yaml.safe_dump(config, sort_keys=False))
+next_path.chmod(0o600)
+os.replace(next_path, path)
+if not selection:
+    backup.unlink(missing_ok=True)
+"""
+    else:
+        entrypoint = ["node", "-e"]
+        script = """
+const fs = require('fs'), JSON5 = require('json5'), cp = require('child_process');
+const {selection, token} = JSON.parse(process.argv[1]);
+const path = process.env.OPENCLAW_CONFIG_PATH, backup = path + '.talos-model-backup';
+const config = JSON5.parse(fs.readFileSync(path, 'utf8'));
+config.agents ??= {}; config.agents.defaults ??= {};
+const defaults = config.agents.defaults;
+config.models ??= {}; config.models.providers ??= {};
+if (selection) {
+  if (!fs.existsSync(backup)) fs.writeFileSync(backup, JSON.stringify({
+    model: defaults.model ?? null,
+    models: defaults.models ?? null,
+    provider: config.models.providers['talos-openrouter'] ?? null,
+  }), {mode: 0o600});
+  const caps = selection.capabilities;
+  const model = 'talos-openrouter/' + selection.model_id;
+  defaults.model = {primary: model};
+  defaults.models = {...defaults.models, [model]: {}};
+  config.models.providers['talos-openrouter'] = {
+    baseUrl: 'http://talos-gateway:8001/native/v1', apiKey: token,
+    api: 'openai-completions', models: [{id: selection.model_id, name: caps.name,
+      reasoning: !!caps.reasoning?.supported_efforts, input: ['text'],
+      contextWindow: caps.context_length,
+      maxTokens: caps.max_completion_tokens ?? Math.min(8192, caps.context_length)}],
+  };
+} else if (fs.existsSync(backup)) {
+  const prior = JSON.parse(fs.readFileSync(backup, 'utf8'));
+  for (const key of ['model', 'models']) {
+    if (prior[key] === null) delete defaults[key]; else defaults[key] = prior[key];
+  }
+  if (prior.provider === null) delete config.models.providers['talos-openrouter'];
+  else config.models.providers['talos-openrouter'] = prior.provider;
+}
+const next = path + '.talos-model-next';
+fs.writeFileSync(next, JSON.stringify(config, null, 2), {mode: 0o600});
+cp.execFileSync('node', ['openclaw.mjs', 'config', 'validate'], {
+  env: {...process.env, OPENCLAW_CONFIG_PATH: next}, stdio: 'ignore', timeout: 60000
+});
+fs.renameSync(next, path);
+if (!selection) fs.rmSync(backup, {force: true});
+"""
+    write_native_config(
+        client, state, incarnation, runtime_kind, labels, "model", entrypoint, script, payload
+    )
+
+
+def write_native_config(
+    client, state, incarnation, runtime_kind, labels, kind, entrypoint, script, payload
+):
+    name = incarnation.config_volume + "-" + kind
+    try:
+        previous = client.containers.get(name)
+    except NotFound:
+        pass
+    else:
+        require_labels(previous.labels, labels)
+        previous.remove(force=True)
+    if runtime_kind == "hermes":
+        volumes = {state: {"bind": "/opt/data", "mode": "rw"}}
+        environment = {"HOME": "/opt/data", "HERMES_HOME": "/opt/data"}
+        user = "10000:10000"
+    else:
         volumes = {state: {"bind": STATE_PATH, "mode": "rw"}}
         environment = {
             "HOME": "/home/node",
@@ -414,7 +516,7 @@ fs.renameSync(next, path);
         incarnation.image_digest,
         name=name,
         entrypoint=entrypoint,
-        command=[script, json.dumps(permissions)],
+        command=[script, json.dumps(payload)],
         user=user,
         environment=environment,
         volumes=volumes,
@@ -437,6 +539,6 @@ fs.renameSync(next, path);
     try:
         initializer.start()
         if initializer.wait(timeout=90)["StatusCode"]:
-            raise RuntimeError("Native permission configuration validation failed")
+            raise RuntimeError("Native configuration validation failed")
     finally:
         initializer.remove(force=True)

@@ -3,7 +3,7 @@ import { ExternalLink, Bot, CircleAlert, LoaderCircle, Play, Plus, Send, Square,
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { UsageDetails, type GenerationSettings, type InferenceSelection, type InferenceCall } from "@/components/generation-settings";
-import { InferenceSettings } from "@/components/inference-settings";
+import { InferenceSettings, NativeModelChoice, NativeModelSettings } from "@/components/inference-settings";
 import { api, ApiError, errorMessage, type Employee, type Capability, type AgentPermissions } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -68,6 +68,7 @@ export function AgentWorkspace({ active = true, operationIds, onOperation }: { a
   const createDialog = useRef<HTMLDialogElement>(null);
   const applyDialog = useRef<HTMLDialogElement>(null);
   const [runtimeKind, setRuntimeKind] = useState<RuntimeKind>("openclaw");
+  const [createModel, setCreateModel] = useState<string | null>(null);
   const [dashboardPassword, setDashboardPassword] = useState("");
   const [runtimeMode, setRuntimeMode] = useState<"native" | "managed">("native");
   const dashboardWindows = useRef<Record<string, Window>>({});
@@ -187,6 +188,7 @@ export function AgentWorkspace({ active = true, operationIds, onOperation }: { a
     if (!displayName.trim() || (!employeeId && !employeeLabel.trim()) || employeeLabel.trim().length > 160 || writesDisabled) return;
     void mutate({ path: "/agents", method: "POST", key: crypto.randomUUID(), kind: "create", body: {
       display_name: displayName.trim(), ...(employeeId ? { employee_id: employeeId } : { employee_label: employeeLabel.trim() }), runtime_mode: runtimeMode, runtime_kind: runtimeKind,
+      ...(runtimeMode === "native" && createModel ? { model_id: createModel } : {}),
       ...(runtimeKind === "hermes" ? { dashboard_password: dashboardPassword } : {}),
     } });
   }
@@ -254,7 +256,7 @@ export function AgentWorkspace({ active = true, operationIds, onOperation }: { a
                 <span aria-hidden="true" className="absolute right-2 top-2 size-1.5 rounded-full bg-primary opacity-0 peer-checked:opacity-100" />
               </label>)}
             </div>
-            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{runtimeMode === "managed" ? "OpenClaw with model settings and conversations managed by Talos." : `Your own ${runtimes[runtimeKind]} workspace. Add a model and connect your apps after starting. OpenRouter is optional.`}</p>
+            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{runtimeMode === "managed" ? "OpenClaw with model settings and conversations managed by Talos." : `Your own ${runtimes[runtimeKind]} workspace with the employee’s native tool permissions.`}</p>
           </fieldset>
           {runtimeKind === "openclaw" ? <label className="flex items-start gap-3 text-sm">
             <input type="checkbox" checked={runtimeMode === "managed"} onChange={(event) => setRuntimeMode(event.target.checked ? "managed" : "native")} disabled={writesDisabled} className="mt-0.5 size-4 accent-primary" />
@@ -264,6 +266,7 @@ export function AgentWorkspace({ active = true, operationIds, onOperation }: { a
             <input id="dashboard-password" type="password" autoComplete="new-password" className={inputClass} value={dashboardPassword} onChange={(event) => setDashboardPassword(event.target.value)} minLength={12} maxLength={256} required disabled={writesDisabled} aria-describedby="dashboard-password-help" />
             <p id="dashboard-password-help" className="mt-2 text-xs leading-relaxed text-muted-foreground">At least 12 characters. Sign in to Hermes as <span className="font-medium text-foreground">talos</span> with this password. Keep it in your password manager.</p>
           </div>}
+          {runtimeMode === "native" ? <NativeModelChoice value={createModel} onChange={setCreateModel} disabled={writesDisabled} /> : <p className="text-xs text-muted-foreground">Provider: {modelId === "fixture" ? "Local simulator" : "OpenRouter"} · Model: {modelId ?? "Loading…"} (workspace default)</p>}
           {(actionError || pollError) && <div role="alert" className="space-y-3 text-sm text-danger">
             <p>{actionError ?? pollError}</p>
             {retryRequest?.kind === "create" && <Button type="button" variant="outline" disabled={submitting} onClick={() => void mutate(retryRequest)}>Retry same request</Button>}
@@ -292,7 +295,7 @@ export function AgentWorkspace({ active = true, operationIds, onOperation }: { a
           {!selected ? <div className="flex min-h-96 flex-col items-center justify-center px-6 py-16 text-center lg:min-h-[480px]"><span className="mb-5 flex size-14 items-center justify-center rounded-xl border bg-muted/40"><Bot className="size-7 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" /></span><h3 className="font-medium">No agent selected</h3><p className="mt-2 max-w-xs text-sm leading-relaxed text-muted-foreground">Create your first agent or select one from the list to manage its runtime.</p></div> : <>
             <div className="border-b p-6">
               <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h2 className="break-words text-lg font-semibold tracking-tight">{selected.display_name}</h2><p className="mt-1 text-sm text-muted-foreground">{selected.employee_name || "Unassigned"}</p></div><StateBadge state={selected.observed_state} /></div>
-              <p className="mt-3 break-words text-xs text-muted-foreground">{selected.runtime_mode === "native" ? `Native ${runtimeName} · Models and integrations configured in ${runtimeName}` : `${selected.inference_override ? "Custom model" : "Workspace default"} · ${effectiveModel === "fixture" ? "Local simulator" : effectiveModel ?? "Loading…"}`}</p>
+              <p className="mt-3 break-words text-xs text-muted-foreground">{selected.runtime_mode === "native" ? `Native ${runtimeName} · ${selected.inference_override ? `OpenRouter · ${selected.inference_override.model_id}` : "Provider & model handled by agent"}` : `${selected.inference_override ? "Custom model" : "Workspace default"} · ${effectiveModel === "fixture" ? "Local simulator" : effectiveModel ?? "Loading…"}`}</p>
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["ready", "running", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("start")}><Play aria-hidden="true" />Start</Button>
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["stopped", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("stop")}><Square aria-hidden="true" />Stop</Button>
@@ -316,10 +319,11 @@ export function AgentWorkspace({ active = true, operationIds, onOperation }: { a
               </> : <p className="text-sm text-muted-foreground">This agent uses its existing native permissions. Assign an employee to manage it through a role.</p>}
             </div>}
             {active && agentView === "settings" && (selected.runtime_mode === "native" ? <div className="space-y-5 p-6">
-              <div><h3 className="flex items-center gap-3 font-semibold"><RuntimeIcon kind={selected.runtime_kind} className="size-8" />Your {runtimeName} workspace</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">Configure the model and runtime in {runtimeName}’s own interface. Your configuration and files persist across stops and starts.</p></div>
+              <NativeModelSettings key={selected.id} agentId={selected.id} modelId={selected.inference_override?.model_id ?? null} disabled={writesDisabled || operationActive} onOperation={onOperation} />
+              <div><h3 className="flex items-center gap-3 font-semibold"><RuntimeIcon kind={selected.runtime_kind} className="size-8" />Your {runtimeName} workspace</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">Open {runtimeName} to manage native settings, credentials and integrations. Your configuration and files persist across stops and starts.</p></div>
               <Button disabled={writesDisabled || operationActive || selected.observed_state !== "ready"} onClick={openNativeWorkspace}><ExternalLink aria-hidden="true" />{selectedOperation?.action === "dashboard" && operationActive ? `Opening ${runtimeName}…` : `Open ${runtimeName}`}</Button>
               {selectedOperation?.dashboard_url && <p className="text-sm"><a href={selectedOperation.dashboard_url} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-4">Continue if the new tab did not open</a></p>}
-              <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">{selected.observed_state !== "ready" ? "Start this agent to open its workspace." : `First visit: ${selected.runtime_kind === "hermes" ? "sign in as talos with the dashboard password you chose, then " : ""}choose a model provider in ${runtimeName}. Talos’s managed model settings do not apply here.`}</p>
+              <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">{selected.observed_state !== "ready" ? "Start this agent to open its workspace." : `First visit: ${selected.runtime_kind === "hermes" ? "sign in as talos with the dashboard password you chose, then " : ""}configure a provider in ${runtimeName} if you selected “Handled by agent”.`}</p>
               <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Assigned agents use their applied role permissions. Saving a role does not change running agents. Remote Docker hosts require a tunnel for the workspace port.</p>
             </div> : <div className="p-6"><InferenceSettings key={selected.id} agentId={selected.id} onSaved={(selection) => setAgents((current) => current.map((agent) => agent.id === selected.id ? { ...agent, inference_override: selection.inherited ? null : selection } : agent))} /></div>)}
             <div className="p-6" hidden={agentView !== "conversation"}>
