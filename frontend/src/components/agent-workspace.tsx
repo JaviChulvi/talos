@@ -62,7 +62,6 @@ import {
   SheetDescription,
   SheetHeader,
   SheetTitle,
-  SheetTrigger,
 } from "@/components/ui/sheet";
 import {
   DropdownMenu,
@@ -72,11 +71,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -239,15 +233,17 @@ export function AgentWorkspace({
   onOperation: (agentId: string, id: string) => void;
 }) {
   const active = page === "agents";
-  const { setOpenMobile, setOpen } = useSidebar();
+  const { setOpenMobile } = useSidebar();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [agentView, setAgentView] = useState("settings");
   const [createOpen, setCreateOpen] = useState(false);
-  const [confirmation, setConfirmation] = useState<
-    "delete" | "apply-role" | null
-  >(null);
+  const [confirmation, setConfirmation] = useState<{
+    action: "delete" | "apply-role";
+    agentId: string;
+  } | null>(null);
   const conversation = useRef<HTMLDivElement>(null);
   const actionsTrigger = useRef<HTMLButtonElement>(null);
+  const settingsTrigger = useRef<HTMLButtonElement>(null);
   const confirmationTrigger = useRef<HTMLElement | null>(null);
   const createTrigger = useRef<HTMLElement | null>(null);
   const navigationTrigger = useRef<HTMLButtonElement>(null);
@@ -507,27 +503,34 @@ export function AgentWorkspace({
   function lifecycle(
     action: "start" | "stop" | "delete" | "apply-role",
     confirmed = false,
+    agent = selected,
   ) {
-    if (!selected || writesDisabled || operationActive) return;
+    if (
+      !agent ||
+      writesDisabled ||
+      transitionalStates.has(agent.observed_state) ||
+      (agent.id === selectedId && operationActive)
+    )
+      return;
     if (
       !confirmed &&
       (action === "delete" ||
-        (action === "apply-role" && selected.desired_state === "running"))
+        (action === "apply-role" && agent.desired_state === "running"))
     ) {
       confirmationTrigger.current =
         document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null;
-      setConfirmation(action);
+      setConfirmation({ action, agentId: agent.id });
       return;
     }
     setConfirmation(null);
     void mutate({
-      path: `/agents/${selected.id}${action === "delete" ? "" : `/${action}`}`,
+      path: `/agents/${agent.id}${action === "delete" ? "" : `/${action}`}`,
       method: action === "delete" ? "DELETE" : "POST",
       key: crypto.randomUUID(),
       kind: "lifecycle",
-      agentId: selected.id,
+      agentId: agent.id,
     });
   }
 
@@ -590,6 +593,12 @@ export function AgentWorkspace({
     setOpenMobile(false);
     setDetailsOpen(false);
   };
+  const selectAgent = (id: string) => {
+    if (id !== selectedId) setHistoryLoading(true);
+    setSelectedId(id);
+    window.location.assign("#agents");
+    navigate();
+  };
   const pageTitle =
     page === "employees"
       ? "Employees"
@@ -620,10 +629,8 @@ export function AgentWorkspace({
             <Button
               variant="ghost"
               size="icon-sm"
-              onClick={() => {
-                setOpen(false);
-                setOpenMobile(false);
-              }}
+              className="md:hidden"
+              onClick={() => setOpenMobile(false)}
               aria-label="Close sidebar"
             >
               <PanelLeftClose />
@@ -662,34 +669,122 @@ export function AgentWorkspace({
                     <SidebarMenuButton
                       isActive={active && selectedId === agent.id}
                       aria-pressed={active && selectedId === agent.id}
-                      className="h-11"
-                      onClick={() => {
-                        if (agent.id !== selectedId) setHistoryLoading(true);
-                        setSelectedId(agent.id);
-                        window.location.assign("#agents");
-                        navigate();
-                      }}
+                      className="h-14 gap-3 pr-11"
+                      onClick={() => selectAgent(agent.id)}
                       tooltip={agent.display_name}
                     >
                       <RuntimeIcon
                         kind={agent.runtime_kind}
-                        className="size-4"
+                        className="size-5 shrink-0"
                       />
-                      <span>{agent.display_name}</span>
-                      <span
-                        className={cn(
-                          "ml-auto size-1.5 shrink-0 rounded-full",
-                          ["ready", "running"].includes(agent.observed_state)
-                            ? "bg-success"
-                            : ["failed", "error"].includes(agent.observed_state)
-                              ? "bg-warning"
-                              : "bg-muted-foreground",
-                        )}
-                      />
-                      <span className="sr-only">
-                        {agent.observed_state.replaceAll("_", " ")}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">
+                          {agent.display_name}
+                        </span>
+                        <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              "size-2 shrink-0 rounded-full",
+                              ["ready", "running"].includes(agent.observed_state)
+                                ? "bg-success"
+                                : ["failed", "error", "unknown"].includes(
+                                      agent.observed_state,
+                                    )
+                                  ? "bg-warning"
+                                  : "bg-muted-foreground",
+                            )}
+                          />
+                          <span className="truncate capitalize">
+                            {agent.observed_state.replaceAll("_", " ")}
+                          </span>
+                        </span>
                       </span>
                     </SidebarMenuButton>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="absolute right-1 top-1/2 -translate-y-1/2"
+                          aria-label={`Actions for ${agent.display_name}`}
+                          onClick={(event) => {
+                            actionsTrigger.current = event.currentTarget;
+                          }}
+                        >
+                          <MoreHorizontal />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            settingsTrigger.current = actionsTrigger.current;
+                            selectAgent(agent.id);
+                            setAgentView("settings");
+                            setDetailsOpen(true);
+                          }}
+                        >
+                          <Settings2 />
+                          Agent settings
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          disabled={
+                            writesDisabled ||
+                            transitionalStates.has(agent.observed_state) ||
+                            (agent.id === selectedId && operationActive) ||
+                            ["ready", "running", "deleted"].includes(
+                              agent.observed_state,
+                            )
+                          }
+                          onSelect={() => {
+                            selectAgent(agent.id);
+                            lifecycle("start", false, agent);
+                          }}
+                        >
+                          <Play />
+                          Start agent
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={
+                            writesDisabled ||
+                            transitionalStates.has(agent.observed_state) ||
+                            (agent.id === selectedId && operationActive) ||
+                            ["stopped", "deleted"].includes(
+                              agent.observed_state,
+                            )
+                          }
+                          onSelect={() => {
+                            selectAgent(agent.id);
+                            lifecycle("stop", false, agent);
+                          }}
+                        >
+                          <Square />
+                          Stop agent
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          disabled={
+                            writesDisabled ||
+                            transitionalStates.has(agent.observed_state) ||
+                            (agent.id === selectedId && operationActive) ||
+                            agent.observed_state === "deleted"
+                          }
+                          onSelect={() => {
+                            selectAgent(agent.id);
+                            confirmationTrigger.current = actionsTrigger.current;
+                            setConfirmation({
+                              action: "delete",
+                              agentId: agent.id,
+                            });
+                          }}
+                        >
+                          <Trash2 />
+                          Delete agent
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </SidebarMenuItem>
                 ))
               )}
@@ -752,39 +847,28 @@ export function AgentWorkspace({
           {active ? (
             <>
               <div className="min-w-0 flex-1">
-                <h1 className="truncate text-base font-medium">
-                  {selected?.display_name ?? "Talos"}
-                </h1>
+                <div className="flex min-w-0 items-center gap-2">
+                  <h1 className="truncate text-base font-medium">
+                    {selected?.display_name ?? "Talos"}
+                  </h1>
+                  {selected && <StateBadge state={selected.observed_state} />}
+                </div>
                 {selected && (
                   <p className="truncate text-xs text-muted-foreground">
                     {runtimeName}
-                    <span className="mx-1.5">·</span>
-                    {selected.observed_state.replaceAll("_", " ")}
                   </p>
                 )}
               </div>
               {selected && (
-                <>
-                  <Sheet open={detailsOpen} onOpenChange={setDetailsOpen}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <SheetTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Agent settings"
-                            onClick={() => setAgentView("settings")}
-                          >
-                            <Settings2 />
-                          </Button>
-                        </SheetTrigger>
-                      </TooltipTrigger>
-                      <TooltipContent>Agent settings</TooltipContent>
-                    </Tooltip>
+                <Sheet open={detailsOpen} onOpenChange={setDetailsOpen}>
                     <SheetContent
                       className="w-full overflow-y-auto sm:max-w-lg"
                       onCloseAutoFocus={(event) => {
-                        if (!active) event.preventDefault();
+                        event.preventDefault();
+                        (settingsTrigger.current?.isConnected
+                          ? settingsTrigger.current
+                          : navigationTrigger.current
+                        )?.focus();
                       }}
                     >
                       <SheetHeader>
@@ -1034,64 +1118,7 @@ export function AgentWorkspace({
                         </TabsContent>
                       </Tabs>
                     </SheetContent>
-                  </Sheet>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        ref={actionsTrigger}
-                        aria-label="Agent actions"
-                      >
-                        <MoreHorizontal />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        disabled={
-                          writesDisabled ||
-                          operationActive ||
-                          ["ready", "running", "deleted"].includes(
-                            selected.observed_state,
-                          )
-                        }
-                        onSelect={() => lifecycle("start")}
-                      >
-                        <Play />
-                        Start agent
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        disabled={
-                          writesDisabled ||
-                          operationActive ||
-                          ["stopped", "deleted"].includes(
-                            selected.observed_state,
-                          )
-                        }
-                        onSelect={() => lifecycle("stop")}
-                      >
-                        <Square />
-                        Stop agent
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        disabled={
-                          writesDisabled ||
-                          operationActive ||
-                          selected.observed_state === "deleted"
-                        }
-                        onSelect={() => {
-                          confirmationTrigger.current = actionsTrigger.current;
-                          setConfirmation("delete");
-                        }}
-                      >
-                        <Trash2 />
-                        Delete agent
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </>
+                </Sheet>
               )}
             </>
           ) : (
@@ -1367,7 +1394,8 @@ export function AgentWorkspace({
                           variant="ghost"
                           size="sm"
                           className="max-w-[70%] text-muted-foreground"
-                          onClick={() => {
+                          onClick={(event) => {
+                            settingsTrigger.current = event.currentTarget;
                             setAgentView("settings");
                             setDetailsOpen(true);
                           }}
@@ -1720,46 +1748,56 @@ export function AgentWorkspace({
           </form>
         </DialogContent>
       </Dialog>
-      <AlertDialog
-        open={!!confirmation}
-        onOpenChange={(open) => {
-          if (!open) setConfirmation(null);
-        }}
-      >
-        <AlertDialogContent
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            (confirmationTrigger.current?.isConnected
-              ? confirmationTrigger.current
-              : (actionsTrigger.current ?? navigationTrigger.current)
-            )?.focus();
+      {confirmation && (
+        <AlertDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setConfirmation(null);
           }}
         >
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {confirmation === "delete"
-                ? `Delete ${selected?.display_name}?`
-                : "Apply saved role?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmation === "delete"
-                ? "This removes its runtime and private agent state. This cannot be undone."
-                : "Running work will be interrupted. This agent will restart with the captured permissions."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant={confirmation === "delete" ? "destructive" : "default"}
-              onClick={() => {
-                if (confirmation) lifecycle(confirmation, true);
-              }}
-            >
-              {confirmation === "delete" ? "Delete agent" : "Apply and restart"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+          <AlertDialogContent
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              (confirmationTrigger.current?.isConnected
+                ? confirmationTrigger.current
+                : (actionsTrigger.current ?? navigationTrigger.current)
+              )?.focus();
+            }}
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {confirmation.action === "delete"
+                  ? `Delete ${agents.find((agent) => agent.id === confirmation.agentId)?.display_name ?? "agent"}?`
+                  : "Apply saved role?"}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {confirmation.action === "delete"
+                  ? "This removes its runtime and private agent state. This cannot be undone."
+                  : "Running work will be interrupted. This agent will restart with the captured permissions."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant={
+                  confirmation.action === "delete" ? "destructive" : "default"
+                }
+                onClick={() => {
+                  lifecycle(
+                    confirmation.action,
+                    true,
+                    agents.find((agent) => agent.id === confirmation.agentId),
+                  );
+                }}
+              >
+                {confirmation.action === "delete"
+                  ? "Delete agent"
+                  : "Apply and restart"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </>
   );
 }
