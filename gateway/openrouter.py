@@ -28,24 +28,31 @@ class InferenceError(Exception):
         self.outcome = outcome
 
 
+def provider_key_source() -> str:
+    # An explicitly configured or mounted deployment secret always takes precedence,
+    # even when unreadable or empty. Never silently fall back to another credential.
+    if (
+        "TALOS_OPENROUTER_KEY_FILE" in os.environ
+        or Path("/run/secrets/openrouter_api_key").exists()
+    ):
+        return "deployment"
+    return "app"
+
+
 def provider_key() -> str:
+    path = (
+        Path(os.environ.get("TALOS_OPENROUTER_KEY_FILE", "/run/secrets/openrouter_api_key"))
+        if provider_key_source() == "deployment"
+        else get_settings().openrouter_app_key_file
+    )
     try:
-        key = (
-            Path(
-                os.environ.get(
-                    "TALOS_OPENROUTER_KEY_FILE",
-                    "/run/secrets/openrouter_api_key",
-                )
-            )
-            .read_text()
-            .strip()
-        )
+        key = path.read_text().strip()
         if not key or any(c.isspace() for c in key):
             raise ValueError
         return key
     except (OSError, ValueError):
         raise HTTPException(
-            503, "OpenRouter is not configured; mount the gateway API key secret"
+            503, "OpenRouter is not configured; add an API key in Talos Settings"
         ) from None
 
 

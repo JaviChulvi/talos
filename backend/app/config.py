@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     database_password: str | None = None
     static_dir: Path = Path("frontend/dist")
     allowed_hosts: list[str] = ["127.0.0.1", "localhost", "testserver"]
+    openrouter_app_key_file: Path = Path("/var/lib/talos-provider/openrouter.key")
     worker_state_dir: Path = Path("/var/lib/talos")
     installation_id: str = Field(default="local", pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
     compose_project: str = Field(default="talos", pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")

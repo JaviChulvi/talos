@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from backend.app.config import get_settings
 from gateway.fake_model import model_router
 from gateway.identity import native_selection, record_inference, selected_request, validate_token
-from gateway.openrouter import provider_key
+from gateway.openrouter import provider_key, provider_key_source
 
 app = FastAPI(title="Talos gateway", docs_url=None, redoc_url=None)
 app.include_router(
@@ -31,9 +31,9 @@ def live():
 def provider_status():
     try:
         provider_key()
-        return {"configured": True}
+        return {"configured": True, "source": provider_key_source()}
     except HTTPException:
-        return {"configured": False}
+        return {"configured": False, "source": provider_key_source()}
 
 
 @app.post("/native/v1/chat/completions")

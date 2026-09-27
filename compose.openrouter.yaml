@@ -1,10 +1,7 @@
-# Opt-in outbound inference. Only the gateway receives the provider credential.
+# Optional deployment-managed key, read-only in Talos Settings.
 services:
   gateway:
-    networks: [control, inference-egress]
     secrets: [openrouter_api_key]
-networks:
-  inference-egress:
 secrets:
   openrouter_api_key:
     file: ${TALOS_OPENROUTER_SECRET_FILE:?Set the path to your OpenRouter key file}

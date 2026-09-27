@@ -70,6 +70,7 @@ services:
   api:
     <<: *platform
     networks: [control, ingress]
+    volumes: ["provider-secrets:/var/lib/talos-provider"]
     ports: ["127.0.0.1:${TALOS_PORT:-8000}:8000"]
     depends_on:
       migrate: {condition: service_completed_successfully}
@@ -90,16 +91,20 @@ services:
       migrate: {condition: service_completed_successfully}
   gateway:
     <<: *platform
+    networks: [control, inference-egress]
+    volumes: ["provider-secrets:/var/lib/talos-provider:ro"]
     labels:
       io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
     command: ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8001", "--no-proxy-headers"]
     depends_on:
       migrate: {condition: service_completed_successfully}
 networks:
+  inference-egress:
   egress:
   ingress:
   control:
     internal: true
 volumes:
+  provider-secrets:
   postgres-data:
   worker-state:

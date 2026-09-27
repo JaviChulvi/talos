@@ -443,3 +443,140 @@ def test_reasoning_counts_towards_operational_output_limit(gateway, monkeypatch)
     state.data = "data: " + json.dumps({"choices": [{"delta": {"reasoning": "x" * 51}}]}) + "\n\n"
     assert client.post("/v1/chat/completions", headers=HEADERS, json=BODY).status_code == 502
     assert state.reports[0]["outcome"] == "output_limit"
+
+
+@pytest.fixture
+def provider_settings(monkeypatch, tmp_path):
+    from backend.app import inference
+    from backend.app.main import create_app
+    from gateway import main
+
+    path = tmp_path / "openrouter.key"
+    settings = SimpleNamespace(openrouter_app_key_file=path)
+    monkeypatch.setattr(inference, "get_settings", lambda: settings)
+    monkeypatch.setattr(openrouter, "get_settings", lambda: settings)
+    monkeypatch.delenv("TALOS_OPENROUTER_KEY_FILE", raising=False)
+    state = SimpleNamespace(status=200, unavailable=False, calls=[])
+
+    def transport(request):
+        if request.url.host == "gateway":
+            if state.unavailable:
+                raise httpx.ConnectError("gateway unavailable")
+            return httpx.Response(200, json=main.provider_status())
+        assert str(request.url) == "https://openrouter.ai/api/v1/key"
+        state.calls.append(request)
+        # A hostile provider response must not be reflected to the administrator.
+        return httpx.Response(state.status, json={"data": {}, "message": "synthetic-secret"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inference.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(transport), **kwargs),
+    )
+    with TestClient(create_app()) as client:
+        yield client, path, state
+
+
+def test_app_key_save_rotate_remove_without_exposure(provider_settings, caplog):
+    client, path, state = provider_settings
+    endpoint = "/api/v1/inference/provider"
+    assert client.get(endpoint).json() == {"configured": False, "source": "app"}
+    for secret in ("synthetic-secret", "replacement-secret"):
+        response = client.put(endpoint, json={"key": secret})
+        assert response.status_code == 200
+        assert response.json() == {"configured": True, "source": "app"}
+        assert secret not in response.text + client.get(endpoint).text + caplog.text
+        assert path.read_text() == secret
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert openrouter.provider_key() == secret  # Gateway re-reads without a restart.
+        assert state.calls[-1].headers["authorization"] == f"Bearer {secret}"
+        assert list(path.parent.iterdir()) == [path]
+    assert client.delete(endpoint).json() == {"configured": False, "source": "app"}
+    assert not path.exists()
+    assert client.delete(endpoint).status_code == 200
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException, match="OpenRouter is not configured"):
+        openrouter.provider_key()
+
+
+@pytest.mark.parametrize("status,expected", [(401, 400), (403, 400), (429, 503), (500, 503)])
+def test_rejected_key_preserves_saved_key(provider_settings, status, expected):
+    client, path, state = provider_settings
+    path.write_text("previous-key")
+    state.status = status
+    response = client.put("/api/v1/inference/provider", json={"key": "synthetic-secret"})
+    assert response.status_code == expected
+    assert "synthetic-secret" not in response.text
+    assert path.read_text() == "previous-key"
+
+
+@pytest.mark.parametrize("key", ["", "synthetic-secret\n", "synthetic-secret " * 40, 123])
+def test_key_validation_never_echoes_input(provider_settings, key):
+    client, path, state = provider_settings
+    response = client.put("/api/v1/inference/provider", json={"key": key})
+    assert response.status_code == 422
+    assert "synthetic-secret" not in response.text
+    assert not path.exists() and not state.calls
+
+
+@pytest.mark.parametrize("mounted", [True, False])
+def test_deployment_secret_blocks_app_changes(provider_settings, monkeypatch, mounted):
+    client, path, state = provider_settings
+    deployment = path.parent / "deployment-key"
+    if mounted:
+        deployment.write_text("deployment-secret")
+    monkeypatch.setenv("TALOS_OPENROUTER_KEY_FILE", str(deployment))
+    path.write_text("previous-app-key")
+    endpoint = "/api/v1/inference/provider"
+    assert client.get(endpoint).json() == {"configured": mounted, "source": "deployment"}
+    assert client.put(endpoint, json={"key": "synthetic-secret"}).status_code == 409
+    assert client.delete(endpoint).status_code == 409
+    assert not state.calls and path.read_text() == "previous-app-key"
+    if mounted:
+        assert openrouter.provider_key() == "deployment-secret"
+    else:
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException):
+            openrouter.provider_key()  # No fallback to the app key.
+
+
+def test_key_writes_fail_closed_on_gateway_or_storage_failure(provider_settings, monkeypatch):
+    from backend.app import inference
+
+    client, path, state = provider_settings
+    endpoint = "/api/v1/inference/provider"
+    path.write_text("previous-key")
+    state.unavailable = True
+    assert client.put(endpoint, json={"key": "synthetic-secret"}).status_code == 503
+    assert client.delete(endpoint).status_code == 503
+    assert not state.calls and path.read_text() == "previous-key"
+    state.unavailable = False
+
+    def denied(*args):
+        raise PermissionError
+
+    monkeypatch.setattr(inference.os, "replace", denied)
+    response = client.put(endpoint, json={"key": "synthetic-secret"})
+    assert response.status_code == 503 and "synthetic-secret" not in response.text
+    assert path.read_text() == "previous-key"
+    assert list(path.parent.iterdir()) == [path]
+
+
+def test_key_mutations_reject_external_browser_and_are_absent_from_gateway(provider_settings):
+    from gateway import main
+
+    client, path, state = provider_settings
+    endpoint = "/api/v1/inference/provider"
+    assert (
+        client.put(
+            endpoint, json={"key": "synthetic-secret"}, headers={"Origin": "https://example.com"}
+        ).status_code
+        == 403
+    )
+    with TestClient(main.app) as gateway_client:
+        assert gateway_client.put(endpoint, json={"key": "synthetic-secret"}).status_code == 404
+        assert gateway_client.delete(endpoint).status_code == 404
+    assert not path.exists() and not state.calls

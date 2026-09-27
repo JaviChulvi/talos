@@ -1,11 +1,14 @@
 """Server-owned model capabilities and optional generation settings."""
 
+import os
+import tempfile
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -18,6 +21,7 @@ from backend.app.agents import (
     recover_duplicate,
     request_hash,
 )
+from backend.app.config import get_settings
 from backend.app.models import ACTIVE_OPERATION_STATUSES, Agent, InferenceConfig, Operation
 
 router = APIRouter(prefix="/api/v1/inference")
@@ -205,9 +209,83 @@ async def provider_status():
         async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
             response = await client.get("http://gateway:8001/health/provider")
             response.raise_for_status()
-            return response.json()
-    except (httpx.HTTPError, ValueError):
-        return {"configured": False}
+            status = response.json()
+            if not isinstance(status, dict) or status.get("source") not in {"app", "deployment"}:
+                raise ValueError
+            return {"configured": status["configured"], "source": status["source"]}
+    except (httpx.HTTPError, ValueError, KeyError):
+        raise HTTPException(
+            503, "Cannot check OpenRouter configuration; retry when the gateway is ready"
+        ) from None
+
+
+class ProviderKey(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: SecretStr = Field(min_length=1, max_length=512)
+
+    @field_validator("key")
+    @classmethod
+    def valid_key(cls, value: SecretStr) -> SecretStr:
+        if any(not 33 <= ord(char) <= 126 for char in value.get_secret_value()):
+            raise ValueError("API key must contain only printable characters without spaces")
+        return value
+
+
+async def require_app_key():
+    if (await provider_status())["source"] == "deployment":
+        raise HTTPException(
+            409, "This key is managed by your deployment; change the mounted secret"
+        )
+
+
+@router.put("/provider")
+async def save_provider_key(body: ProviderKey):
+    await require_app_key()
+    try:
+        async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+            response = await client.get(
+                "https://openrouter.ai/api/v1/key",
+                headers={"Authorization": f"Bearer {body.key.get_secret_value()}"},
+            )
+            if response.status_code in {401, 403}:
+                raise HTTPException(
+                    400, "OpenRouter rejected this API key; the saved key is unchanged"
+                )
+            response.raise_for_status()
+    except httpx.HTTPError:
+        raise HTTPException(
+            503, "Could not verify the API key with OpenRouter; the saved key is unchanged"
+        ) from None
+    path = get_settings().openrouter_app_key_file
+    temporary = None
+    try:
+        # Same-directory replacement is atomic, and NamedTemporaryFile creates mode 0600.
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as file:
+            temporary = Path(file.name)
+            file.write(body.key.get_secret_value())
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    except OSError:
+        raise HTTPException(
+            503, "Could not save the API key; check the provider-secrets volume permissions"
+        ) from None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return await provider_status()
+
+
+@router.delete("/provider")
+async def remove_provider_key():
+    await require_app_key()
+    try:
+        get_settings().openrouter_app_key_file.unlink(missing_ok=True)
+    except OSError:
+        raise HTTPException(
+            503, "Could not remove the API key; check the provider-secrets volume permissions"
+        ) from None
+    return await provider_status()
 
 
 @router.post("/agents/{agent_id}/native", status_code=202, response_model=OperationResponse)

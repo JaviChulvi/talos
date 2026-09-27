@@ -266,7 +266,7 @@ export function AgentWorkspace({ active = true, operationIds, onOperation }: { a
             <input id="dashboard-password" type="password" autoComplete="new-password" className={inputClass} value={dashboardPassword} onChange={(event) => setDashboardPassword(event.target.value)} minLength={12} maxLength={256} required disabled={writesDisabled} aria-describedby="dashboard-password-help" />
             <p id="dashboard-password-help" className="mt-2 text-xs leading-relaxed text-muted-foreground">At least 12 characters. Sign in to Hermes as <span className="font-medium text-foreground">talos</span> with this password. Keep it in your password manager.</p>
           </div>}
-          {runtimeMode === "native" ? <NativeModelChoice value={createModel} onChange={setCreateModel} disabled={writesDisabled} /> : <p className="text-xs text-muted-foreground">Provider: {modelId === "fixture" ? "Local simulator" : "OpenRouter"} · Model: {modelId ?? "Loading…"} (workspace default)</p>}
+          {runtimeMode === "native" ? <NativeModelChoice active={active} onConfigure={() => createDialog.current?.close()} value={createModel} onChange={setCreateModel} disabled={writesDisabled} /> : <p className="text-xs text-muted-foreground">Provider: {modelId === "fixture" ? "Local simulator" : "OpenRouter"} · Model: {modelId ?? "Loading…"} (workspace default)</p>}
           {(actionError || pollError) && <div role="alert" className="space-y-3 text-sm text-danger">
             <p>{actionError ?? pollError}</p>
             {retryRequest?.kind === "create" && <Button type="button" variant="outline" disabled={submitting} onClick={() => void mutate(retryRequest)}>Retry same request</Button>}
