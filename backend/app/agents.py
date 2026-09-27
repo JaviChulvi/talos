@@ -18,6 +18,7 @@ from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     RUNTIME_RELEASES,
     Agent,
+    Employee,
     Operation,
     WorkloadIncarnation,
 )
@@ -54,7 +55,14 @@ class CreateAgent(BaseModel):
         return self
 
     display_name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
-    employee_label: str = Field(min_length=1, max_length=160, pattern=r"^[^\x00]*$")
+    employee_label: str = Field(default="", max_length=160, pattern=r"^[^\x00]*$")
+    employee_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def employee_identity(self):
+        if self.employee_id is None and not self.employee_label:
+            raise ValueError("Choose an employee or supply an employee label")
+        return self
 
 
 class AgentResponse(BaseModel):
@@ -65,6 +73,9 @@ class AgentResponse(BaseModel):
     runtime_mode: str
     display_name: str
     employee_label: str
+    employee_id: UUID | None
+    employee_name: str
+    role: dict | None
     inference_override: dict | None
     runtime_release: str
     model_route: str
@@ -147,6 +158,10 @@ def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, session: Da
     scope = "create-agent"
     payload = body.model_dump(exclude={"dashboard_password"})
     request = {key: value for key, value in payload.items() if key != "runtime_kind"}
+    if body.employee_id is not None:
+        request["employee_id"] = str(body.employee_id)
+    if body.employee_id is None:
+        request.pop("employee_id")  # Retain replay hashes for legacy requests.
     if body.runtime_kind == "hermes":
         request.update(
             runtime_kind="hermes",
@@ -166,6 +181,11 @@ def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, session: Da
             replay = find_replay(session, scope, idempotency_key, digest)
             if replay:
                 return replay
+            if (
+                body.employee_id
+                and session.get(Employee, body.employee_id, with_for_update=True) is None
+            ):
+                raise HTTPException(404, "Employee not found")
             password_hash = None
             if body.dashboard_password:
                 # Format verified against Hermes's bundled password provider.
@@ -296,3 +316,31 @@ def open_dashboard(
 ):
     response.headers["Cache-Control"] = "no-store"
     return request_lifecycle(session, agent_id, "dashboard", idempotency_key)
+
+
+class AssignEmployee(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    employee_id: UUID
+
+
+@router.put("/agents/{agent_id}/employee", response_model=AgentResponse)
+def assign_employee(agent_id: UUID, body: AssignEmployee, session: Database):
+    with session.begin():
+        agent = session.get(Agent, agent_id, with_for_update=True)
+        if agent is None or agent.desired_state == "deleted":
+            raise HTTPException(404, "Agent not found")
+        if (
+            agent.desired_state != "stopped"
+            or agent.observed_state != "stopped"
+            or session.scalar(
+                select(Operation.id).where(
+                    Operation.agent_id == agent_id, Operation.status.in_(ACTIVE_OPERATION_STATUSES)
+                )
+            )
+        ):
+            raise HTTPException(409, "Stop the agent and wait for its operation before assigning")
+        employee = session.get(Employee, body.employee_id, with_for_update=True)
+        if employee is None:
+            raise HTTPException(404, "Employee not found")
+        agent.employee = employee
+    return agent

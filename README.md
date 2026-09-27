@@ -298,3 +298,17 @@ The worker restarts automatically after a process failure; an explicit Compose s
 ### Runtime icon attribution
 
 The picker uses the upstream [OpenClaw favicon](https://github.com/openclaw/openclaw/blob/eb377ac59e6c9fd6c7705028034812becf00271b/ui/public/favicon.svg) and [Hermes icon](https://github.com/NousResearch/hermes-agent/blob/4b7229d612324adcf86ede7c181df542a1697fd6/assets/icon-master.svg), distributed under their repositories’ MIT licenses. The names and marks identify the selected runtime.
+
+
+## Employee and role administration
+
+The local administrator API supports `/api/v1/employees` and `/api/v1/roles`
+(GET/POST), their `/{id}` resources (PUT/DELETE), and GET `/api/v1/capabilities`.
+Employees have one role; roles select native capability groups. Referenced records
+cannot be deleted. These are administrator records, not employee login accounts.
+
+Create an agent with `employee_id`, or attach a stopped agent with
+`PUT /api/v1/agents/{id}/employee`. Legacy `employee_label` requests remain supported;
+existing labels are never automatically converted into employee identities.
+Assignments in this layer are configuration only: runtime permission application
+is delivered separately. No running agent is changed by saving a role.
