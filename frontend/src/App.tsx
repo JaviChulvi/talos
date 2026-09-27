@@ -95,6 +95,14 @@ function saveIds(key: string, ids: Record<string, string>) {
   }
 }
 
+function pageFromHash(hash: string) {
+  if (/^#agents\/[^/]+\/settings$/.test(hash)) return hash.slice(1);
+  if (["#platform", "#settings", "#roles", "#employees"].includes(hash))
+    return hash.slice(1);
+  if (hash === "" || hash === "#agents") return "agents";
+  return null;
+}
+
 export default function App() {
   const [operationIds, setOperationIds] = useState(() =>
     readIds("talos.operationIds"),
@@ -105,34 +113,14 @@ export default function App() {
   useEffect(() => {
     saveIds("talos.operationIds", operationIds);
   }, [operationIds]);
-  const [page, setPage] = useState(() =>
-    ["#platform", "#settings", "#roles", "#employees"].includes(
-      window.location.hash,
-    )
-      ? window.location.hash.slice(1)
-      : "agents",
+  const [page, setPage] = useState(
+    () => pageFromHash(window.location.hash) ?? "agents",
   );
 
   useEffect(() => {
     const navigate = () => {
-      if (
-        [
-          "",
-          "#platform",
-          "#agents",
-          "#settings",
-          "#roles",
-          "#employees",
-        ].includes(window.location.hash)
-      ) {
-        setPage(
-          ["#platform", "#settings", "#roles", "#employees"].includes(
-            window.location.hash,
-          )
-            ? window.location.hash.slice(1)
-            : "agents",
-        );
-      }
+      const nextPage = pageFromHash(window.location.hash);
+      if (nextPage) setPage(nextPage);
     };
     window.addEventListener("hashchange", navigate);
     return () => window.removeEventListener("hashchange", navigate);
