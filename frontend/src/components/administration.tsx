@@ -9,7 +9,7 @@ const inputClass = "w-full rounded-md border border-input bg-background px-3 py-
 const pending = new Set(["queued", "running", "retry_wait"]);
 type Result = { agent_id: string; id?: string; key: string; status: string; error?: string | null };
 
-export function Administration({ kind, active }: { kind: "roles" | "employees"; active: boolean }) {
+export function Administration({ kind, active, onOperation }: { kind: "roles" | "employees"; active: boolean; onOperation: (agentId: string, id: string) => void }) {
   const [roles, setRoles] = useState<Role[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [agents, setAgents] = useState<AgentPermissions[]>([]);
@@ -96,10 +96,9 @@ export function Administration({ kind, active }: { kind: "roles" | "employees"; 
   async function applyOne(agentId: string, key: string) {
     setResults((current) => [...current.filter((result) => result.agent_id !== agentId), { agent_id: agentId, key, status: "submitting" }]);
     try {
-      const operation = await api<Result>(`/agents/${agentId}/apply-role`, { method: "POST", headers: { "Idempotency-Key": key }, signal: AbortSignal.timeout(15000) });
+      const operation = await api<Result & { id: string }>(`/agents/${agentId}/apply-role`, { method: "POST", headers: { "Idempotency-Key": key }, signal: AbortSignal.timeout(15000) });
       setResults((current) => current.map((result) => result.agent_id === agentId ? { ...operation, key } : result));
-      // Reuse the existing per-agent operation view if the admin navigates away.
-      try { const ids = JSON.parse(localStorage.getItem("talos.operationIds") ?? "{}"); localStorage.setItem("talos.operationIds", JSON.stringify({ ...ids, [agentId]: operation.id })); } catch { /* Server operations remain durable. */ }
+      onOperation(agentId, operation.id);
     } catch (cause) {
       const uncertain = !(cause instanceof ApiError) || cause.status >= 500;
       setResults((current) => current.map((result) => result.agent_id === agentId ? { ...result, status: uncertain ? "unknown" : "failed", error: errorMessage(cause) } : result));

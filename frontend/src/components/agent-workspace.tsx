@@ -44,32 +44,17 @@ const activeRuns = new Set(["queued", "dispatching", "running", "cancel_requeste
 const transitionalStates = new Set(["pending", "provisioning", "starting", "stopping", "deleting", "applying"]);
 const inputClass = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 
-function readIds(key: string): Record<string, string> {
-  try {
-    const value: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      return Object.fromEntries(Object.entries(value).filter(([, id]) => typeof id === "string"));
-    }
-  } catch { /* Stored identifiers are optional; the server owns all records. */ }
-  return {};
-}
-
-function saveIds(key: string, ids: Record<string, string>) {
-  try { localStorage.setItem(key, JSON.stringify(ids)); } catch { /* Continue when local storage is disabled. */ }
-}
-
 function StateBadge({ state }: { state: string }) {
   const healthy = ["ready", "running", "completed", "succeeded"].includes(state);
   const warning = ["unknown", "failed", "error", "interrupted"].includes(state);
   return <Badge variant={healthy ? "success" : warning ? "warning" : "secondary"} className="capitalize">{state.replaceAll("_", " ")}</Badge>;
 }
 
-export function AgentWorkspace({ active = true }: { active?: boolean }) {
+export function AgentWorkspace({ active = true, operationIds, onOperation }: { active?: boolean; operationIds: Record<string, string>; onOperation: (agentId: string, id: string) => void }) {
   const [agentView, setAgentView] = useState("conversation");
   const [modelId, setModelId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [operationIds, setOperationIds] = useState(() => readIds("talos.operationIds"));
   const [operation, setOperation] = useState<Operation | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [events, setEvents] = useState<{ runId: string; items: RunEvent[] }>({ runId: "", items: [] });
@@ -114,8 +99,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
     const poll = async () => {
       try {
         const options = { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]) };
-        const observedOperationId = readIds("talos.operationIds")[selectedId] ?? operationId;
-        const latestOperation = observedOperationId ? api<Operation>(`/operations/${observedOperationId}`, options).catch((error) => {
+        const latestOperation = operationId ? api<Operation>(`/operations/${operationId}`, options).catch((error) => {
           if (error instanceof ApiError && error.status === 404) return null;
           throw error;
         }) : Promise.resolve(null);
@@ -145,7 +129,6 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
         setModelId(nextModel.model_id);
         setSelectedId((current) => nextAgents.some((agent) => agent.id === current) ? current : nextAgents[0]?.id ?? "");
         setOperation(nextOperation);
-        if (nextOperation) setOperationIds((current) => current[selectedId] === nextOperation.id ? current : { ...current, [selectedId]: nextOperation.id });
         setRuns(nextRuns);
         if (nextRunId) {
           setEvents((current) => ({ runId: nextRunId, items: current.runId === nextRunId ? [...current.items, ...nextEvents] : nextEvents }));
@@ -180,9 +163,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
         setRuns((current) => [result as Run, ...current.filter((run) => run.id !== result.id)]);
         setMessage("");
       } else if (request.kind !== "cancel") {
-        const next = { ...operationIds, [result.agent_id]: result.id };
-        setOperationIds(next);
-        saveIds("talos.operationIds", next);
+        onOperation(result.agent_id, result.id);
         setOperation(result);
         setSelectedId(result.agent_id);
         if (request.kind === "create") { setDisplayName(""); setEmployeeLabel(""); setEmployeeId(""); setDashboardPassword(""); createDialog.current?.close(); }

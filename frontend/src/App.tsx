@@ -32,7 +32,26 @@ function ServiceStatus({ value }: { value?: string }) {
   );
 }
 
+function readIds(key: string): Record<string, string> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return Object.fromEntries(Object.entries(value).filter(([, id]) => typeof id === "string"));
+    }
+  } catch { /* Stored identifiers are optional; the server owns all records. */ }
+  return {};
+}
+
+function saveIds(key: string, ids: Record<string, string>) {
+  try { localStorage.setItem(key, JSON.stringify(ids)); } catch { /* Continue when local storage is disabled. */ }
+}
+
 export default function App() {
+  const [operationIds, setOperationIds] = useState(() => readIds("talos.operationIds"));
+  const recordOperation = useCallback((agentId: string, id: string) => {
+    setOperationIds((current) => ({ ...current, [agentId]: id }));
+  }, []);
+  useEffect(() => { saveIds("talos.operationIds", operationIds); }, [operationIds]);
   const [page, setPage] = useState(() => ["#platform", "#settings", "#roles", "#employees"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -128,10 +147,10 @@ export default function App() {
           <span className="local-label"><span className="status-dot" />Local development</span>
         </header>
         <main id="main-content" tabIndex={-1} className="page-content">
-          <div hidden={page !== "roles"}><Administration kind="roles" active={page === "roles"} /></div>
-          <div hidden={page !== "employees"}><Administration kind="employees" active={page === "employees"} /></div>
+          <div hidden={page !== "roles"}><Administration kind="roles" active={page === "roles"} onOperation={recordOperation} /></div>
+          <div hidden={page !== "employees"}><Administration kind="employees" active={page === "employees"} onOperation={recordOperation} /></div>
           <div hidden={page !== "agents"}>
-            <AgentWorkspace active={page === "agents"} />
+            <AgentWorkspace active={page === "agents"} operationIds={operationIds} onOperation={recordOperation} />
           </div>
           {page === "settings" && <section aria-labelledby="settings-heading">
             <div className="page-heading"><div><h1 id="settings-heading">Settings</h1><p>Workspace defaults for your agents.</p></div></div>
