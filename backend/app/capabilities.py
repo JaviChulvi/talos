@@ -6,12 +6,14 @@ CAPABILITIES = {
         "description": "Search the web and retrieve page content.",
         "openclaw": ["web_search", "web_fetch"],
         "hermes": ["web"],
+        "hermes_tools": ["web_search", "web_extract"],
     },
     "workspace_files": {
         "name": "Workspace files",
         "description": "Read, search, create and edit files accessible to the runtime.",
         "openclaw": ["read", "write", "edit", "apply_patch"],
         "hermes": ["file"],
+        "hermes_tools": ["read_file", "write_file", "patch", "search_files"],
     },
     "terminal_execution": {
         "name": "Terminal execution",
@@ -19,6 +21,7 @@ CAPABILITIES = {
         "even when their dedicated tools are disabled.",
         "openclaw": ["exec", "process", "code_execution"],
         "hermes": ["terminal", "code_execution"],
+        "hermes_tools": ["terminal", "process_manage", "execute_code"],
     },
 }
 
