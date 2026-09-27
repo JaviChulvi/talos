@@ -9,6 +9,16 @@ from docker.errors import NotFound
 
 from .openclaw import SCOPES, DeviceIdentity
 
+
+class OwnershipError(RuntimeError):
+    pass
+
+
+def require_labels(actual: dict, expected: dict):
+    if any(actual.get(key) != value for key, value in expected.items()):
+        raise OwnershipError("Docker resource does not belong to this agent installation")
+
+
 IMAGE = (
     "ghcr.io/openclaw/openclaw@sha256:"
     "0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15"
@@ -243,8 +253,7 @@ def prepare_volumes(
     except NotFound:
         pass
     else:
-        if previous.labels != labels:
-            raise RuntimeError("Initializer ownership conflict")
+        require_labels(previous.labels, labels)
         # The single worker may have died during this fixed, idempotent bootstrap.
         previous.remove(force=True)
     initializer = client.containers.create(
@@ -334,8 +343,7 @@ def apply_native_permissions(client, state, incarnation, runtime_kind, permissio
     except NotFound:
         pass
     else:
-        if previous.labels != labels:
-            raise RuntimeError("Permission initializer ownership conflict")
+        require_labels(previous.labels, labels)
         previous.remove(force=True)
     if runtime_kind == "hermes":
         entrypoint = ["python", "-c"]
