@@ -2,14 +2,14 @@
 
 A self-hosted control plane for personal employee agents. The goal is to let companies manage agent integrations, permissions, credentials, spending, and offboarding.
 
-**Current status: local prototype.** Talos creates and manages native OpenClaw instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. User authentication, employee access, business permissions, budgets, and Hermes support are future work.
+**Current status: local prototype.** Talos creates and manages native OpenClaw and Hermes instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. User authentication, employee access, business permissions, and budgets are future work.
 
 ## What works
 
 - Create, inspect, start, stop, and delete an agent with a display name and employee label.
-- One OpenClaw container, private internal network, and private state volume per agent.
-- Native OpenClaw UI access through a loopback-only TCP relay and a short-lived, single-use pairing link.
-- Native full tools and key-free `parallel-free` web search; provider and channel setup stays in OpenClaw.
+- Choose OpenClaw or Hermes with the runtime icon picker; each agent has its own container, private internal network, and private state volume.
+- Native UI access through a loopback-only TCP relay: OpenClaw device pairing or Hermes password login.
+- Native tools and key-free search; provider and channel setup stays in the selected runtime.
 - Durable PostgreSQL operations, idempotent requests, bounded retries, and adoption of owned Docker resources after a worker crash.
 - Signed OpenClaw device pairing, diagnostic messages, ordered events, history support in the driver, and cancellation.
 - Per-incarnation gateway credentials, checked against the current agent state and revocation/expiry on each fake-model request. Database failures deny access.
@@ -26,10 +26,10 @@ This prototype is for one organization with trusted host administrators. Keep th
 | Persistence | PostgreSQL 17, SQLAlchemy, Alembic |
 | Worker | Python and Docker SDK; one worker per installation |
 | Gateway | Separate FastAPI process; authenticated simulator and OpenRouter text inference |
-| Runtime | OpenClaw 2026.9.6, pinned by image digest; Gateway protocol v4 |
+| Runtimes | OpenClaw 2026.9.6 (Gateway v4) and Hermes 0.21.5, pinned by image digest |
 | Packaging | uv, pnpm, Docker Compose |
 
-`frontend/` contains the dashboard; `backend/` owns the API and database models; `worker/` owns Docker and OpenClaw control; `gateway/` owns workload authentication and the fake model. `compose.yaml` starts the platform, `deploy/` contains its image build and runtime pin, and `tests/` contains focused backend and runtime checks. Node.js is used for frontend tooling; OpenClaw carries its own runtime dependencies.
+`frontend/` contains the dashboard; `backend/` owns the API and database models; `worker/` owns Docker lifecycle and native runtime access; `gateway/` owns workload authentication and the fake model. `compose.yaml` starts the platform, `deploy/` contains its image build and runtime pin, and `tests/` contains focused backend and runtime checks. Node.js is used for frontend tooling; each native image carries its own runtime dependencies.
 
 ## Run locally
 
@@ -43,12 +43,12 @@ Edit the example database password in `.env` **before the first startup**. `POST
 
 ```sh
 docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
-docker compose build native-runtime
+docker compose build native-runtime hermes-runtime
 docker compose up --build -d
 docker compose ps
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000). PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the pinned upstream image for managed agents and the locally built native image for native agents. Each native incarnation records and launches the immutable local image ID. Rebuild `native-runtime` when its Dockerfile or plugin lock changes; stop/start applies the new image.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the pinned upstream image for managed agents and the locally built native image for native agents. Each native incarnation records and launches the immutable local image ID. Both runtimes are installed by the build command above. Rebuild the corresponding target (`native-runtime` for OpenClaw, `hermes-runtime` for Hermes) when its pin or dependencies change; stop/start applies the new image.
 
 For a remote Linux development host, keep that binding and use a tunnel:
 
@@ -56,21 +56,25 @@ For a remote Linux development host, keep that binding and use a tunnel:
 ssh -N -L 8000:127.0.0.1:8000 user@your-host
 ```
 
-In the dashboard, create a **Native OpenClaw** agent, wait for **Stopped**, start it, and wait for **Ready**. Click **Open OpenClaw** to pair your browser and open its native interface. Configure your chosen model provider there; OpenRouter is optional. The instance starts without provider credentials, but an agent conversation still needs a usable model. Native provider credentials belong to that instance's private state; Talos's model picker and shared OpenRouter key do not apply.
+In the dashboard, click **New agent**, choose **OpenClaw** or **Hermes**, wait for **Stopped**, start it, and wait for **Ready**. Click **Open OpenClaw** or **Open Hermes** to open its native interface. For Hermes, choose a dashboard password of at least 12 characters when creating the agent, then sign in as `talos`. Configure your chosen model provider there; OpenRouter is optional. The instance starts without provider credentials, but an agent conversation still needs a usable model. Native provider credentials belong to that instance's private state; Talos's model picker and shared OpenRouter key do not apply.
 
-The UI link expires after ten minutes and is single-use. After pairing, OpenClaw stores a device credential in your browser; revoke devices in OpenClaw when necessary. Do not share pairing links. Stop/start retains configuration, workspace, channel credentials, and paired devices while replacing the container and its gateway token. Keep the seeded gateway token and allowed-origin environment references when editing OpenClaw's gateway configuration.
+The OpenClaw UI link expires after ten minutes and is single-use. After pairing, OpenClaw stores a device credential in your browser; revoke devices in OpenClaw when necessary. Do not share pairing links. Stop/start retains configuration, workspace, channel credentials, and paired devices while replacing the container and its gateway token. Keep the seeded gateway token and allowed-origin environment references when editing OpenClaw's gateway configuration.
 
-On a remote Docker host, the UI also needs a tunnel for its assigned port. Obtain it with `docker port <native-container-name>-ui 18789/tcp`, then add `ssh -N -L <port>:127.0.0.1:<port> user@your-host` before opening OpenClaw. The port changes on stop/start. The Talos tunnel alone does not forward this separate UI port.
+Hermes uses its upstream password authentication and host-scoped session cookies. Each agent gets a distinct `<agent-id>.localhost` hostname so two Hermes instances can be used in the same browser. Keep the chosen password in your password manager. Talos stores a salted scrypt hash, never the plaintext password. Hermes owns subsequent native configuration changes; Talos has no password-reset flow. Stop/start preserves the private data volume and invalidates the previous dashboard session, so sign in again. The bundled s6 supervisor manages the dashboard and native gateway services; no model key is required to open setup.
 
-For the existing diagnostic/conversation flow, select **Talos-managed conversation** when creating an agent. Send a short synthetic message; include `[slow]` with the simulator to exercise cancellation. Existing agents keep managed mode. A start request on an already-ready agent is rejected: stop it first.
+On a remote Docker host, the UI also needs a tunnel for its assigned port. Obtain it with `docker port <native-container-name>-ui 18789/tcp`, then add `ssh -N -L <port>:127.0.0.1:<port> user@your-host` before opening the native UI. For Hermes, open the generated `.localhost` URL after tunneling; modern browsers resolve it to loopback. The port changes on stop/start. The Talos tunnel alone does not forward this separate UI port.
+
+For the existing diagnostic/conversation flow, choose **OpenClaw** and check **Use Talos-managed conversations** when creating an agent. Hermes supports native mode only. Send a short synthetic message; include `[slow]` with the simulator to exercise cancellation. Existing agents keep managed mode. A start request on an already-ready agent is rejected: stop it first.
 
 ### Native tools and connectivity
 
-The native image extends the pinned upstream image with `@openclaw/parallel-plugin@2026.9.6`, installed from its lockfile. The `parallel-free` search provider requires no API key; external service availability and limits still apply. Tool calls through a paid model can still cost money. `web_fetch` uses the outbound proxy, and shell/file tools run as the unprivileged container user against the private workspace.
+The OpenClaw native image extends the pinned upstream image with `@openclaw/parallel-plugin@2026.9.6`, installed from its lockfile. The `parallel-free` search provider requires no API key; external service availability and limits still apply. Tool calls through a paid model can still cost money. `web_fetch` uses the outbound proxy, and shell/file tools run as the unprivileged container user against the private workspace.
 
-Telegram, Slack, and other integrations use OpenClaw's own plugins and account setup. They are not preconnected. Install/configure the required native plugin and supply your own account credentials. HTTP(S) clients must honor the supplied proxy variables or their integration's explicit proxy setting; raw TCP/UDP, inbound webhooks, LAN services, and tools requiring host privileges are not enabled by this setup. Telegram polling and Slack Socket Mode avoid public inbound ports, but channel-specific proxy support and credentials must be checked during setup. No external messages are sent by Talos provisioning.
+Hermes uses the pinned official image unchanged, with its bundled Parallel key-free search selected at first boot. Search still depends on the external service's availability and limits. Native shell and file tools run as UID 10000 in `/opt/data/workspace`; `/opt/data` persists across starts. No OpenRouter account is required to provision either runtime.
 
-The browser tool keeps upstream security defaults. This image does not install Chromium; browser automation needs a compatible sandboxed browser configured separately. Host package installation and Docker-backed nested sandboxes are unavailable. Tools may install user-space dependencies into writable state where their installers support it.
+Telegram, Slack, and other integrations use the selected runtime's own plugins and account setup. They are not preconnected. Install/configure the required native plugin and supply your own account credentials. HTTP(S) clients must honor the supplied proxy variables or their integration's explicit proxy setting; raw TCP/UDP, inbound webhooks, LAN services, and tools requiring host privileges are not enabled by this setup. Telegram polling and Slack Socket Mode avoid public inbound ports, but channel-specific proxy support and credentials must be checked during setup. No external messages are sent by Talos provisioning.
+
+The browser tool keeps upstream security defaults. The OpenClaw image does not install Chromium; its browser automation needs a compatible sandboxed browser configured separately. Hermes includes its upstream browser dependencies. Browser automation and authenticated channel delivery have not been verified by Talos provisioning checks. Host package installation and Docker-backed nested sandboxes are unavailable. Tools may install user-space dependencies into writable state where their installers support it.
 
 Native instances keep internal Docker bridges. A shared Squid proxy allows public HTTP on port 80 and HTTPS CONNECT on port 443, denying private, loopback, link-local, and reserved destinations after DNS resolution. A separate small TCP relay per instance forwards only to that instance's UI and publishes only on `127.0.0.1`. Neither the relay nor the proxy mounts agent state or credentials. These are container/network boundaries for a trusted local administrator, not enterprise tenant isolation or protection against all prompt injection. External content can influence an agent with full native tools and its configured credentials.
 
@@ -90,7 +94,7 @@ Create/start/stop/delete/dashboard return HTTP 202 and an operation ID. **Queued
 | `GET /api/v1/runs/{id}/events?after=0` | Read ordered events; advance the cursor to the last sequence returned |
 | `POST /api/v1/runs/{id}/cancel` | Request cancellation |
 
-Diagnostics are available only for managed agents; native agents use OpenClaw directly. Only one unresolved diagnostic is admitted per managed agent. Messages are limited to 4,000 characters; event pages contain up to 100 records. Cancellation remains a request until confirmed by the runtime. **Unknown** means delivery or completion could not be confirmed; stop the agent, wait for the stop operation, then start it before sending another message. Restarting a worker never retries an uncertain message.
+Diagnostics are available only for managed agents; native agents use their runtime directly. Only one unresolved diagnostic is admitted per managed agent. Messages are limited to 4,000 characters; event pages contain up to 100 records. Cancellation remains a request until confirmed by the runtime. **Unknown** means delivery or completion could not be confirmed; stop the agent, wait for the stop operation, then start it before sending another message. Restarting a worker never retries an uncertain message.
 
 Stop closes gateway admission and preserves private agent state. A subsequent start creates a fresh container and credentials over the existing state volume. Gateway credentials expire after 30 days; stop/start renews them. Delete removes that agent's labeled resources and private credentials while retaining database history. Diagnostic input and output are stored in PostgreSQL; use synthetic data here. The dashboard remembers recent operation/run IDs in browser storage; full history browsing is deferred.
 
@@ -145,7 +149,7 @@ RAM-backed test options (`TALOS_PROOF_RAM_VOLUMES=1` and `TALOS_TEST_TMPFS_VOLUM
 
 ## OpenRouter and the model picker
 
-This section applies to **Talos-managed conversation** agents only. Native agents configure providers in OpenClaw.
+This section applies to **Talos-managed conversation** agents only. Native agents configure providers in their own runtime.
 
 The workspace **Settings** page selects the default model for new messages without
 restarting agents. Each admitted message stores its model choice, so queued and
@@ -268,7 +272,7 @@ makes a short request with provider defaults (and therefore no fixed token budge
 
 Backups are manual. After stopping agents, stop API/worker/gateway writes, then take a consistent PostgreSQL backup and volume snapshots. Preserve the `worker-state` volume, each agent's state/config volumes, `.env`, the checked-out commit, and runtime digest alongside the database. Default platform volume names are `talos_postgres-data` and `talos_worker-state`; dynamic agent resources carry `io.talos.project`, `io.talos.installation`, and `io.talos.agent` labels. Protect these backups: worker-state and configuration volumes contain workload credentials. A database dump alone cannot restore the installation.
 
-For updates, retain those backups, keep the Compose project and installation identifiers unchanged, check out a reviewed commit, pull its approved runtime digest, and rerun `docker compose up --build -d`. Migrations run before services start. Do not edit the pin to a newer OpenClaw image without updating and validating its driver contract. Automated rollback, runtime upgrades, and backup/restore orchestration are not implemented; restore the matching database, volumes, and code together if rollback is needed.
+For updates, retain those backups, keep the Compose project and installation identifiers unchanged, check out a reviewed commit, pull its approved runtime digest, and rerun `docker compose up --build -d`. Migrations run before services start. Do not edit runtime pins without validating the corresponding lifecycle, authentication, and driver contracts. Automated rollback, runtime upgrades, and backup/restore orchestration are not implemented; restore the matching database, volumes, and code together if rollback is needed.
 
 ## Troubleshooting
 
@@ -289,3 +293,7 @@ docker compose logs migrate api worker gateway
 While idle, the worker checks running agents and reconnects replaced platform containers. Failed probes mark an agent Degraded; a successful later probe restores Ready. These checks yield to queued lifecycle work.
 
 The worker restarts automatically after a process failure; an explicit Compose stop keeps it stopped. Run only one worker per installation and preserve its private state. A lock prevents workers sharing that state directory from running concurrently; it does not coordinate separate worker volumes. Dashboard worker/gateway capability labels are not live heartbeats—use operation results and service logs.
+
+### Runtime icon attribution
+
+The picker uses the upstream [OpenClaw favicon](https://github.com/openclaw/openclaw/blob/eb377ac59e6c9fd6c7705028034812becf00271b/ui/public/favicon.svg) and [Hermes icon](https://github.com/NousResearch/hermes-agent/blob/4b7229d612324adcf86ede7c181df542a1697fd6/assets/icon-master.svg), distributed under their repositories’ MIT licenses. The names and marks identify the selected runtime.

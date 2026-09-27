@@ -2,6 +2,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -30,6 +31,19 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Talos", version="0.1.0")
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, error: RequestValidationError):
+        # Validation failures must not echo submitted credentials, including model-level errors.
+        return JSONResponse(
+            {
+                "detail": [
+                    {key: value for key, value in item.items() if key not in {"input", "ctx"}}
+                    for item in error.errors()
+                ]
+            },
+            status_code=422,
+        )
 
     @app.middleware("http")
     async def local_browser_requests(request: Request, call_next):

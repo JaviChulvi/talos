@@ -1,12 +1,14 @@
+import base64
 import hashlib
 import json
+import secrets
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -14,7 +16,7 @@ from sqlalchemy.orm import Session
 from backend.app.db import session_factory
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
-    RUNTIME_RELEASE,
+    RUNTIME_RELEASES,
     Agent,
     Operation,
     WorkloadIncarnation,
@@ -38,7 +40,19 @@ LifecycleAction = Literal["start", "stop", "delete", "dashboard"]
 class CreateAgent(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    runtime_kind: Literal["openclaw", "hermes"] = "openclaw"
     runtime_mode: Literal["native", "managed"] = "native"
+    dashboard_password: SecretStr | None = Field(default=None, min_length=12, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_runtime(self):
+        if self.runtime_kind == "hermes":
+            if self.runtime_mode != "native" or self.dashboard_password is None:
+                raise ValueError("Hermes requires native mode and a dashboard password")
+        elif self.dashboard_password is not None:
+            raise ValueError("OpenClaw uses device pairing, not a dashboard password")
+        return self
+
     display_name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
     employee_label: str = Field(min_length=1, max_length=160, pattern=r"^[^\x00]*$")
 
@@ -47,6 +61,7 @@ class AgentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    runtime_kind: str
     runtime_mode: str
     display_name: str
     employee_label: str
@@ -130,13 +145,50 @@ def recover_duplicate(
 @router.post("/agents", status_code=202, response_model=OperationResponse)
 def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, session: Database):
     scope = "create-agent"
-    digest = request_hash(body.model_dump())
+    payload = body.model_dump(exclude={"dashboard_password"})
+    request = {key: value for key, value in payload.items() if key != "runtime_kind"}
+    if body.runtime_kind == "hermes":
+        request.update(
+            runtime_kind="hermes",
+            # Keep replay comparison expensive to guess, like the stored login hash.
+            dashboard_password=hashlib.scrypt(
+                body.dashboard_password.get_secret_value().encode(),
+                salt=hashlib.sha256(idempotency_key.encode()).digest(),
+                n=16384,
+                r=8,
+                p=1,
+                dklen=32,
+            ).hex(),
+        )
+    digest = request_hash(request)
     try:
         with session.begin():
             replay = find_replay(session, scope, idempotency_key, digest)
             if replay:
                 return replay
-            agent = Agent(**body.model_dump(), runtime_release=RUNTIME_RELEASE)
+            password_hash = None
+            if body.dashboard_password:
+                # Format verified against Hermes's bundled password provider.
+                salt = secrets.token_bytes(16)
+                key = hashlib.scrypt(
+                    body.dashboard_password.get_secret_value().encode(),
+                    salt=salt,
+                    n=16384,
+                    r=8,
+                    p=1,
+                    dklen=32,
+                )
+                password_hash = (
+                    "scrypt$16384$8$1$"
+                    + base64.b64encode(salt).decode()
+                    + "$"
+                    + base64.b64encode(key).decode()
+                )
+            agent = Agent(
+                **payload,
+                runtime_release=RUNTIME_RELEASES[body.runtime_kind],
+                dashboard_password_hash=password_hash,
+            )
             session.add(agent)
             session.flush()
             return enqueue_operation(session, agent, "create", scope, idempotency_key, digest)
@@ -199,7 +251,7 @@ def request_lifecycle(
                     or agent.desired_state != "running"
                     or agent.observed_state != "ready"
                 ):
-                    raise HTTPException(409, "Start a native OpenClaw agent first")
+                    raise HTTPException(409, "Start a native agent first")
                 return enqueue_operation(session, agent, action, scope, idempotency_key, digest)
             agent.revision += 1
             agent.desired_state = {"start": "running", "stop": "stopped", "delete": "deleted"}[

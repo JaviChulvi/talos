@@ -101,7 +101,7 @@ def create_run(
         ):
             raise HTTPException(409, "Agent has an active or unresolved diagnostic run")
         if agent.runtime_mode == "native":
-            raise HTTPException(409, "Use this agent’s OpenClaw interface for conversations")
+            raise HTTPException(409, "Use this agent’s native interface for conversations")
         config = agent.inference_override or config_response(session.get(InferenceConfig, 1))
         managed = agent.model_route != "fixture"
         if managed and config["model_id"] != "fixture" and not config["capabilities"]:

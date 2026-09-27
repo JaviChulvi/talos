@@ -1,4 +1,4 @@
-"""Server-owned OpenClaw launch contract; callers cannot supply Docker settings."""
+"""Server-owned runtime launch contract; callers cannot supply Docker settings."""
 
 import hashlib
 import io
@@ -14,6 +14,7 @@ IMAGE = (
     "0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15"
 )
 NATIVE_IMAGE = "talos-openclaw-native:local"
+NATIVE_IMAGES = {"openclaw": NATIVE_IMAGE, "hermes": "talos-hermes-native:local"}
 STATE_PATH = "/home/node/.openclaw"
 CONFIG_PATH = "/etc/talos/openclaw.json"
 
@@ -65,8 +66,16 @@ def runtime_config(
     }
 
 
-def native_config() -> dict:
-    """Seed once; subsequent configuration belongs to the OpenClaw user."""
+def native_config(runtime_kind="openclaw", password_hash=None) -> dict:
+    """Seed once; subsequent configuration belongs to the native runtime user."""
+    if runtime_kind == "hermes":
+        if not password_hash:
+            raise ValueError("Hermes requires a dashboard password hash")
+        return {
+            "terminal": {"backend": "local", "cwd": "/opt/data/workspace"},
+            "web": {"backend": "parallel"},
+            "dashboard": {"basic_auth": {"username": "talos", "password_hash": password_hash}},
+        }
     return {
         "gateway": {
             "mode": "local",
@@ -132,6 +141,7 @@ def launch_options(
     labels: dict,
     *,
     native_image: str | None = None,
+    runtime_kind: str = "openclaw",
     control_token: str = "",
     control_origin: str = "",
 ) -> dict:
@@ -180,13 +190,47 @@ def launch_options(
                 "NODE_USE_ENV_PROXY": "1",
             }
         )
+    if runtime_kind == "hermes":
+        options.update(
+            user="10000:10000",
+            command=["sleep", "infinity"],
+            working_dir="/opt/data/workspace",
+            volumes={volume: {"bind": "/opt/data", "mode": "rw"}},
+            tmpfs={
+                "/tmp": "rw,nosuid,nodev,size=256m,mode=1777",
+                "/run": "rw,exec,nosuid,nodev,size=64m,uid=10000,gid=10000,mode=755",
+            },
+        )
+        options["environment"] = {
+            key: value
+            for key, value in options["environment"].items()
+            if key.lower() in {"http_proxy", "https_proxy", "no_proxy"}
+        } | {
+            "HOME": "/opt/data",
+            "HERMES_HOME": "/opt/data",
+            "S6_READ_ONLY_ROOT": "1",
+            "HERMES_DASHBOARD": "1",
+            "HERMES_DASHBOARD_HOST": "0.0.0.0",
+            "HERMES_DASHBOARD_PORT": "9119",
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET": control_token,
+            "HERMES_DASHBOARD_PUBLIC_URL": control_origin,
+        }
     return options
 
 
 def prepare_volumes(
-    client, state_name: str, config_name: str, config: dict, labels: dict, *, native=False
+    client,
+    state_name: str,
+    config_name: str,
+    config: dict,
+    labels: dict,
+    *,
+    native=False,
+    runtime_kind="openclaw",
 ):
     """Seed approved configuration and state ownership without host bind mounts."""
+    uid = 10000 if runtime_kind == "hermes" else 1000
+    filename = "config.yaml" if runtime_kind == "hermes" else "openclaw.json"
     for name in (state_name, config_name):
         try:
             volume = client.volumes.get(name)
@@ -212,11 +256,12 @@ def prepare_volumes(
         command=[
             "const fs=require('fs');fs.chownSync('/state',0,0);fs.chmodSync('/state',448);"
             + (
-                "if(!fs.existsSync('/state/openclaw.json')){fs.rmSync('/state/.talos-config.next',{force:true});fs.copyFileSync('/config/openclaw.json.next','/state/.talos-config.next');fs.chownSync('/state/.talos-config.next',1000,1000);fs.chmodSync('/state/.talos-config.next',384);fs.renameSync('/state/.talos-config.next','/state/openclaw.json');}fs.unlinkSync('/config/openclaw.json.next');"
+                f"if(!fs.existsSync('/state/{filename}')){{fs.rmSync('/state/.talos-config.next',{{force:true}});fs.copyFileSync('/config/openclaw.json.next','/state/.talos-config.next');fs.chownSync('/state/.talos-config.next',{uid},{uid});fs.chmodSync('/state/.talos-config.next',384);fs.renameSync('/state/.talos-config.next','/state/{filename}');}}fs.unlinkSync('/config/openclaw.json.next');"
                 if native
                 else "fs.renameSync('/config/openclaw.json.next','/config/openclaw.json');"
             )
-            + "fs.chownSync('/state',1000,1000);"
+            + "fs.mkdirSync('/state/workspace',{recursive:true});"
+            + f"fs.chownSync('/state/workspace',{uid},{uid});fs.chownSync('/state',{uid},{uid});"
         ],
         volumes={
             state_name: {"bind": "/state", "mode": "rw"},
@@ -237,15 +282,15 @@ def prepare_volumes(
             entry = tarfile.TarInfo("openclaw.json.next")
             entry.size, entry.mode, entry.uid, entry.gid = (
                 len(payload),
-                0o444 if native else 0o400,
-                1000,
-                1000,
+                0o400,
+                0 if native else 1000,
+                0 if native else 1000,
             )
             archive.addfile(entry, io.BytesIO(payload))
         initializer.put_archive("/config", data.getvalue())
         initializer.start()
         if initializer.wait(timeout=30)["StatusCode"]:
-            raise RuntimeError("OpenClaw private volume initialization failed")
+            raise RuntimeError("Runtime private volume initialization failed")
     finally:
         initializer.remove(force=True)
 

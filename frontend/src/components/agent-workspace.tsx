@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 type Agent = {
   id: string;
+  runtime_kind: "openclaw" | "hermes";
   runtime_mode: "native" | "managed";
   display_name: string;
   employee_label: string;
@@ -30,6 +31,13 @@ type Mutation = {
   agentId?: string;
   popup?: Window | null;
 };
+
+const runtimes = { openclaw: "OpenClaw", hermes: "Hermes" } as const;
+type RuntimeKind = keyof typeof runtimes;
+
+function RuntimeIcon({ kind, className }: { kind: RuntimeKind; className?: string }) {
+  return <img src={`/runtime-icons/${kind}.svg`} alt="" aria-hidden="true" className={cn("shrink-0 object-contain", className)} />;
+}
 
 const activeOperations = new Set(["queued", "running", "retry_wait"]);
 const activeRuns = new Set(["queued", "dispatching", "running", "cancel_requested", "unknown"]);
@@ -74,6 +82,8 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
   const [retryRequest, setRetryRequest] = useState<Mutation | null>(null);
   const [refresh, setRefresh] = useState(0);
   const createDialog = useRef<HTMLDialogElement>(null);
+  const [runtimeKind, setRuntimeKind] = useState<RuntimeKind>("openclaw");
+  const [dashboardPassword, setDashboardPassword] = useState("");
   const [runtimeMode, setRuntimeMode] = useState<"native" | "managed">("native");
   const dashboardWindows = useRef<Record<string, Window>>({});
   const [displayName, setDisplayName] = useState("");
@@ -81,6 +91,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
   const [message, setMessage] = useState("");
 
   const selected = agents.find((agent) => agent.id === selectedId);
+  const runtimeName = runtimes[selected?.runtime_kind ?? "openclaw"];
   const effectiveModel = selected?.inference_override?.model_id ?? modelId;
   const operationId = operationIds[selectedId];
   const runId = runIds[selectedId];
@@ -170,7 +181,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
         saveIds("talos.operationIds", next);
         setOperation(result);
         setSelectedId(result.agent_id);
-        if (request.kind === "create") { setDisplayName(""); setEmployeeLabel(""); createDialog.current?.close(); }
+        if (request.kind === "create") { setDisplayName(""); setEmployeeLabel(""); setDashboardPassword(""); createDialog.current?.close(); }
       }
       setRetryRequest(null);
       setRefresh((value) => value + 1);
@@ -190,7 +201,8 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
     event.preventDefault();
     if (!displayName.trim() || !employeeLabel.trim() || employeeLabel.trim().length > 160 || writesDisabled) return;
     void mutate({ path: "/agents", method: "POST", key: crypto.randomUUID(), kind: "create", body: {
-      display_name: displayName.trim(), employee_label: employeeLabel.trim(), runtime_mode: runtimeMode,
+      display_name: displayName.trim(), employee_label: employeeLabel.trim(), runtime_mode: runtimeMode, runtime_kind: runtimeKind,
+      ...(runtimeKind === "hermes" ? { dashboard_password: dashboardPassword } : {}),
     } });
   }
 
@@ -200,7 +212,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
     void mutate({ path: `/agents/${selected.id}${action === "delete" ? "" : `/${action}`}`, method: action === "delete" ? "DELETE" : "POST", key: crypto.randomUUID(), kind: "lifecycle", agentId: selected.id });
   }
 
-  function openOpenClaw() {
+  function openNativeWorkspace() {
     if (!selected || writesDisabled || operationActive) return;
     const popup = window.open("about:blank", "_blank");
     if (popup) popup.opener = null;
@@ -225,19 +237,39 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
         {retryRequest && <Button variant="outline" size="sm" disabled={submitting} onClick={() => void mutate(retryRequest)}>Retry same request</Button>}
       </div>}
 
-      <dialog ref={createDialog} aria-labelledby="create-agent-title" className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto rounded-xl bg-panel p-6 text-foreground shadow-xl backdrop:bg-black/65" onCancel={(event) => { if (submitting) event.preventDefault(); }}>
+      <dialog ref={createDialog} aria-labelledby="create-agent-title" className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl bg-panel p-6 text-foreground shadow-xl backdrop:bg-black/65" onCancel={(event) => { if (submitting) event.preventDefault(); }}>
         <form onSubmit={createAgent} className="space-y-5">
           <h2 id="create-agent-title" className="text-lg font-semibold tracking-tight">Create an agent</h2>
           <div><label htmlFor="agent-name" className="mb-1.5 block text-xs text-muted-foreground">Name</label><input id="agent-name" autoFocus className={inputClass} value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Sales assistant" maxLength={120} required disabled={writesDisabled} /></div>
           <div><label htmlFor="employee-label" className="mb-1.5 block text-xs text-muted-foreground">Employee label</label><input id="employee-label" className={inputClass} value={employeeLabel} onChange={(event) => setEmployeeLabel(event.target.value)} placeholder="Alex" required minLength={1} maxLength={160} disabled={writesDisabled} /></div>
-          <div><label htmlFor="runtime-mode" className="mb-1.5 block text-xs text-muted-foreground">Runtime</label><select id="runtime-mode" className={inputClass} value={runtimeMode} onChange={(event) => setRuntimeMode(event.target.value as "native" | "managed")} disabled={writesDisabled}><option value="native">Native OpenClaw</option><option value="managed">Talos-managed conversation</option></select><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{runtimeMode === "native" ? "Your own OpenClaw workspace with native tools and free web search. Configure a model and integrations in OpenClaw after starting." : "Use Talos’s existing model settings and recorded conversations. Tools remain disabled."}</p></div>
+          <fieldset disabled={writesDisabled}>
+            <legend className="mb-2 text-sm font-medium">Agent runtime</legend>
+            <div className="grid grid-cols-2 gap-3">
+              {(Object.entries(runtimes) as [RuntimeKind, string][]).map(([kind, name]) => <label key={kind} className="relative cursor-pointer">
+                <input type="radio" name="runtime-kind" value={kind} checked={runtimeKind === kind} onChange={() => { setRuntimeKind(kind); setRuntimeMode("native"); setDashboardPassword(""); }} className="peer sr-only" />
+                <span className="flex h-full items-center gap-3 rounded-lg border border-input bg-background px-3 py-4 transition-colors hover:bg-muted peer-checked:border-primary peer-checked:bg-primary/10 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-panel peer-disabled:cursor-not-allowed peer-disabled:opacity-50">
+                  <RuntimeIcon kind={kind} className="size-9" /><span className="text-sm font-semibold">{name}</span>
+                </span>
+                <span aria-hidden="true" className="absolute right-2 top-2 size-1.5 rounded-full bg-primary opacity-0 peer-checked:opacity-100" />
+              </label>)}
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{runtimeMode === "managed" ? "OpenClaw with model settings and conversations managed by Talos." : `Your own ${runtimes[runtimeKind]} workspace. Add a model and connect your apps after starting. OpenRouter is optional.`}</p>
+          </fieldset>
+          {runtimeKind === "openclaw" ? <label className="flex items-start gap-3 text-sm">
+            <input type="checkbox" checked={runtimeMode === "managed"} onChange={(event) => setRuntimeMode(event.target.checked ? "managed" : "native")} disabled={writesDisabled} className="mt-0.5 size-4 accent-primary" />
+            <span>Use Talos-managed conversations<span className="mt-1 block text-xs leading-relaxed text-muted-foreground">Use Talos model settings and saved conversations. Native tools are disabled in this mode.</span></span>
+          </label> : <div>
+            <label htmlFor="dashboard-password" className="mb-1.5 block text-xs text-muted-foreground">Hermes dashboard password</label>
+            <input id="dashboard-password" type="password" autoComplete="new-password" className={inputClass} value={dashboardPassword} onChange={(event) => setDashboardPassword(event.target.value)} minLength={12} maxLength={256} required disabled={writesDisabled} aria-describedby="dashboard-password-help" />
+            <p id="dashboard-password-help" className="mt-2 text-xs leading-relaxed text-muted-foreground">At least 12 characters. Sign in to Hermes as <span className="font-medium text-foreground">talos</span> with this password. Keep it in your password manager.</p>
+          </div>}
           {(actionError || pollError) && <div role="alert" className="space-y-3 text-sm text-danger">
             <p>{actionError ?? pollError}</p>
             {retryRequest?.kind === "create" && <Button type="button" variant="outline" disabled={submitting} onClick={() => void mutate(retryRequest)}>Retry same request</Button>}
           </div>}
           <div className="flex justify-end gap-3 pt-2">
             <Button type="button" variant="outline" disabled={submitting} onClick={() => createDialog.current?.close()}>Cancel</Button>
-            <Button type="submit" disabled={writesDisabled || !displayName.trim() || !employeeLabel.trim()}>{submitting ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}{submitting ? "Creating…" : "Create agent"}</Button>
+            <Button type="submit" disabled={writesDisabled || !displayName.trim() || !employeeLabel.trim() || (runtimeKind === "hermes" && dashboardPassword.length < 12)}>{submitting ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Plus aria-hidden="true" />}{submitting ? "Creating…" : "Create agent"}</Button>
           </div>
         </form>
       </dialog>
@@ -248,7 +280,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
           <div className="max-h-72 overflow-y-auto p-2">
             {loading ? <p className="px-3 py-6 text-sm text-muted-foreground">Loading agents…</p> : agents.length === 0 ? <p className="px-3 py-6 text-sm leading-relaxed text-muted-foreground">No agents yet. Select New agent to get started.</p> : agents.map((agent) => (
               <button key={agent.id} type="button" aria-pressed={selectedId === agent.id} onClick={() => setSelectedId(agent.id)} className={cn("mb-1 flex w-full items-start gap-3 rounded-md px-3 py-3 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring", selectedId === agent.id && "bg-primary/10 text-primary") }>
-                <Bot className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <RuntimeIcon kind={agent.runtime_kind} className="mt-0.5 size-6" />
                 <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{agent.display_name}</span><span className="mt-1 block truncate text-xs text-muted-foreground">{agent.employee_label || "Unassigned"}</span><span className="mt-2 block"><StateBadge state={agent.observed_state} /></span></span>
               </button>
             ))}
@@ -259,7 +291,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
           {!selected ? <div className="flex min-h-96 flex-col items-center justify-center px-6 py-16 text-center lg:min-h-[480px]"><span className="mb-5 flex size-14 items-center justify-center rounded-xl border bg-muted/40"><Bot className="size-7 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" /></span><h3 className="font-medium">No agent selected</h3><p className="mt-2 max-w-xs text-sm leading-relaxed text-muted-foreground">Create your first agent or select one from the list to manage its runtime.</p></div> : <>
             <div className="border-b p-6">
               <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h2 className="break-words text-lg font-semibold tracking-tight">{selected.display_name}</h2><p className="mt-1 text-sm text-muted-foreground">{selected.employee_label || "No employee label"}</p></div><StateBadge state={selected.observed_state} /></div>
-              <p className="mt-3 break-words text-xs text-muted-foreground">{selected.runtime_mode === "native" ? "Native OpenClaw · Models and integrations configured in OpenClaw" : `${selected.inference_override ? "Custom model" : "Workspace default"} · ${effectiveModel === "fixture" ? "Local simulator" : effectiveModel ?? "Loading…"}`}</p>
+              <p className="mt-3 break-words text-xs text-muted-foreground">{selected.runtime_mode === "native" ? `Native ${runtimeName} · Models and integrations configured in ${runtimeName}` : `${selected.inference_override ? "Custom model" : "Workspace default"} · ${effectiveModel === "fixture" ? "Local simulator" : effectiveModel ?? "Loading…"}`}</p>
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["ready", "running", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("start")}><Play aria-hidden="true" />Start</Button>
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["stopped", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("stop")}><Square aria-hidden="true" />Stop</Button>
@@ -270,11 +302,11 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
             </div>
 
             {selected.runtime_mode === "native" ? <div className="space-y-5 p-6">
-              <div><h3 className="font-semibold">Your OpenClaw workspace</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">Chat, connect a model, add Telegram or Slack, and manage skills in OpenClaw’s own interface. Your configuration and files persist across stops and starts.</p></div>
-              <Button disabled={writesDisabled || operationActive || selected.observed_state !== "ready"} onClick={openOpenClaw}><ExternalLink aria-hidden="true" />{selectedOperation?.action === "dashboard" && operationActive ? "Opening OpenClaw…" : "Open OpenClaw"}</Button>
+              <div><h3 className="flex items-center gap-3 font-semibold"><RuntimeIcon kind={selected.runtime_kind} className="size-8" />Your {runtimeName} workspace</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">Chat, connect a model, add Telegram or Slack, and manage skills in {runtimeName}’s own interface. Your configuration and files persist across stops and starts.</p></div>
+              <Button disabled={writesDisabled || operationActive || selected.observed_state !== "ready"} onClick={openNativeWorkspace}><ExternalLink aria-hidden="true" />{selectedOperation?.action === "dashboard" && operationActive ? `Opening ${runtimeName}…` : `Open ${runtimeName}`}</Button>
               {selectedOperation?.dashboard_url && <p className="text-sm"><a href={selectedOperation.dashboard_url} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-4">Continue if the new tab did not open</a></p>}
-              <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">{selected.observed_state !== "ready" ? "Start this agent to open its workspace." : "First visit: choose a model provider in OpenClaw. OpenRouter is optional; Talos’s managed model settings do not apply here."}</p>
-              <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Free search is preconfigured. Browser automation needs a compatible sandboxed browser. Access links open on this Docker host’s loopback address; remote hosts require an SSH tunnel.</p>
+              <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">{selected.observed_state !== "ready" ? "Start this agent to open its workspace." : `First visit: ${selected.runtime_kind === "hermes" ? "sign in as talos with the dashboard password you chose, then " : ""}choose a model provider in ${runtimeName}. Talos’s managed model settings do not apply here.`}</p>
+              <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Free search is preconfigured. Available tools depend on the runtime and any accounts you connect. Remote Docker hosts require a tunnel for the workspace port.</p>
             </div> : <>
             <nav aria-label="Agent views" className="flex gap-6 border-b px-6">
               {["conversation", "settings"].map((view) => <button key={view} type="button" aria-pressed={agentView === view} onClick={() => setAgentView(view)} className={cn("border-b-2 px-1 py-3 text-sm capitalize outline-none focus-visible:ring-2 focus-visible:ring-ring", agentView === view ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>{view}</button>)}

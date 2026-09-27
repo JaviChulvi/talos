@@ -111,7 +111,7 @@ def worker(session_maker, monkeypatch, tmp_path):
     for service in ("worker", "gateway"):
         containers.create(name=f"platform-{service}", labels=worker.service_labels(service)).start()
 
-    def prepare(client, state, config, payload, labels, *, native=False):
+    def prepare(client, state, config, payload, labels, *, native=False, runtime_kind="openclaw"):
         for name in (state, config):
             try:
                 client.volumes.get(name)
