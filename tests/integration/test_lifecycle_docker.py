@@ -105,14 +105,30 @@ def test_real_private_network_and_owned_cleanup(client, session_maker, monkeypat
         docker_client.close()
 
 
-def test_native_configuration_is_seeded_once_and_remains_private():
+def test_native_configuration_is_seeded_once_and_remains_private(monkeypatch):
     from worker.runtime import STATE_PATH, native_config, prepare_volumes
 
     client = docker.from_env(timeout=30)
     prefix = "talos-native-volume-test-" + uuid4().hex
     state, config = prefix + "-state", prefix + "-config"
     labels = {"io.talos.test": prefix}
+    create_container = client.containers.create
+
+    def interrupted_initializer(_collection, *args, **kwargs):
+        kwargs["command"][0] = (
+            "const chown=require('fs').chownSync;"
+            "require('fs').chownSync=(path,...args)=>{"
+            "if(path!=='/state')throw Error('interrupted after copy');return chown(path,...args);};"
+            + kwargs["command"][0]
+        )
+        return create_container(*args, **kwargs)
+
     try:
+        with monkeypatch.context() as patch:
+            patch.setattr(type(client.containers), "create", interrupted_initializer)
+            with pytest.raises(RuntimeError, match="private volume initialization failed"):
+                prepare_volumes(client, state, config, native_config(), labels, native=True)
+        # Retry must replace the incomplete staged file, then retain subsequent user edits.
         prepare_volumes(client, state, config, native_config(), labels, native=True)
         script = (
             "const fs=require('fs'); const p=process.env.HOME+'/.openclaw/openclaw.json';"

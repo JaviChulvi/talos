@@ -28,6 +28,7 @@ type Mutation = {
   key: string;
   kind: "create" | "lifecycle" | "diagnostic" | "cancel" | "dashboard";
   agentId?: string;
+  popup?: Window | null;
 };
 
 const activeOperations = new Set(["queued", "running", "retry_wait"]);
@@ -74,8 +75,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
   const [refresh, setRefresh] = useState(0);
   const createDialog = useRef<HTMLDialogElement>(null);
   const [runtimeMode, setRuntimeMode] = useState<"native" | "managed">("native");
-  const dashboardWindow = useRef<Window | null>(null);
-  const dashboardOperation = useRef<string | null>(null);
+  const dashboardWindows = useRef<Record<string, Window>>({});
   const [displayName, setDisplayName] = useState("");
   const [employeeLabel, setEmployeeLabel] = useState("");
   const [message, setMessage] = useState("");
@@ -107,12 +107,23 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
           if (error instanceof ApiError && error.status === 404) return null;
           throw error;
         }) : Promise.resolve(null);
-        const [nextAgents, nextOperation, nextRun, nextModel] = await Promise.all([
+        const [nextAgents, nextOperation, nextRun, nextModel, dashboards] = await Promise.all([
           api<Agent[]>("/agents", options), latestOperation, latestRun, api<InferenceSelection>("/inference", options),
+          Promise.all(Object.keys(dashboardWindows.current).map((id) => id === operationId ? latestOperation : api<Operation>(`/operations/${id}`, options))),
         ]);
         const after = cursor.current.runId === runId ? cursor.current.sequence : 0;
         const nextEvents = nextRun ? await api<RunEvent[]>(`/runs/${runId}/events?after=${after}`, options) : [];
         if (stopped) return;
+        for (const dashboard of dashboards) {
+          if (!dashboard || activeOperations.has(dashboard.status)) continue;
+          const popup = dashboardWindows.current[dashboard.id];
+          if (popup && !popup.closed) {
+            if (dashboard.dashboard_url) popup.location.replace(dashboard.dashboard_url);
+            else popup.close();
+          }
+          if (dashboard.error) setActionError(dashboard.error);
+          delete dashboardWindows.current[dashboard.id];
+        }
         setAgents(nextAgents);
         setModelId(nextModel.model_id);
         setSelectedId((current) => nextAgents.some((agent) => agent.id === current) ? current : nextAgents[0]?.id ?? "");
@@ -136,14 +147,6 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
     return () => { stopped = true; window.clearTimeout(timer); controller.abort(); };
   }, [selectedId, operationId, runId, busy, refresh, active]);
 
-  useEffect(() => {
-    if (!operation || operation.id !== dashboardOperation.current || activeOperations.has(operation.status)) return;
-    if (operation.dashboard_url && dashboardWindow.current) dashboardWindow.current.location.replace(operation.dashboard_url);
-    else dashboardWindow.current?.close();
-    dashboardOperation.current = null;
-    dashboardWindow.current = null;
-  }, [operation]);
-
   async function mutate(request: Mutation) {
     setSubmitting(true);
     setActionError(null);
@@ -154,7 +157,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
         body: request.body ? JSON.stringify(request.body) : undefined,
         signal: AbortSignal.timeout(15_000),
       });
-      if (request.kind === "dashboard") dashboardOperation.current = result.id;
+      if (request.kind === "dashboard" && request.popup && !request.popup.closed) dashboardWindows.current[result.id] = request.popup;
       if (request.kind === "diagnostic") {
         const next = { ...runIds, [result.agent_id]: result.id };
         setRunIds(next);
@@ -172,7 +175,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
       setRetryRequest(null);
       setRefresh((value) => value + 1);
     } catch (error) {
-      if (request.kind === "dashboard") { dashboardWindow.current?.close(); dashboardWindow.current = null; }
+      if (request.kind === "dashboard") request.popup?.close();
       const uncertain = !(error instanceof ApiError) || error.status >= 500;
       setRetryRequest(uncertain ? request : null);
       setActionError(uncertain
@@ -199,9 +202,9 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
 
   function openOpenClaw() {
     if (!selected || writesDisabled || operationActive) return;
-    dashboardWindow.current = window.open("about:blank", "_blank");
-    if (dashboardWindow.current) dashboardWindow.current.opener = null;
-    void mutate({ path: `/agents/${selected.id}/dashboard`, method: "POST", key: crypto.randomUUID(), kind: "dashboard", agentId: selected.id });
+    const popup = window.open("about:blank", "_blank");
+    if (popup) popup.opener = null;
+    void mutate({ path: `/agents/${selected.id}/dashboard`, method: "POST", key: crypto.randomUUID(), kind: "dashboard", agentId: selected.id, popup });
   }
 
   function sendDiagnostic(event: FormEvent) {

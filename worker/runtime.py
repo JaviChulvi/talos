@@ -212,7 +212,7 @@ def prepare_volumes(
         command=[
             "const fs=require('fs');fs.chownSync('/state',0,0);fs.chmodSync('/state',448);"
             + (
-                "if(!fs.existsSync('/state/openclaw.json')){fs.copyFileSync('/config/openclaw.json.next','/state/openclaw.json');fs.chownSync('/state/openclaw.json',1000,1000);fs.chmodSync('/state/openclaw.json',384);}fs.unlinkSync('/config/openclaw.json.next');"
+                "if(!fs.existsSync('/state/openclaw.json')){fs.rmSync('/state/.talos-config.next',{force:true});fs.copyFileSync('/config/openclaw.json.next','/state/.talos-config.next');fs.chownSync('/state/.talos-config.next',1000,1000);fs.chmodSync('/state/.talos-config.next',384);fs.renameSync('/state/.talos-config.next','/state/openclaw.json');}fs.unlinkSync('/config/openclaw.json.next');"
                 if native
                 else "fs.renameSync('/config/openclaw.json.next','/config/openclaw.json');"
             )
