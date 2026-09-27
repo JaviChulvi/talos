@@ -16,4 +16,10 @@ export default tseslint.config(
       "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
     },
   },
+  {
+    files: ["src/components/ui/**/*.tsx"],
+    rules: {
+      "react-refresh/only-export-components": ["warn", { allowConstantExport: true, allowExportNames: ["buttonVariants", "tabsListVariants", "useSidebar"] }],
+    },
+  },
 );
