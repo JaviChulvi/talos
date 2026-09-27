@@ -72,7 +72,7 @@ def client(session_maker):
 def create(client, key="create-one", name="Sales helper"):
     return client.post(
         "/api/v1/agents",
-        json={"display_name": name, "employee_label": "Alex"},
+        json={"display_name": name, "employee_label": "Alex", "runtime_mode": "managed"},
         headers={"Idempotency-Key": key},
     )
 
@@ -229,3 +229,42 @@ def test_start_does_not_replace_a_ready_runtime(client, session_maker):
     assert client.post(path, headers={"Idempotency-Key": "start-one"}).json()["id"] == started["id"]
     assert client.post(path, headers={"Idempotency-Key": "start-again"}).status_code == 409
     assert client.get(f"/api/v1/agents/{created['agent_id']}").json()["revision"] == 2
+
+
+def test_native_default_dashboard_admission_and_idempotency(client, session_maker):
+    response = client.post(
+        "/api/v1/agents",
+        json={"display_name": "Native", "employee_label": "Owner"},
+        headers={"Idempotency-Key": "native"},
+    )
+    assert response.status_code == 202
+    created = response.json()
+    agent_id = created["agent_id"]
+    complete_operation(session_maker, created["id"])
+    agent = client.get(f"/api/v1/agents/{agent_id}").json()
+    assert agent["runtime_mode"] == "native"
+    url = f"/api/v1/agents/{agent_id}/dashboard"
+    headers = {"Idempotency-Key": "open"}
+    assert client.post(url, headers=headers).status_code == 409
+    with session_maker.begin() as session:
+        row = session.get(Agent, UUID(agent_id))
+        row.desired_state, row.observed_state = "running", "ready"
+    opened = client.post(url, headers=headers)
+    assert opened.status_code == 202
+    assert opened.headers["Cache-Control"] == "no-store"
+    assert client.post(url, headers=headers).json() == opened.json()
+    assert client.get(f"/api/v1/agents/{agent_id}").json()["revision"] == agent["revision"]
+    complete_operation(session_maker, opened.json()["id"], "ready")
+    result = client.get("/api/v1/operations/" + opened.json()["id"])
+    assert result.headers["Cache-Control"] == "no-store"
+    assert (
+        client.post(
+            f"/api/v1/agents/{agent_id}/diagnostic-runs",
+            json={"message": "hello"},
+            headers={"Idempotency-Key": "native-chat"},
+        ).status_code
+        == 409
+    )
+    with session_maker.begin() as session:
+        session.get(Agent, UUID(agent_id)).runtime_mode = "managed"
+    assert client.post(url, headers={"Idempotency-Key": "managed-open"}).status_code == 409

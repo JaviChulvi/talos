@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -32,12 +32,13 @@ Database = Annotated[Session, Depends(get_db)]
 IdempotencyKey = Annotated[
     str, Header(alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^[!-~]+$")
 ]
-LifecycleAction = Literal["start", "stop", "delete"]
+LifecycleAction = Literal["start", "stop", "delete", "dashboard"]
 
 
 class CreateAgent(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    runtime_mode: Literal["native", "managed"] = "native"
     display_name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
     employee_label: str = Field(min_length=1, max_length=160, pattern=r"^[^\x00]*$")
 
@@ -46,6 +47,7 @@ class AgentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    runtime_mode: str
     display_name: str
     employee_label: str
     inference_override: dict | None
@@ -65,6 +67,7 @@ class OperationResponse(BaseModel):
 
     id: UUID
     agent_id: UUID
+    dashboard_url: str | None
     action: str
     target_revision: int
     status: str
@@ -190,6 +193,14 @@ def request_lifecycle(
                 and agent.observed_state == "ready"
             ):
                 raise HTTPException(409, "Agent is already running; stop it before starting again")
+            if action == "dashboard":
+                if (
+                    agent.runtime_mode != "native"
+                    or agent.desired_state != "running"
+                    or agent.observed_state != "ready"
+                ):
+                    raise HTTPException(409, "Start a native OpenClaw agent first")
+                return enqueue_operation(session, agent, action, scope, idempotency_key, digest)
             agent.revision += 1
             agent.desired_state = {"start": "running", "stop": "stopped", "delete": "deleted"}[
                 action
@@ -219,8 +230,17 @@ def delete_agent(agent_id: UUID, idempotency_key: IdempotencyKey, session: Datab
 
 
 @router.get("/operations/{operation_id}", response_model=OperationResponse)
-def get_operation(operation_id: UUID, session: Database):
+def get_operation(operation_id: UUID, session: Database, response: Response):
+    response.headers["Cache-Control"] = "no-store"
     operation = session.get(Operation, operation_id)
     if operation is None:
         raise HTTPException(404, "Operation not found")
     return operation
+
+
+@router.post("/agents/{agent_id}/dashboard", status_code=202, response_model=OperationResponse)
+def open_dashboard(
+    agent_id: UUID, idempotency_key: IdempotencyKey, session: Database, response: Response
+):
+    response.headers["Cache-Control"] = "no-store"
+    return request_lifecycle(session, agent_id, "dashboard", idempotency_key)

@@ -13,10 +13,11 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import docker
-from docker.errors import NotFound
+from docker.errors import APIError, NotFound
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 
@@ -33,9 +34,11 @@ from backend.app.models import (
 from worker.openclaw import DeviceIdentity, GatewayError, OpenClawClient
 from worker.runtime import (
     IMAGE,
+    NATIVE_IMAGE,
     approve_device,
     launch_options,
     model_profile,
+    native_config,
     prepare_volumes,
     runtime_config,
 )
@@ -213,7 +216,7 @@ class Worker:
         require_labels(gateways[0].labels, self.service_labels("gateway"))
         return worker, gateways[0]
 
-    def ensure_network(self, agent_id: UUID):
+    def ensure_network(self, agent_id: UUID, *, native=False):
         _, name = self.names(agent_id)
         labels = self.labels(agent_id)
         try:
@@ -225,9 +228,24 @@ class Worker:
             network = self.client.networks.create(
                 name, driver="bridge", internal=True, labels=labels
             )
-        for container, alias in zip(
-            self.platform_containers(), ("talos-worker", "talos-gateway"), strict=True
-        ):
+        services = list(
+            zip(self.platform_containers(), ("talos-worker", "talos-gateway"), strict=True)
+        )
+        if native:
+            egress = self.client.containers.list(
+                filters={
+                    "label": [
+                        f"com.docker.compose.project={self.settings.compose_project}",
+                        "com.docker.compose.service=egress",
+                        f"io.talos.installation={self.settings.installation_id}",
+                    ]
+                }
+            )
+            if len(egress) != 1:
+                raise RuntimeError("Start the Talos egress service before native agents")
+            require_labels(egress[0].labels, self.service_labels("egress"))
+            services.append((egress[0], "talos-egress"))
+        for container, alias in services:
             network.reload()
             if container.id not in (network.attrs.get("Containers") or {}):
                 network.connect(container, aliases=[alias])
@@ -259,11 +277,85 @@ class Worker:
         )
         if incarnation.container_id and container.id != incarnation.container_id:
             raise OwnershipError("Recorded container identity changed")
-        if container.attrs["Config"]["Image"] != IMAGE:
+        if container.attrs["Config"]["Image"] != (
+            incarnation.image_digest if incarnation.model_route == "native" else IMAGE
+        ):
             raise OwnershipError("Runtime image does not match the approved digest")
         return container
 
+    def ui_proxy(self, incarnation: WorkloadIncarnation, *, ensure=False):
+        """A fixed TCP relay publishes the UI without giving the agent an external bridge."""
+        name = incarnation.container_name + "-ui"
+        labels = {
+            **self.labels(incarnation.agent_id),
+            "io.talos.incarnation": str(incarnation.id),
+            "io.talos.role": "ui-proxy",
+        }
+        try:
+            proxy = self.client.containers.get(name)
+            require_labels(proxy.labels, labels)
+            if proxy.attrs["Config"]["Image"] != IMAGE:
+                raise OwnershipError("UI relay image changed")
+        except NotFound:
+            if not ensure:
+                return None
+            networks = self.client.networks.list(
+                filters={
+                    "label": [
+                        f"com.docker.compose.project={self.settings.compose_project}",
+                        "com.docker.compose.network=ingress",
+                    ]
+                }
+            )
+            if len(networks) != 1:
+                raise OwnershipError("Expected one platform ingress network") from None
+            proxy = self.client.containers.create(
+                IMAGE,
+                name=name,
+                labels=labels,
+                network=networks[0].name,
+                entrypoint=["node", "-e"],
+                command=[
+                    "const net=require('net');net.createServer(down=>{"
+                    "const up=net.connect(18789,process.argv[1]);"
+                    "down.on('error',()=>up.destroy());up.on('error',()=>down.destroy());"
+                    "down.on('close',()=>up.destroy());up.on('close',()=>down.destroy());"
+                    "down.pipe(up);up.pipe(down);}).listen(18789,'0.0.0.0');",
+                    incarnation.container_name,
+                ],
+                ports={"18789/tcp": ("127.0.0.1", 20000 + secrets.randbelow(40000))},
+                user="1000:1000",
+                read_only=True,
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges:true"],
+                mem_limit="128m",
+                pids_limit=32,
+                healthcheck={"test": ["NONE"]},
+            )
+        if ensure:
+            network = self.client.networks.get(self.names(incarnation.agent_id)[1])
+            network.reload()
+            if proxy.id not in (network.attrs.get("Containers") or {}):
+                network.connect(proxy)
+            if proxy.status != "running":
+                try:
+                    proxy.start()
+                except APIError:
+                    # A host-port collision on a new relay must choose a fresh port on retry.
+                    if proxy.status == "created":
+                        proxy.remove(force=True)
+                    raise
+            proxy.reload()
+        return proxy
+
     def stop_incarnation(self, incarnation: WorkloadIncarnation, remove=False):
+        if incarnation.model_route == "native":
+            proxy = self.ui_proxy(incarnation)
+            if proxy is not None:
+                if proxy.status in {"running", "restarting", "paused"}:
+                    proxy.stop(timeout=5)
+                if remove:
+                    proxy.remove()
         container = self.owned_container(incarnation)
         if container is not None:
             container.reload()
@@ -325,9 +417,11 @@ class Worker:
                 id=uuid4(),
                 agent_id=agent.id,
                 generation=operation.target_revision,
-                model_route="default",
+                model_route="native" if agent.runtime_mode == "native" else "default",
                 runtime_release=RUNTIME_RELEASE,
-                image_digest=IMAGE,
+                image_digest=self.client.images.get(NATIVE_IMAGE).id
+                if agent.runtime_mode == "native"
+                else IMAGE,
                 expires_at=datetime.now(UTC) + timedelta(days=30),
             )
             prefix = f"talos-{incarnation.id.hex}"
@@ -361,11 +455,15 @@ class Worker:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-        config = runtime_config(
-            credentials["control_token"],
-            credentials["agent_token"],
-            "http://talos-gateway:8001",
-            model_route=incarnation.model_route,
+        config = (
+            native_config()
+            if incarnation.model_route == "native"
+            else runtime_config(
+                credentials["control_token"],
+                credentials["agent_token"],
+                "http://talos-gateway:8001",
+                model_route=incarnation.model_route,
+            )
         )
         digest = hashlib.sha256(credentials["agent_token"].encode()).hexdigest()
         config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
@@ -452,7 +550,7 @@ class Worker:
                         return
                     incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
                 self.client.networks.get(self.names(agent.id)[1])
-                self.ensure_network(agent.id)
+                self.ensure_network(agent.id, native=agent.runtime_mode == "native")
                 if (
                     incarnation is None
                     or incarnation.revoked_at is not None
@@ -466,6 +564,10 @@ class Worker:
                 container.reload()
                 if container.status != "running":
                     raise RuntimeError("Runtime is not running")
+                if incarnation.model_route == "native":
+                    proxy = self.ui_proxy(incarnation)
+                    if proxy is None or proxy.status != "running":
+                        raise RuntimeError("UI relay is not running")
                 credentials = read_credentials(incarnation)
                 asyncio.run(self.wait_ready(container, credentials["control_token"], retry=False))
             except OperationalError:
@@ -494,20 +596,85 @@ class Worker:
                 or agent.revision != operation.target_revision
             ):
                 raise OwnershipError("Operation does not match the approved agent revision")
+        if operation.action == "dashboard":
+            if (
+                agent.runtime_mode != "native"
+                or agent.desired_state != "running"
+                or agent.observed_state != "ready"
+            ):
+                raise RuntimeError("Native agent is not ready")
+            with self.sessions() as session:
+                incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+            container = self.owned_container(incarnation)
+            proxy = self.ui_proxy(incarnation)
+            if proxy is None or proxy.status != "running":
+                raise RuntimeError("UI relay is unavailable; stop and start the agent")
+            bindings = proxy.attrs["NetworkSettings"]["Ports"]["18789/tcp"]
+            if len(bindings) != 1 or bindings[0]["HostIp"] != "127.0.0.1":
+                raise OwnershipError("OpenClaw UI must be published on loopback only")
+            result = container.exec_run(["node", "openclaw.mjs", "dashboard", "--json"])
+            if result.exit_code:
+                raise RuntimeError("OpenClaw dashboard handoff failed")
+            # --json can be preceded by plugin diagnostics. Never log the handoff.
+            output = result.output.decode()
+            data = None
+            for index, char in enumerate(output):
+                if char == "{":
+                    try:
+                        data = json.loads(output[index:])
+                        break
+                    except ValueError:
+                        continue
+            if not data or not data.get("ok") or not data.get("browserBootstrapExpiresAtMs"):
+                raise RuntimeError("OpenClaw did not issue a browser handoff")
+            target = urlsplit(data["browserUrl"])
+            if (
+                target.scheme != "http"
+                or target.hostname not in {"127.0.0.1", "localhost"}
+                or not target.fragment
+            ):
+                raise RuntimeError("Unexpected OpenClaw dashboard URL")
+            authority = "127.0.0.1:" + bindings[0]["HostPort"]
+            fragment = dict(parse_qsl(target.fragment))
+            if not fragment.get("bootstrapToken"):
+                raise RuntimeError("OpenClaw handoff has no bootstrap token")
+            fragment["gatewayUrl"] = "ws://" + authority
+            url = urlunsplit(
+                (
+                    "http",
+                    authority,
+                    target.path,
+                    target.query,
+                    urlencode(fragment),
+                )
+            )
+            with self.sessions.begin() as session:
+                current = session.get(Operation, operation.id)
+                current.dashboard_url = url
+                current.status, current.step, current.error = "succeeded", "complete", None
+                current.heartbeat_at = datetime.now(UTC)
+            return
         if operation.action == "create":
-            self.ensure_network(operation.agent_id)
+            self.ensure_network(operation.agent_id, native=agent.runtime_mode == "native")
             self.ensure_state(operation.agent_id)
             observed = "stopped"
         elif operation.action == "start":
             self.client.images.get(
-                IMAGE
+                NATIVE_IMAGE if agent.runtime_mode == "native" else IMAGE
             )  # Pull/install the approved image before starting the worker.
             incarnation = self.ensure_incarnation(operation)
             if incarnation.revoked_at is not None or incarnation.expires_at <= datetime.now(UTC):
                 raise RuntimeError("Start identity is revoked or expired")
             credentials, config = self.ensure_credentials(incarnation)
-            self.ensure_network(operation.agent_id)
+            self.ensure_network(operation.agent_id, native=agent.runtime_mode == "native")
             state, network = self.names(operation.agent_id)
+            control_origin = ""
+            if agent.runtime_mode == "native":
+                proxy = self.ui_proxy(incarnation, ensure=True)
+                binding = proxy.attrs["NetworkSettings"]["Ports"]["18789/tcp"][0]
+                if binding["HostIp"] != "127.0.0.1":
+                    raise OwnershipError("OpenClaw UI must be published on loopback only")
+                control_origin = "http://127.0.0.1:" + binding["HostPort"]
             container = self.owned_container(incarnation)
             if container is None:
                 prepare_volumes(
@@ -516,6 +683,7 @@ class Worker:
                     incarnation.config_volume,
                     config,
                     self.labels(operation.agent_id),
+                    native=agent.runtime_mode == "native",
                 )
                 container = self.client.containers.create(
                     **launch_options(
@@ -528,6 +696,11 @@ class Worker:
                             "io.talos.incarnation": str(incarnation.id),
                             "io.talos.config": incarnation.config_hash,
                         },
+                        native_image=incarnation.image_digest
+                        if agent.runtime_mode == "native"
+                        else None,
+                        control_token=credentials["control_token"],
+                        control_origin=control_origin,
                     )
                 )
             # A crash immediately above is recovered by looking up this exact
@@ -569,7 +742,7 @@ class Worker:
             for container_id in list((network.attrs.get("Containers") or {}).keys()):
                 container = self.client.containers.get(container_id)
                 service = container.labels.get("com.docker.compose.service")
-                if service not in {"worker", "gateway"}:
+                if service not in {"worker", "gateway", "egress"}:
                     raise OwnershipError("Unexpected container on agent network")
                 require_labels(container.labels, self.service_labels(service))
                 network.disconnect(container)
@@ -610,7 +783,7 @@ class Worker:
                 "start": "starting",
                 "stop": "stopping",
                 "delete": "deleting",
-            }[operation.action]
+            }.get(operation.action, agent.observed_state)
         try:
             self.execute(operation)
         except OperationalError:
@@ -641,8 +814,9 @@ class Worker:
                 )
                 current.heartbeat_at = datetime.now(UTC)
                 agent = session.get(Agent, operation.agent_id)
-                agent.observed_state, agent.last_error = "error", current.error
-                if agent.current_incarnation_id and terminal:
+                if operation.action != "dashboard":
+                    agent.observed_state, agent.last_error = "error", current.error
+                if agent.current_incarnation_id and terminal and operation.action != "dashboard":
                     session.get(
                         WorkloadIncarnation, agent.current_incarnation_id
                     ).revoked_at = datetime.now(UTC)

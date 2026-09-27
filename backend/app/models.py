@@ -32,6 +32,7 @@ class Agent(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    runtime_mode: Mapped[str] = mapped_column(String(20), default="managed")
     display_name: Mapped[str] = mapped_column(String(120))
     employee_label: Mapped[str] = mapped_column(String(160))
     inference_override: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
@@ -94,7 +95,7 @@ class Operation(Base):
             postgresql_where=text("status IN ('queued', 'running', 'retry_wait')"),
         ),
         Index("ix_operations_pending", "status", "next_retry_at", "created_at"),
-        CheckConstraint("action IN ('create', 'start', 'stop', 'delete')"),
+        CheckConstraint("action IN ('create', 'start', 'stop', 'delete', 'dashboard')"),
         CheckConstraint("status IN ('queued', 'running', 'retry_wait', 'succeeded', 'failed')"),
         CheckConstraint("target_revision > 0"),
         CheckConstraint("attempts >= 0"),
@@ -102,6 +103,7 @@ class Operation(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
+    dashboard_url: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(String(20))
     target_revision: Mapped[int] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(20), default="queued")
