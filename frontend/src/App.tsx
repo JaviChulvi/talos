@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Bot, Boxes, Check, ChevronRight, CircleAlert, Database, LayoutDashboard, Menu, Network, RefreshCw, Server, X } from "lucide-react";
+import { ArrowUpRight, Bot, Boxes, Check, ChevronRight, CircleAlert, Database, LayoutDashboard, Menu, Network, RefreshCw, Server, Settings, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { InferenceSettings } from "@/components/inference-settings";
 import { AgentWorkspace } from "@/components/agent-workspace";
 
 type Status = {
@@ -31,13 +32,13 @@ function ServiceStatus({ value }: { value?: string }) {
 }
 
 export default function App() {
-  const [page, setPage] = useState(() => window.location.hash === "#platform" ? "platform" : "agents");
+  const [page, setPage] = useState(() => ["#platform", "#settings"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const navigate = () => {
-      if (["", "#platform", "#agents"].includes(window.location.hash)) {
-        setPage(window.location.hash === "#platform" ? "platform" : "agents");
+      if (["", "#platform", "#agents", "#settings"].includes(window.location.hash)) {
+        setPage(["#platform", "#settings"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
       }
       setMenuOpen(false);
     };
@@ -107,6 +108,7 @@ export default function App() {
           </div>
           <nav className="main-navigation" aria-label="Main">
             <a href="#agents" aria-current={page === "agents" ? "page" : undefined} onClick={() => setMenuOpen(false)}><Bot size={18} aria-hidden="true" />Agents</a>
+            <a href="#settings" aria-current={page === "settings" ? "page" : undefined} onClick={() => setMenuOpen(false)}><Settings size={18} aria-hidden="true" />Settings</a>
             <a href="#platform" aria-current={page === "platform" ? "page" : undefined} onClick={() => setMenuOpen(false)}><LayoutDashboard size={18} aria-hidden="true" />Platform status</a>
           </nav>
           <div className="sidebar-footer">
@@ -119,13 +121,17 @@ export default function App() {
 
       <div className="app-main">
         <header className="topbar">
-          <nav aria-label="Breadcrumb" className="breadcrumb"><span>Local workspace</span><ChevronRight size={14} aria-hidden="true" /><span aria-current="page">{page === "agents" ? "Agents" : "Platform status"}</span></nav>
+          <nav aria-label="Breadcrumb" className="breadcrumb"><span>Local workspace</span><ChevronRight size={14} aria-hidden="true" /><span aria-current="page">{page === "agents" ? "Agents" : page === "settings" ? "Settings" : "Platform status"}</span></nav>
           <span className="local-label"><span className="status-dot" />Local development</span>
         </header>
         <main id="main-content" tabIndex={-1} className="page-content">
           <div hidden={page !== "agents"}>
-            <AgentWorkspace />
+            <AgentWorkspace active={page === "agents"} />
           </div>
+          {page === "settings" && <section aria-labelledby="settings-heading">
+            <div className="page-heading"><div><h1 id="settings-heading">Settings</h1><p>Workspace defaults for your agents.</p></div></div>
+            <InferenceSettings />
+          </section>}
           <section hidden={page !== "platform"} aria-labelledby="status-heading">
             <div className="page-heading">
               <div><h1 id="status-heading">Platform status</h1><p>Check the services behind your agent workspace.</p></div>

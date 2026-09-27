@@ -319,12 +319,14 @@ def test_cancel_while_connecting_prevents_send(client, sessions, agent_id):
 def test_oversized_output_becomes_unknown_without_persisting_raw_payload(
     client, sessions, agent_id
 ):
+    from worker.diagnostics import MAX_OUTPUT
+
     run_id = UUID(submit(client, agent_id).json()["id"])
 
     class OversizedDriver(FakeDriver):
         async def send(self, session_key, message, run_id):
             self.run_id = run_id
-            self.event({"state": "delta", "deltaText": "x" * 16001})
+            self.event({"state": "delta", "deltaText": "x" * (MAX_OUTPUT + 1)})
             return {"runId": run_id}
 
     asyncio.run(drain(manager_for(sessions, OversizedDriver())))
@@ -391,3 +393,174 @@ def test_recovery_preserves_a_live_streaming_task(client, sessions, agent_id):
     assert driver.sent == 1
     events = client.get(f"/api/v1/runs/{run_id}/events").json()
     assert not any(event["type"] == "unknown" for event in events)
+
+
+def test_model_selection_snapshots_requests_and_old_runtimes_stay_fixture(
+    client, sessions, agent_id, monkeypatch
+):
+    from backend.app.models import InferenceConfig
+
+    async def catalog():
+        return [
+            {
+                "id": "deepseek/deepseek-v4-flash-0731",
+                "name": "DeepSeek",
+                "context_length": 64000,
+                "max_completion_tokens": 8000,
+                "supported_parameters": ["reasoning", "max_tokens"],
+                "reasoning": {"mandatory": True, "supported_efforts": ["low", "high"]},
+            },
+            {"id": "other/model", "name": "Other"},
+        ]
+
+    monkeypatch.setattr("backend.app.inference.catalog", catalog)
+    first = "deepseek/deepseek-v4-flash-0731"
+    assert client.put("/api/v1/inference", json={"model_id": "unknown"}).status_code == 400
+    assert client.put("/api/v1/inference", json={"model_id": first}).status_code == 200
+    assert (
+        client.put(
+            "/api/v1/inference", json={"model_id": first, "settings": {"reasoning_effort": "none"}}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.put(
+            "/api/v1/inference", json={"model_id": first, "settings": {"max_output_tokens": 9000}}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.put(
+            "/api/v1/inference", json={"model_id": first, "settings": {"temperature": 1}}
+        ).status_code
+        == 400
+    )
+    overrides = {"reasoning_effort": "high", "max_output_tokens": 7000}
+    assert (
+        client.put("/api/v1/inference", json={"model_id": first, "settings": overrides}).status_code
+        == 200
+    )
+    # A pre-upgrade incarnation keeps its existing fixture configuration until stop/start.
+    assert submit(client, agent_id).json()["model_id"] == "fixture"
+    with sessions.begin() as session:
+        run = session.scalar(select(Run))
+        run.status = "completed"
+        incarnation = session.get(WorkloadIncarnation, run.incarnation_id)
+        incarnation.model_route = "default"
+    response = submit(client, agent_id, key="real-model")
+    assert response.status_code == 202
+    run_id = response.json()["id"]
+    assert response.json()["model_id"] == first
+    assert response.json()["inference"]["settings"] == overrides
+    assert client.put("/api/v1/inference", json={"model_id": "other/model"}).status_code == 200
+    assert client.get(f"/api/v1/runs/{run_id}").json()["model_id"] == first
+    assert client.get(f"/api/v1/runs/{run_id}").json()["inference"]["settings"] == overrides
+    with sessions.begin() as session:
+        session.get(Run, UUID(run_id)).status = "completed"
+    assert submit(client, agent_id, key="next-model").json()["model_id"] == "other/model"
+    # Restore the singleton for other tests sharing this isolated schema.
+    with sessions.begin() as session:
+        session.get(InferenceConfig, 1).model_id = "fixture"
+
+
+def test_gateway_requires_admission_and_revokes_on_cancel(sessions, agent_id, monkeypatch):
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    from gateway.identity import record_inference, selected_request, validate_token
+
+    token = "test-workload-token-at-least-twenty-chars"
+    monkeypatch.setattr("gateway.identity.session_factory", lambda: sessions)
+    with sessions.begin() as session:
+        agent = session.get(Agent, agent_id)
+        incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        incarnation.gateway_token_hash = hashlib.sha256(token.encode()).hexdigest()
+        incarnation.expires_at = datetime.now(UTC) + timedelta(days=1)
+        incarnation_id = incarnation.id
+    assert validate_token(token)
+    assert not validate_token(token, require_run=True)
+    with sessions.begin() as session:
+        run = Run(
+            agent_id=agent_id,
+            incarnation_id=incarnation_id,
+            message="test",
+            idempotency_key="test",
+            request_hash="hash",
+            status="dispatching",
+            model_id="deepseek/deepseek-v4-flash-0731",
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.id
+    assert validate_token(token, require_run=True)
+    assert selected_request(token)["model_id"] == "deepseek/deepseek-v4-flash-0731"
+    assert validate_token(token, require_run=True, run_id=str(run_id))
+    assert not validate_token(token, require_run=True, run_id=str(uuid4()))
+    report = {"outcome": "length", "reasoning_tokens": 1500, "cost": 0.01}
+    record_inference(str(run_id), report)
+    with sessions() as session:
+        assert session.get(Run, run_id).inference_calls == [report]
+    with sessions.begin() as session:
+        session.get(Run, run_id).cancel_requested = True
+    assert not validate_token(token, require_run=True)
+
+
+def test_agent_overrides_inherit_reset_and_snapshot_independently(
+    client, sessions, agent_id, monkeypatch
+):
+    from backend.app.models import InferenceConfig
+
+    async def catalog():
+        return [
+            {
+                "id": name,
+                "name": name,
+                "context_length": 64000,
+                "max_completion_tokens": 8000,
+                "supported_parameters": ["temperature"],
+                "reasoning": {},
+            }
+            for name in ("lab/shared", "lab/custom", "lab/next")
+        ]
+
+    monkeypatch.setattr("backend.app.inference.catalog", catalog)
+    with sessions.begin() as session:
+        agent = session.get(Agent, agent_id)
+        session.get(WorkloadIncarnation, agent.current_incarnation_id).model_route = "default"
+        other = Agent(display_name="Another agent", employee_label="Test")
+        session.add(other)
+        session.flush()
+        other_id = other.id
+    path = f"/api/v1/inference/agents/{agent_id}"
+    assert client.put("/api/v1/inference", json={"model_id": "lab/shared"}).status_code == 200
+    assert client.get(path).json()["inherited"] is True
+    assert client.get(path).json()["model_id"] == "lab/shared"
+    assert (
+        client.put(
+            path, json={"model_id": "lab/custom", "settings": {"reasoning_effort": "high"}}
+        ).status_code
+        == 400
+    )
+    custom = {"model_id": "lab/custom", "settings": {"temperature": 0.6}}
+    assert client.put(path, json=custom).json()["inherited"] is False
+    assert client.get(f"/api/v1/inference/agents/{other_id}").json()["model_id"] == "lab/shared"
+    run = submit(client, agent_id).json()
+    assert run["model_id"] == "lab/custom"
+    assert run["inference"]["settings"] == {"temperature": 0.6}
+    assert run["inference"]["source"] == "agent"
+    assert client.put("/api/v1/inference", json={"model_id": "lab/next"}).status_code == 200
+    assert client.get(path).json()["model_id"] == "lab/custom"
+    reset = client.delete(path).json()
+    assert reset["inherited"] is True and reset["model_id"] == "lab/next"
+    assert client.get(f"/api/v1/runs/{run['id']}").json()["model_id"] == "lab/custom"
+    with sessions.begin() as session:
+        session.get(Run, UUID(run["id"])).status = "completed"
+    inherited = submit(client, agent_id, key="inherited").json()
+    assert inherited["model_id"] == "lab/next" and inherited["inference"]["source"] == "workspace"
+    missing = f"/api/v1/inference/agents/{uuid4()}"
+    assert client.get(missing).status_code == 404
+    assert client.put(missing, json={"model_id": "fixture"}).status_code == 404
+    assert client.delete(missing).status_code == 404
+    with sessions.begin() as session:
+        config = session.get(InferenceConfig, 1)
+        config.model_id, config.settings, config.capabilities = "fixture", {}, {}

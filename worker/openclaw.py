@@ -17,6 +17,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from websockets.asyncio.client import connect
 
+from backend.app.config import get_settings
+
 SCOPES = ["operator.read", "operator.write"]
 
 
@@ -134,7 +136,7 @@ class OpenClawClient:
             self.url,
             open_timeout=self.timeout,
             # Match the pinned Gateway's frame limit, including history responses.
-            max_size=25 * 1024 * 1024,
+            max_size=max(25 * 1024 * 1024, get_settings().inference_max_output_chars * 6 + 131072),
             proxy=None,
         )
         try:
@@ -217,6 +219,7 @@ class OpenClawClient:
                 "message": message,
                 "idempotencyKey": run_id,
                 "deliver": False,
+                "timeoutMs": (get_settings().inference_timeout_seconds + 30) * 1000,
             },
         )
 

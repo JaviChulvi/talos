@@ -8,12 +8,16 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
+from backend.app.config import get_settings
 from backend.app.diagnostics import append_event
 from backend.app.models import ACTIVE_RUN_STATUSES, Agent, Run
 from worker.openclaw import GatewayError
 
-MAX_OUTPUT = 16000
-MAX_EVENTS = 500
+MAX_OUTPUT = get_settings().inference_max_output_chars
+
+
+class OutputLimitError(Exception):
+    pass
 
 
 def message_text(message: dict | None) -> str:
@@ -32,10 +36,13 @@ def message_text(message: dict | None) -> str:
 
 
 class DiagnosticManager:
-    def __init__(self, session_maker, connector, timeout: float = 180):
+    def __init__(self, session_maker, connector, timeout: float | None = None, configure=None):
         self.sessions = session_maker
         self.connector = connector
-        self.timeout = timeout
+        self.timeout = (
+            timeout if timeout is not None else get_settings().inference_timeout_seconds + 60
+        )
+        self.configure = configure
         self.tasks: dict[UUID, asyncio.Task] = {}
 
     def recover(self):
@@ -142,8 +149,6 @@ class DiagnosticManager:
             state = payload.get("state")
             if state not in {"delta", "final", "error", "aborted"}:
                 return False
-            if run.event_count >= MAX_EVENTS:
-                raise ValueError("Diagnostic event limit exceeded")
             if state == "delta":
                 delta = payload.get("deltaText")
                 if not isinstance(delta, str):
@@ -159,7 +164,7 @@ class DiagnosticManager:
                     output = run.output
                 event = {"text": output}
             if len(output) > MAX_OUTPUT:
-                raise ValueError("Diagnostic output limit exceeded")
+                raise OutputLimitError("Diagnostic output limit exceeded")
             run.output = output
             if state in {"final", "error", "aborted"}:
                 run.status = {"final": "completed", "error": "failed", "aborted": "cancelled"}[
@@ -178,6 +183,8 @@ class DiagnosticManager:
         sent = False
         try:
             client = await self.connector(self.sessions, run.agent_id)
+            if self.configure:
+                await self.configure(self.sessions, run, client)
             if not self._can_send(run_id):
                 return
             # The dispatching state is committed before any possible send.
@@ -216,7 +223,17 @@ class DiagnosticManager:
                     and self._event(run_id, payload)
                 ):
                     return
-            self._finish(run_id, "unknown", "Result not confirmed; stop the agent before retrying")
+            with suppress(Exception):
+                await client.abort(session_key, upstream_id)
+            self._finish(
+                run_id, "unknown", "Runtime deadline exceeded; stop the agent before retrying"
+            )
+        except OutputLimitError:
+            with suppress(Exception):
+                await client.abort(session_key, upstream_id)
+            self._finish(
+                run_id, "unknown", "Output character limit exceeded; stop the agent before retrying"
+            )
         except GatewayError:
             # A negative send acknowledgment proves rejection. Failures of an
             # abort RPC cannot prove the already accepted run has ended.
