@@ -9,8 +9,64 @@ type Selection = InferenceSelection & { inherited?: boolean };
 type Draft = { model_id: string; settings: GenerationSettings };
 const inputClass = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 
-export function NativeModelChoice({ value, onChange, disabled = false }: {
-  value: string | null; onChange: (value: string | null) => void; disabled?: boolean;
+type ProviderStatus = { configured: boolean; source: "app" | "deployment" };
+
+export function OpenRouterSettings() {
+  const id = useId();
+  const [status, setStatus] = useState<ProviderStatus | null>(null);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    void api<ProviderStatus>("/inference/provider", { signal: controller.signal })
+      .then((value) => { setStatus(value); setError(null); })
+      .catch((cause) => { if (!controller.signal.aborted) setError(errorMessage(cause)); });
+    return () => controller.abort();
+  }, [reload]);
+  async function save(remove = false) {
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const value = await api<ProviderStatus>("/inference/provider", {
+        method: remove ? "DELETE" : "PUT",
+        body: remove ? undefined : JSON.stringify({ key: key.trim() }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      setStatus(value); setKey("");
+      setNotice(remove ? "Key removed. New OpenRouter requests need a key." : "Key verified and saved. New OpenRouter requests use it immediately.");
+    } catch (cause) { setError(`${errorMessage(cause)} Reload status before retrying.`); }
+    finally { setBusy(false); }
+  }
+  const managed = status?.source === "deployment";
+  return <form aria-label="OpenRouter API key" onSubmit={(event) => { event.preventDefault(); void save(); }} className="mb-8 max-w-3xl space-y-4 border-b pb-8">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <h2 className="font-semibold">OpenRouter API key</h2>
+      {status && <Badge variant={status.configured ? "success" : "warning"}>{status.configured ? "Configured" : "Not configured"}</Badge>}
+    </div>
+    <p className="text-sm leading-relaxed text-muted-foreground">One key for agents using OpenRouter through Talos. Choose OpenRouter and a model when creating an agent or in its Settings.</p>
+    {managed ? <p className="text-sm text-muted-foreground">Managed by your deployment. Update the mounted secret to change this key.</p> : <>
+      <div>
+        <label htmlFor={id} className="mb-2 block text-sm">{status?.configured ? "Replacement API key" : "API key"}</label>
+        <input id={id} type="password" autoComplete="new-password" spellCheck={false} value={key} onChange={(event) => setKey(event.target.value)} className={inputClass} placeholder="Paste your OpenRouter API key" maxLength={512} disabled={busy || !status} aria-describedby={`${id}-help`} />
+        <p id={`${id}-help`} className="mt-2 text-xs leading-relaxed text-muted-foreground">Saved privately on this installation. The saved key is never shown again or copied into agents. Saving verifies the key with OpenRouter without making a model request.</p>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <Button type="submit" disabled={busy || !status || !key.trim()}>{busy ? "Updating…" : status?.configured ? "Replace key" : "Verify & save key"}</Button>
+        {status?.configured && <Button type="button" variant="outline" disabled={busy} onClick={() => void save(true)}>Remove key</Button>}
+      </div>
+      {status?.configured && <p className="text-xs text-muted-foreground">Replacing or removing the key affects all agents using OpenRouter through Talos. Requests already sent can finish with the previous key.</p>}
+    </>}
+    {!status && !error && <p role="status" className="text-sm text-muted-foreground">Checking configuration…</p>}
+    {error && <p role="alert" className="text-sm text-danger">{error}</p>}
+    {error && <Button type="button" variant="outline" disabled={busy} onClick={() => setReload((value) => value + 1)}>Reload status</Button>}
+    {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
+  </form>;
+}
+
+export function NativeModelChoice({ value, onChange, disabled = false, active = true, onConfigure }: {
+  value: string | null; onChange: (value: string | null) => void; disabled?: boolean; active?: boolean; onConfigure?: () => void;
 }) {
   const id = useId();
   const [models, setModels] = useState<ModelCapabilities[]>([]);
@@ -19,6 +75,7 @@ export function NativeModelChoice({ value, onChange, disabled = false }: {
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     const options = { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]) };
     void Promise.all([
@@ -30,7 +87,7 @@ export function NativeModelChoice({ value, onChange, disabled = false }: {
       setConfigured(provider.configured); setError(null);
     }).catch((cause) => { if (!controller.signal.aborted) setError(errorMessage(cause)); });
     return () => controller.abort();
-  }, [reload]);
+  }, [reload, active]);
   return <fieldset disabled={disabled} className="space-y-3">
     <legend className="mb-2 text-sm font-medium">LLM provider & model</legend>
     <label htmlFor={id} className="block text-xs text-muted-foreground">Provider</label>
@@ -41,7 +98,8 @@ export function NativeModelChoice({ value, onChange, disabled = false }: {
     {value === null ? <p className="text-xs leading-relaxed text-muted-foreground">The agent manages its provider and model. New agents need a provider configured in their native workspace before they can respond.</p> : <>
       <ModelPicker models={models} value={value} onChange={onChange} disabled={disabled} inputClass={inputClass} includeFixture={false} />
       <p className="break-words text-xs text-muted-foreground">OpenRouter · {value}</p>
-      <p className="text-xs text-muted-foreground">{configured === null ? "Checking OpenRouter configuration…" : configured ? "Installation API key configured. The key stays in the gateway." : "OpenRouter key not configured. Mount the installation key using compose.openrouter.yaml before testing."}</p>
+      <a href="#settings" onClick={onConfigure} className="text-xs text-primary underline">Manage OpenRouter API key</a>
+      <p className="text-xs text-muted-foreground">{configured === null ? "Checking OpenRouter configuration…" : configured ? "Installation API key configured. Agents use it through the gateway." : "OpenRouter key not configured. Add a key in Talos Settings before testing."}</p>
     </>}
     {error && <p role="alert" className="text-sm text-danger">{error} <button type="button" className="underline" onClick={() => setReload((current) => current + 1)}>Retry model catalog</button></p>}
   </fieldset>;

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Bot, Boxes, Check, ChevronRight, CircleAlert, Database, LayoutDashboard, Menu, Network, RefreshCw, Server, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { InferenceSettings } from "@/components/inference-settings";
+import { InferenceSettings, OpenRouterSettings } from "@/components/inference-settings";
 import { Administration } from "@/components/administration";
 import { AgentWorkspace } from "@/components/agent-workspace";
 
@@ -153,7 +153,8 @@ export default function App() {
             <AgentWorkspace active={page === "agents"} operationIds={operationIds} onOperation={recordOperation} />
           </div>
           {page === "settings" && <section aria-labelledby="settings-heading">
-            <div className="page-heading"><div><h1 id="settings-heading">Settings</h1><p>Workspace defaults for your agents.</p></div></div>
+            <div className="page-heading"><div><h1 id="settings-heading">Settings</h1><p>Provider credentials and defaults for your agents.</p></div></div>
+            <OpenRouterSettings />
             <InferenceSettings />
           </section>}
           <section hidden={page !== "platform"} aria-labelledby="status-heading">

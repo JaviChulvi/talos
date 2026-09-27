@@ -56,7 +56,7 @@ For a remote Linux development host, keep that binding and use a tunnel:
 ssh -N -L 8000:127.0.0.1:8000 user@your-host
 ```
 
-In the dashboard, click **New agent**, choose **OpenClaw** or **Hermes**, wait for **Stopped**, start it, and wait for **Ready**. Open the agent’s **Settings** tab and click **Open OpenClaw** or **Open Hermes** to open its native interface. For Hermes, choose a dashboard password of at least 12 characters when creating the agent, then sign in as `talos`. Configure your chosen model provider there; OpenRouter is optional. The instance starts without provider credentials, but an agent conversation still needs a usable model. Native provider credentials belong to that instance's private state; Talos's model picker and shared OpenRouter key do not apply. After configuring a provider, use the agent’s Chat tab to converse directly in Talos; Settings retains access to the full native workspace.
+In the dashboard, click **New agent**, choose **OpenClaw** or **Hermes**, wait for **Stopped**, start it, and wait for **Ready**. Open the agent’s **Settings** tab and click **Open OpenClaw** or **Open Hermes** to open its native interface. For Hermes, choose a dashboard password of at least 12 characters when creating the agent, then sign in as `talos`. Configure your chosen model provider there; OpenRouter is optional. The instance starts without provider credentials, but an agent conversation still needs a usable model. Native provider credentials belong to that instance's private state. Alternatively, select OpenRouter in Talos and configure the shared key in Settings. After configuring a provider, use the agent’s Chat tab to converse directly in Talos; Settings retains access to the full native workspace.
 
 The OpenClaw UI link expires after ten minutes and is single-use. After pairing, OpenClaw stores a device credential in your browser; revoke devices in OpenClaw when necessary. Do not share pairing links. Stop/start retains configuration, workspace, channel credentials, and paired devices while replacing the container and its gateway token. Keep the seeded gateway token and allowed-origin environment references when editing OpenClaw's gateway configuration.
 
@@ -154,7 +154,7 @@ RAM-backed test options (`TALOS_PROOF_RAM_VOLUMES=1` and `TALOS_TEST_TMPFS_VOLUM
 provider/model setup in Hermes or OpenClaw; a fresh native workspace needs a provider
 before it can answer. Choose **OpenRouter** and a catalog model at creation or in the
 agent's Settings to use the installation key described below. Settings shows whether
-the key is mounted; selecting a model does not create credentials.
+the key is configured; selecting a model does not create credentials.
 
 Native model changes use the existing durable operation worker and can be saved while
 the agent runs. OpenRouter changes affect the next provider request; requests already
@@ -164,7 +164,7 @@ started before this feature need one stop/start to add the internal gateway prox
 exclusion. Returning to **Handled by agent** restores the prior native model settings.
 Role permissions, other provider credentials, workspace and history are preserved.
 
-The shared OpenRouter key stays in the gateway. Native agents receive an incarnation
+The shared OpenRouter key is read by the gateway, never copied into agents. Native agents receive an incarnation
 token for `/native/v1/chat/completions`; this route preserves tool calls and results,
 and accepts only active native agents with an OpenRouter selection. Native runtimes
 still own tool dispatch and generation settings. Native inference usage accounting is
@@ -185,27 +185,33 @@ silently fall back to it. Model settings and run snapshots persist in PostgreSQL
 
 To enable external inference:
 
-1. Store your OpenRouter API key in a private file outside this repository
-   (for example, `~/.config/talos/openrouter.key`, readable by the container's
-   gateway user, UID 10001). With local Compose file secrets, one workable
-   arrangement is a host directory with mode `0700` and a key file with mode
-   `0444`: the private directory protects host access, while the gateway can
-   read the mounted file. Do not put the key itself in `.env` or the dashboard.
-2. Set `TALOS_OPENROUTER_SECRET_FILE` in `.env` to the absolute path of that file.
-3. Start the platform with the optional overlay:
+1. Open **Settings → OpenRouter API key**, paste your key, and click **Verify & save key**.
+   Talos verifies it with OpenRouter's key endpoint without making a model request.
+   Invalid keys and verification failures leave the previous key unchanged.
+2. For a native agent, choose **OpenRouter** and a model during creation or in the
+   agent's **Settings**. **Handled by agent** continues to use the native provider setup.
+3. For Talos-managed conversations, choose a model in **Settings → Default model**
+   and click **Save settings**, or customize the model for one agent. Compatible
+   text models come from OpenRouter's public catalog.
 
-   ```sh
-   docker compose -f compose.yaml -f compose.openrouter.yaml up --build -d
-   ```
+The password field is never prefilled. **Replace key** and **Remove key** affect all
+agents using OpenRouter through Talos, starting with their next provider request;
+requests already sent can finish with the previous key. No restart is needed.
+The app stores the key in the persistent `provider-secrets` Docker volume, as a
+mode-0600 file inside a mode-0700 directory owned by UID 10001. The API writes it;
+the gateway mounts the volume read-only. Workers and agents do not mount it.
+This is a private file, not encrypted storage: protect the Docker host and backups.
+The key is never returned by the API, included in agent configuration, or stored
+in browser local storage. Keep the existing local/tunneled administrator deployment.
 
-4. In **Settings → Default model**, select the **DeepSeek** lab icon, then **DeepSeek V4 Flash 0731**
-   (`deepseek/deepseek-v4-flash-0731`, the recommended entry) and click
-   **Save settings**. Other compatible text models come from OpenRouter's public
-   catalog. If the catalog is unavailable, the saved selection keeps working
-   and you can still select the local simulator.
-5. For agents created before this integration, stop/start once to switch their
-   pinned fixture configuration to the Talos default route. The dashboard
-   identifies those older runtimes. Subsequent model changes need no restart.
+Alternatively, deployment operators can mount an existing private key file using
+`TALOS_OPENROUTER_SECRET_FILE` and
+`docker compose -f compose.yaml -f compose.openrouter.yaml up --build -d`.
+The file must be readable by gateway UID 10001. This deployment secret takes
+precedence, and the app shows it as deployment-managed and disables edits, even
+if the mounted key is invalid. Keep using both Compose files for that installation.
+To rotate a deployment secret, replace the file and recreate the gateway as needed
+for the bind mount to see it. Never put the key value in `.env` or the command line.
 
 The **Agents** page contains the agent list and each agent's **Conversation** and
 **Settings** views. Agent settings inherit the workspace configuration by default.
@@ -222,12 +228,10 @@ names identify each lab; unrecognized labs use initials and remain selectable.
 Choosing a lab filters the model list without changing the active selection until
 **Save settings** is clicked.
 
-Use the same Compose file pair for subsequent updates and shutdowns. Only the
-gateway mounts this shared secret and joins the overlay's outbound network; managed agents
-remain on private internal networks with their own revocable Talos credentials. Native agents use their separate proxy and instance-owned credentials.
-The public model catalog is fetched by the API without a provider credential.
-Key rotation requires replacing the secret and recreating the gateway; the worker
-reconnects it to agent networks during reconciliation.
+The gateway has an outbound network in the default Compose configuration. Managed
+agents remain on private internal networks with revocable Talos credentials; native
+agents use their separate proxy for other outbound traffic. The public model catalog
+is fetched by the API without a provider credential.
 
 Real inference uses the admitted run's server-owned model, capability and settings
 snapshot and a fixed HTTPS OpenRouter endpoint. By default Talos omits reasoning,
@@ -273,8 +277,7 @@ vary, so cancelling cannot undo charges already incurred.
 
 The picker is part of the existing **local-only, unauthenticated** operator UI.
 Do not expose it publicly; employee accounts and authorization remain future work.
-No provider-management, subscription sharing, spending budgets, or API fallback
-is included. The protocol proof covers the real pinned OpenClaw container with a
+Subscription sharing, spending budgets, and API fallback are not included. The protocol proof covers the real pinned OpenClaw container with a
 controlled upstream transport, including model changes, provider failures and
 cancellation. To opt into one paid DeepSeek V4 Flash check as well, run
 the verifier with your key mounted read-only (never pass the key value on the
