@@ -615,3 +615,89 @@ def test_dashboard_handoff_rewrites_both_addresses_without_changing_agent_state(
     assert client.get(f"/api/v1/agents/{agent_id}").json()["observed_state"] == "ready"
     with session_maker() as session:
         assert session.get(WorkloadIncarnation, incarnation.id).revoked_at is None
+
+
+@pytest.fixture
+def role_agent(client, worker, session_maker, monkeypatch):
+    role = client.post("/api/v1/roles", json={"name": "Sales"}).json()
+    employee = client.post("/api/v1/employees", json={"name": "Alex", "role_id": role["id"]}).json()
+    created = client.post(
+        "/api/v1/agents",
+        json={
+            "display_name": "Alex helper",
+            "employee_id": employee["id"],
+        },
+        headers={"Idempotency-Key": "role-agent"},
+    ).json()
+    monkeypatch.setattr(worker, "ensure_network", lambda *a, **kw: None)
+    monkeypatch.setattr(worker.client.images, "get", lambda _: SimpleNamespace(id=IMAGE))
+    proxy = SimpleNamespace(
+        attrs={
+            "NetworkSettings": {
+                "Ports": {"18789/tcp": [{"HostIp": "127.0.0.1", "HostPort": "12345"}]}
+            }
+        },
+        status="running",
+        stop=lambda **kw: None,
+        remove=lambda: None,
+    )
+    monkeypatch.setattr(worker, "ui_proxy", lambda *a, **kw: proxy)
+    writer = Mock()
+    monkeypatch.setattr("worker.lifecycle.apply_native_permissions", writer)
+    worker.process_one()
+    return created["agent_id"], role, writer
+
+
+def test_role_application_captures_snapshot_recovers_and_leaves_new_edit_pending(
+    client, worker, session_maker, role_agent, monkeypatch
+):
+    agent_id, role, writer = role_agent
+    path = "/api/v1/agents/" + agent_id
+    operation = client.post(path + "/start", headers={"Idempotency-Key": "start-role"}).json()
+    # Saving during an operation must not mutate its captured policy.
+    client.put(
+        "/api/v1/roles/" + role["id"], json={"name": "Sales", "capabilities": ["web_research"]}
+    )
+    complete = worker.complete
+    monkeypatch.setattr(worker, "complete", Mock(side_effect=ProcessDied()))
+    with pytest.raises(ProcessDied):
+        worker.process_one()
+    monkeypatch.setattr(worker, "complete", complete)
+    assert worker.process_one()
+    assert writer.call_count == 1  # Adopts the same configured incarnation on recovery.
+    agent = client.get(path).json()
+    assert agent["applied_role"]["revision"] == 1 and agent["permissions_pending"]
+    replay = client.post(path + "/start", headers={"Idempotency-Key": "start-role"}).json()
+    assert replay["id"] == operation["id"] and replay["status"] == "succeeded"
+    applied = client.post(path + "/apply-role", headers={"Idempotency-Key": "apply"}).json()
+    assert applied["action"] == "apply_role"
+    assert worker.process_one()
+    agent = client.get(path).json()
+    assert agent["observed_state"] == "ready" and not agent["permissions_pending"]
+    assert agent["applied_role"]["capabilities"] == ["web_research"]
+    assert writer.call_count == 2
+
+
+def test_stopped_role_application_never_starts_and_failure_stays_stopped(
+    client, worker, session_maker, role_agent
+):
+    agent_id, role, writer = role_agent
+    path = "/api/v1/agents/" + agent_id
+    client.post(path + "/apply-role", headers={"Idempotency-Key": "stopped-apply"})
+    worker.process_one()
+    assert client.get(path).json()["observed_state"] == "stopped"
+    assert not client.get(path).json()["permissions_pending"]
+    # A validation failure must never launch an unrestricted container.
+    writer.side_effect = RuntimeError("Invalid native configuration")
+    op = client.post(path + "/start", headers={"Idempotency-Key": "failed-start"}).json()
+    for _ in range(5):
+        worker.process_one()
+        with session_maker.begin() as session:
+            session.get(Operation, UUID(op["id"])).next_retry_at = None
+    agent = client.get(path).json()
+    assert agent["observed_state"] == agent["desired_state"] == "stopped"
+    assert client.get("/api/v1/operations/" + op["id"]).json()["status"] == "failed"
+    assert "check native configuration" in agent["last_error"]
+    assert not [
+        c for c in worker.client.containers.items.values() if "io.talos.incarnation" in c.labels
+    ]

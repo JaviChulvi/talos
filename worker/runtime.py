@@ -324,3 +324,111 @@ def approve_device(container, identity: DeviceIdentity):
     if len(matching) != 1:
         raise RuntimeError("Expected exactly one matching worker pairing request")
     cli("approve", matching[0]["requestId"])
+
+
+def apply_native_permissions(client, state, incarnation, runtime_kind, permissions, labels):
+    """Patch only native permission fields in an offline, pinned-image initializer."""
+    name = incarnation.config_volume + "-permissions"
+    try:
+        previous = client.containers.get(name)
+    except NotFound:
+        pass
+    else:
+        if previous.labels != labels:
+            raise RuntimeError("Permission initializer ownership conflict")
+        previous.remove(force=True)
+    if runtime_kind == "hermes":
+        entrypoint = ["python", "-c"]
+        script = """
+import json, os, pathlib, sys, yaml
+from hermes_cli.config import validate_config_structure
+from hermes_cli.platforms import PLATFORMS
+from hermes_cli.tools_config import _get_platform_tools, _get_plugin_toolset_keys
+from model_tools import _select_tool_names
+from toolsets import resolve_toolset
+policy = json.loads(sys.argv[1])
+path = pathlib.Path('/opt/data/config.yaml')
+config = yaml.safe_load(path.read_text())
+assert isinstance(config, dict)
+allowed = set().union(*(set(resolve_toolset(k)) for k in policy['enabled']))
+# Disable installed third-party toolsets too, retaining their credentials/config.
+disabled = sorted(set(policy['disabled']) | _get_plugin_toolset_keys() |
+                  {'mcp_' + str(k) for k in (config.get('mcp_servers') or {})})
+config.setdefault('agent', {})['disabled_toolsets'] = disabled
+config['platform_toolsets'] = {k: policy['enabled'] + ['no_mcp'] for k in PLATFORMS}
+issues = validate_config_structure(config)
+assert not any(i.severity == 'error' for i in issues), 'Invalid native configuration'
+for platform in PLATFORMS:
+    selected = _get_platform_tools(config, platform)
+    actual = _select_tool_names(list(selected), disabled, True)
+    assert actual == allowed, 'Native tool selection differs from captured permissions'
+# Also test session posture overrides and deferred discovery's scoped selection.
+assert _select_tool_names(None, disabled, True) == allowed, 'Global exclusions are incomplete'
+next_path = path.with_suffix('.talos-next')
+next_path.write_text(yaml.safe_dump(config, sort_keys=False))
+next_path.chmod(0o600)
+os.replace(next_path, path)
+"""
+        volumes = {state: {"bind": "/opt/data", "mode": "rw"}}
+        environment = {"HOME": "/opt/data", "HERMES_HOME": "/opt/data"}
+        user = "10000:10000"
+    else:
+        entrypoint = ["node", "-e"]
+        script = """
+const fs = require('fs'), JSON5 = require('json5'), cp = require('child_process');
+const policy = JSON.parse(process.argv[1]);
+const path = process.env.OPENCLAW_CONFIG_PATH;
+const config = JSON5.parse(fs.readFileSync(path, 'utf8'));
+config.tools ??= {};
+Object.assign(config.tools, {profile: 'full', allow: policy.allow, deny: policy.deny});
+delete config.tools.alsoAllow;
+config.browser = {...config.browser, enabled: false};
+config.cron = {...config.cron, enabled: false};
+config.agents ??= {}; config.agents.defaults ??= {};
+config.agents.defaults.heartbeat = {...config.agents.defaults.heartbeat, every: '0m'};
+const next = path + '.talos-next';
+fs.writeFileSync(next, JSON.stringify(config, null, 2), {mode: 0o600});
+cp.execFileSync('node', ['openclaw.mjs', 'config', 'validate'], {
+  env: {...process.env, OPENCLAW_CONFIG_PATH: next}, stdio: 'ignore', timeout: 60000
+});
+fs.renameSync(next, path);
+"""
+        volumes = {state: {"bind": STATE_PATH, "mode": "rw"}}
+        environment = {
+            "HOME": "/home/node",
+            "OPENCLAW_STATE_DIR": STATE_PATH,
+            "OPENCLAW_CONFIG_PATH": STATE_PATH + "/openclaw.json",
+            "OPENCLAW_GATEWAY_TOKEN": "offline-validation-only",
+            "TALOS_CONTROL_ORIGIN": "http://127.0.0.1",
+        }
+        user = "1000:1000"
+    initializer = client.containers.create(
+        incarnation.image_digest,
+        name=name,
+        entrypoint=entrypoint,
+        command=[script, json.dumps(permissions)],
+        user=user,
+        environment=environment,
+        volumes=volumes,
+        network_mode="none",
+        read_only=True,
+        tmpfs={
+            "/tmp": "rw,nosuid,nodev,size=256m,mode=1777",
+            **(
+                {"/home/node/.cache": "rw,nosuid,nodev,size=128m,uid=1000,gid=1000,mode=700"}
+                if runtime_kind == "openclaw"
+                else {}
+            ),
+        },
+        cap_drop=["ALL"],
+        security_opt=["no-new-privileges:true"],
+        labels=labels,
+        mem_limit="2g",
+        pids_limit=128,
+    )
+    try:
+        initializer.start()
+        if initializer.wait(timeout=90)["StatusCode"]:
+            raise RuntimeError("Native permission configuration validation failed")
+    finally:
+        initializer.remove(force=True)

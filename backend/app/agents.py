@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from backend.app.capabilities import compile_permissions
 from backend.app.db import session_factory
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
@@ -20,6 +21,7 @@ from backend.app.models import (
     Agent,
     Employee,
     Operation,
+    Role,
     WorkloadIncarnation,
 )
 
@@ -35,7 +37,7 @@ Database = Annotated[Session, Depends(get_db)]
 IdempotencyKey = Annotated[
     str, Header(alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^[!-~]+$")
 ]
-LifecycleAction = Literal["start", "stop", "delete", "dashboard"]
+LifecycleAction = Literal["start", "stop", "delete", "dashboard", "apply_role"]
 
 
 class CreateAgent(BaseModel):
@@ -76,6 +78,8 @@ class AgentResponse(BaseModel):
     employee_id: UUID | None
     employee_name: str
     role: dict | None
+    applied_role: dict | None
+    permissions_pending: bool
     inference_override: dict | None
     runtime_release: str
     model_route: str
@@ -273,15 +277,46 @@ def request_lifecycle(
                 ):
                     raise HTTPException(409, "Start a native agent first")
                 return enqueue_operation(session, agent, action, scope, idempotency_key, digest)
+            application = None
+            if action == "apply_role" and (
+                agent.employee_id is None or agent.runtime_mode != "native"
+            ):
+                raise HTTPException(409, "Choose an employee for a native agent first")
+            if (
+                action in {"start", "apply_role"}
+                and agent.employee_id
+                and agent.runtime_mode == "native"
+            ):
+                employee = session.get(
+                    Employee, agent.employee_id, with_for_update=True, populate_existing=True
+                )
+                role = session.get(
+                    Role, employee.role_id, with_for_update=True, populate_existing=True
+                )
+                application = {
+                    "role": {
+                        "id": str(role.id),
+                        "name": role.name,
+                        "revision": role.revision,
+                        "capabilities": list(role.capabilities),
+                    },
+                    "permissions": compile_permissions(role.capabilities, agent.runtime_kind),
+                    "restart": action == "start" or agent.desired_state == "running",
+                }
             agent.revision += 1
-            agent.desired_state = {"start": "running", "stop": "stopped", "delete": "deleted"}[
-                action
-            ]
-            if action in {"stop", "delete"} and agent.current_incarnation_id:
+            agent.desired_state = {
+                "start": "running",
+                "stop": "stopped",
+                "delete": "deleted",
+                "apply_role": agent.desired_state,
+            }[action]
+            if action in {"stop", "delete", "apply_role"} and agent.current_incarnation_id:
                 incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
                 incarnation.revoked_at = datetime.now(UTC)
             agent.last_error = None
-            return enqueue_operation(session, agent, action, scope, idempotency_key, digest)
+            operation = enqueue_operation(session, agent, action, scope, idempotency_key, digest)
+            operation.role_application = application
+            return operation
     except IntegrityError as error:
         return recover_duplicate(session, scope, idempotency_key, digest, error)
 
@@ -344,3 +379,8 @@ def assign_employee(agent_id: UUID, body: AssignEmployee, session: Database):
             raise HTTPException(404, "Employee not found")
         agent.employee = employee
     return agent
+
+
+@router.post("/agents/{agent_id}/apply-role", status_code=202, response_model=OperationResponse)
+def apply_role(agent_id: UUID, idempotency_key: IdempotencyKey, session: Database):
+    return request_lifecycle(session, agent_id, "apply_role", idempotency_key)

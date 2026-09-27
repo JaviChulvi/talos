@@ -171,3 +171,97 @@ def test_native_configuration_is_seeded_once_and_remains_private(runtime_kind, m
             except NotFound:
                 pass
         client.close()
+
+
+@pytest.mark.parametrize("runtime_kind", ["openclaw", "hermes"])
+def test_role_config_validates_in_pinned_native_image_and_preserves_state(runtime_kind):
+    import json
+
+    from backend.app.capabilities import compile_permissions
+    from worker.runtime import (
+        NATIVE_IMAGES,
+        STATE_PATH,
+        apply_native_permissions,
+        native_config,
+        prepare_volumes,
+    )
+
+    client = docker.from_env(timeout=120)
+    prefix = "talos-role-config-" + uuid4().hex
+    labels = {"io.talos.test": prefix}
+    incarnation = SimpleNamespace(
+        config_volume=prefix + "-config",
+        image_digest=client.images.get(NATIVE_IMAGES[runtime_kind]).id,
+    )
+    payload = native_config(runtime_kind, "synthetic-password-hash")
+    if runtime_kind == "hermes":
+        payload["model"] = {
+            "provider": "custom",
+            "base_url": "http://fixture/v1",
+            "default": "fixture",
+        }
+        payload["mcp_servers"] = {"deferred-test": {"command": "false"}}
+    else:
+        payload["models"] = {
+            "providers": {
+                "fixture": {
+                    "baseUrl": "http://fixture/v1",
+                    "apiKey": "synthetic-key",
+                    "api": "openai-completions",
+                    "models": [{"id": "fixture", "name": "Fixture"}],
+                }
+            }
+        }
+    try:
+        prepare_volumes(
+            client,
+            prefix,
+            incarnation.config_volume,
+            payload,
+            labels,
+            native=True,
+            runtime_kind=runtime_kind,
+        )
+        for capabilities in (
+            [],
+            ["web_research"],
+            ["workspace_files"],
+            ["terminal_execution"],
+            ["web_research", "workspace_files", "terminal_execution"],
+        ):
+            apply_native_permissions(
+                client,
+                prefix,
+                incarnation,
+                runtime_kind,
+                compile_permissions(capabilities, runtime_kind),
+                labels,
+            )
+        mount = "/opt/data" if runtime_kind == "hermes" else STATE_PATH
+        if runtime_kind == "hermes":
+            command = [
+                "python",
+                "-c",
+                "import yaml,json;print(json.dumps(yaml.safe_load(open('/opt/data/config.yaml'))))",
+            ]
+        else:
+            command = [
+                "node",
+                "-e",
+                f"console.log(require('fs').readFileSync('{mount}/openclaw.json','utf8'))",
+            ]
+        raw = client.containers.run(
+            incarnation.image_digest,
+            entrypoint=command,
+            network_mode="none",
+            volumes={prefix: {"bind": mount, "mode": "ro"}},
+            remove=True,
+        )
+        current = json.loads(raw)
+        for key, value in payload.items():
+            if key not in {"tools", "agents"}:
+                assert current[key] == value
+    finally:
+        for name in (prefix, incarnation.config_volume):
+            client.volumes.get(name).remove()
+        client.close()

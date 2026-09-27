@@ -79,6 +79,20 @@ class Agent(Base):
             "capabilities": role.capabilities,
         }
 
+    applied_role: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+
+    @property
+    def permissions_pending(self) -> bool:
+        role = self.role
+        return bool(
+            role
+            and (
+                self.applied_role is None
+                or self.applied_role["id"] != str(role["id"])
+                or self.applied_role["revision"] != role["revision"]
+            )
+        )
+
     inference_override: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     runtime_release: Mapped[str] = mapped_column(String(100), default=RUNTIME_RELEASE)
     desired_state: Mapped[str] = mapped_column(String(20), default="stopped")
@@ -139,7 +153,9 @@ class Operation(Base):
             postgresql_where=text("status IN ('queued', 'running', 'retry_wait')"),
         ),
         Index("ix_operations_pending", "status", "next_retry_at", "created_at"),
-        CheckConstraint("action IN ('create', 'start', 'stop', 'delete', 'dashboard')"),
+        CheckConstraint(
+            "action IN ('create', 'start', 'stop', 'delete', 'dashboard', 'apply_role')"
+        ),
         CheckConstraint("status IN ('queued', 'running', 'retry_wait', 'succeeded', 'failed')"),
         CheckConstraint("target_revision > 0"),
         CheckConstraint("attempts >= 0"),
@@ -147,6 +163,7 @@ class Operation(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
+    role_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     dashboard_url: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(String(20))
     target_revision: Mapped[int] = mapped_column(BigInteger)

@@ -21,3 +21,23 @@ CAPABILITIES = {
         "hermes": ["terminal", "code_execution"],
     },
 }
+
+
+# Pinned Hermes 0.21.5 basic groups. Platform/posture composites overlap these
+# groups and must not be disabled: Hermes subtracts tools, not group names.
+HERMES_GROUPS = """web search x_search vision video image_gen video_gen computer_use
+terminal skills browser cronjob file tts todo memory context_engine session_search
+connections project bot_room desktop_ui setup clarify code_execution delegation
+homeassistant kanban discord discord_admin yuanbao feishu_doc feishu_drive spotify""".split()
+
+
+def compile_permissions(capabilities: list[str], runtime_kind: str) -> dict:
+    if set(capabilities) - CAPABILITIES.keys():
+        raise ValueError("Unknown role capability")
+    if runtime_kind == "openclaw":
+        allowed = sorted({tool for key in capabilities for tool in CAPABILITIES[key]["openclaw"]})
+        return {"allow": allowed, "deny": [] if allowed else ["*"]}
+    enabled = {tool for key in capabilities for tool in CAPABILITIES[key]["hermes"]}
+    # search is a subset of web; disabling it would remove granted web_search.
+    covered = enabled | ({"search"} if "web" in enabled else set())
+    return {"enabled": sorted(enabled), "disabled": sorted(set(HERMES_GROUPS) - covered)}

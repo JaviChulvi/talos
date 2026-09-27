@@ -310,5 +310,24 @@ cannot be deleted. These are administrator records, not employee login accounts.
 Create an agent with `employee_id`, or attach a stopped agent with
 `PUT /api/v1/agents/{id}/employee`. Legacy `employee_label` requests remain supported;
 existing labels are never automatically converted into employee identities.
-Assignments in this layer are configuration only: runtime permission application
-is delivered separately. No running agent is changed by saving a role.
+No running agent is changed by saving a role; apply it explicitly or start the agent.
+
+### Applying role permissions
+
+For assigned native agents, Start captures the current role and applies it before
+starting the runtime. Saving a role or changing an employee's role leaves running
+agents unchanged. `POST /api/v1/agents/{id}/apply-role` accepts an `Idempotency-Key`,
+returns HTTP 202, and uses the existing operation polling endpoint. It interrupts
+running work, applies the captured revision while stopped, and restarts only when
+previously running. A newer edit remains pending. Failed applications leave the
+agent stopped; inspect the operation error and native configuration before retrying.
+
+Agent responses expose `role` (saved), `applied_role` (last successful snapshot),
+and `permissions_pending`. Managed conversation agents keep their no-tools
+contract; unassigned native agents keep their existing native configuration.
+
+Roles govern native tool availability and dispatch, not arbitrary-code containment.
+Terminal execution can access files and the network even when dedicated tools are
+disabled. Native configuration is a trusted-administrator surface: direct changes
+outside Talos are outside this contract. Provider setup, credentials, workspace,
+and conversation history remain in the existing native settings and state volume.
