@@ -106,7 +106,7 @@ def test_real_private_network_and_owned_cleanup(client, session_maker, monkeypat
 
 
 @pytest.mark.parametrize("runtime_kind", ["openclaw", "hermes"])
-def test_native_configuration_is_seeded_once_and_remains_private(runtime_kind):
+def test_native_configuration_is_seeded_once_and_remains_private(runtime_kind, monkeypatch):
     from worker.runtime import STATE_PATH, native_config, prepare_volumes
 
     uid = "10000:10000" if runtime_kind == "hermes" else "1000:1000"
@@ -117,7 +117,25 @@ def test_native_configuration_is_seeded_once_and_remains_private(runtime_kind):
     prefix = "talos-native-volume-test-" + uuid4().hex
     state, config = prefix + "-state", prefix + "-config"
     labels = {"io.talos.test": prefix}
+    create_container = client.containers.create
+
+    def interrupted_initializer(_collection, *args, **kwargs):
+        kwargs["command"][0] = (
+            "const chown=require('fs').chownSync;"
+            "require('fs').chownSync=(path,...args)=>{"
+            "if(path!=='/state')throw Error('interrupted after copy');return chown(path,...args);};"
+            + kwargs["command"][0]
+        )
+        return create_container(*args, **kwargs)
+
     try:
+        with monkeypatch.context() as patch:
+            patch.setattr(type(client.containers), "create", interrupted_initializer)
+            with pytest.raises(RuntimeError, match="private volume initialization failed"):
+                prepare_volumes(
+                    client, state, config, payload, labels, native=True, runtime_kind=runtime_kind
+                )
+        # Retry must replace the incomplete staged file, then retain subsequent user edits.
         prepare_volumes(
             client, state, config, payload, labels, native=True, runtime_kind=runtime_kind
         )
