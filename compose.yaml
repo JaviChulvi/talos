@@ -26,6 +26,13 @@ services:
       dockerfile: deploy/Dockerfile
       target: native-runtime
     image: talos-openclaw-native:local
+  hermes-runtime:
+    profiles: [build]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: hermes-runtime
+    image: talos-hermes-native:local
   egress:
     build:
       context: .

@@ -268,3 +268,56 @@ def test_native_default_dashboard_admission_and_idempotency(client, session_make
     with session_maker.begin() as session:
         session.get(Agent, UUID(agent_id)).runtime_mode = "managed"
     assert client.post(url, headers={"Idempotency-Key": "managed-open"}).status_code == 409
+
+
+def test_hermes_password_is_hashed_private_and_part_of_idempotency(client, session_maker):
+    import base64
+    import hashlib
+
+    payload = {
+        "display_name": "Hermes helper",
+        "employee_label": "Owner",
+        "runtime_kind": "hermes",
+        "dashboard_password": "hermes-test-password-only",
+    }
+    headers = {"Idempotency-Key": "hermes-create"}
+    response = client.post("/api/v1/agents", json=payload, headers=headers)
+    assert response.status_code == 202
+    created = response.json()
+    assert client.post("/api/v1/agents", json=payload, headers=headers).json() == created
+    assert (
+        client.post(
+            "/api/v1/agents",
+            json={**payload, "dashboard_password": "different-test-password"},
+            headers=headers,
+        ).status_code
+        == 409
+    )
+    agent = client.get("/api/v1/agents/" + created["agent_id"]).json()
+    assert agent["runtime_kind"] == "hermes"
+    assert agent["runtime_mode"] == "native"
+    assert agent["runtime_release"] == "hermes-0.21.5"
+    assert "dashboard_password" not in agent and "dashboard_password_hash" not in agent
+    with session_maker() as session:
+        stored = session.get(Agent, UUID(created["agent_id"])).dashboard_password_hash
+    scheme, n, r, p, salt, key = stored.split("$")
+    assert scheme == "scrypt" and payload["dashboard_password"] not in stored
+    assert hashlib.scrypt(
+        payload["dashboard_password"].encode(),
+        salt=base64.b64decode(salt),
+        n=int(n),
+        r=int(r),
+        p=int(p),
+        dklen=32,
+    ) == base64.b64decode(key)
+    for bad in [
+        {**payload, "runtime_mode": "managed"},
+        {k: v for k, v in payload.items() if k != "dashboard_password"},
+        {**payload, "runtime_kind": "unknown"},
+        {**payload, "runtime_kind": "openclaw"},
+    ]:
+        rejected = client.post(
+            "/api/v1/agents", json=bad, headers={"Idempotency-Key": "bad-runtime"}
+        )
+        assert rejected.status_code == 422
+        assert payload["dashboard_password"] not in rejected.text

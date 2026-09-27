@@ -105,36 +105,44 @@ def test_real_private_network_and_owned_cleanup(client, session_maker, monkeypat
         docker_client.close()
 
 
-def test_native_configuration_is_seeded_once_and_remains_private():
+@pytest.mark.parametrize("runtime_kind", ["openclaw", "hermes"])
+def test_native_configuration_is_seeded_once_and_remains_private(runtime_kind):
     from worker.runtime import STATE_PATH, native_config, prepare_volumes
 
+    uid = "10000:10000" if runtime_kind == "hermes" else "1000:1000"
+    mount = "/opt/data" if runtime_kind == "hermes" else STATE_PATH
+    filename = "config.yaml" if runtime_kind == "hermes" else "openclaw.json"
+    payload = native_config(runtime_kind, "synthetic-password-hash")
     client = docker.from_env(timeout=30)
     prefix = "talos-native-volume-test-" + uuid4().hex
     state, config = prefix + "-state", prefix + "-config"
     labels = {"io.talos.test": prefix}
     try:
-        prepare_volumes(client, state, config, native_config(), labels, native=True)
+        prepare_volumes(
+            client, state, config, payload, labels, native=True, runtime_kind=runtime_kind
+        )
         script = (
-            "const fs=require('fs'); const p=process.env.HOME+'/.openclaw/openclaw.json';"
+            f"const fs=require('fs'); const p='{mount}/{filename}';"
             "const c=JSON.parse(fs.readFileSync(p));"
-            "if(c.tools.web.search.provider!=='parallel-free')process.exit(1);"
-            "c.agents.defaults.heartbeat={every:'0m'};fs.writeFileSync(p,JSON.stringify(c));"
+            "c.talosTestMarker='persistent';fs.writeFileSync(p,JSON.stringify(c));"
         )
         options = dict(
             entrypoint=["node", "-e"],
-            user="1000:1000",
+            user=uid,
             read_only=True,
             cap_drop=["ALL"],
             network_mode="none",
             remove=True,
-            volumes={state: {"bind": STATE_PATH, "mode": "rw"}},
+            volumes={state: {"bind": mount, "mode": "rw"}},
         )
         client.containers.run(IMAGE, command=[script], **options)
-        prepare_volumes(client, state, config, native_config(), labels, native=True)
+        prepare_volumes(
+            client, state, config, payload, labels, native=True, runtime_kind=runtime_kind
+        )
         check = (
-            "const fs=require('fs');const p=process.env.HOME+'/.openclaw/openclaw.json';"
+            f"const fs=require('fs');const p='{mount}/{filename}';"
             "const c=JSON.parse(fs.readFileSync(p));"
-            "if(c.agents.defaults.heartbeat.every!=='0m')process.exit(1);"
+            "if(c.talosTestMarker!=='persistent')process.exit(1);"
             "if((fs.statSync(p).mode&511)!==384)process.exit(2);"
         )
         client.containers.run(IMAGE, command=[check], **options)

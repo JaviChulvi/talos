@@ -22,6 +22,8 @@ from backend.app.db import Base
 
 ACTIVE_OPERATION_STATUSES = ("queued", "running", "retry_wait")
 RUNTIME_RELEASE = "openclaw-2026.9.6"
+HERMES_RELEASE = "hermes-0.21.5"
+RUNTIME_RELEASES = {"openclaw": RUNTIME_RELEASE, "hermes": HERMES_RELEASE}
 
 
 class Agent(Base):
@@ -32,6 +34,8 @@ class Agent(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    runtime_kind: Mapped[str] = mapped_column(String(20), default="openclaw")
+    dashboard_password_hash: Mapped[str | None] = mapped_column(Text)
     runtime_mode: Mapped[str] = mapped_column(String(20), default="managed")
     display_name: Mapped[str] = mapped_column(String(120))
     employee_label: Mapped[str] = mapped_column(String(160))

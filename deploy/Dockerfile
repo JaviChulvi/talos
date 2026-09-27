@@ -40,3 +40,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends squid && rm -rf
 COPY deploy/squid.conf /etc/squid/squid.conf
 USER proxy
 CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]
+
+# Official Hermes image; native dashboard and bundled tools are unchanged.
+FROM nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db AS hermes-runtime

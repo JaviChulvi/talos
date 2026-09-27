@@ -17,6 +17,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import docker
+import httpx
 from docker.errors import APIError, NotFound
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
@@ -26,7 +27,8 @@ from backend.app.db import session_factory
 from backend.app.diagnostics import mark_runs_stopped
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
-    RUNTIME_RELEASE,
+    HERMES_RELEASE,
+    RUNTIME_RELEASES,
     Agent,
     Operation,
     WorkloadIncarnation,
@@ -34,7 +36,7 @@ from backend.app.models import (
 from worker.openclaw import DeviceIdentity, GatewayError, OpenClawClient
 from worker.runtime import (
     IMAGE,
-    NATIVE_IMAGE,
+    NATIVE_IMAGES,
     approve_device,
     launch_options,
     model_profile,
@@ -317,11 +319,12 @@ class Worker:
                 entrypoint=["node", "-e"],
                 command=[
                     "const net=require('net');net.createServer(down=>{"
-                    "const up=net.connect(18789,process.argv[1]);"
+                    "const up=net.connect(Number(process.argv[2]),process.argv[1]);"
                     "down.on('error',()=>up.destroy());up.on('error',()=>down.destroy());"
                     "down.on('close',()=>up.destroy());up.on('close',()=>down.destroy());"
                     "down.pipe(up);up.pipe(down);}).listen(18789,'0.0.0.0');",
                     incarnation.container_name,
+                    "9119" if incarnation.runtime_release == HERMES_RELEASE else "18789",
                 ],
                 ports={"18789/tcp": ("127.0.0.1", 20000 + secrets.randbelow(40000))},
                 user="1000:1000",
@@ -418,8 +421,8 @@ class Worker:
                 agent_id=agent.id,
                 generation=operation.target_revision,
                 model_route="native" if agent.runtime_mode == "native" else "default",
-                runtime_release=RUNTIME_RELEASE,
-                image_digest=self.client.images.get(NATIVE_IMAGE).id
+                runtime_release=agent.runtime_release,
+                image_digest=self.client.images.get(NATIVE_IMAGES[agent.runtime_kind]).id
                 if agent.runtime_mode == "native"
                 else IMAGE,
                 expires_at=datetime.now(UTC) + timedelta(days=30),
@@ -455,8 +458,10 @@ class Worker:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+        with self.sessions() as session:
+            agent = session.get(Agent, incarnation.agent_id)
         config = (
-            native_config()
+            native_config(agent.runtime_kind, agent.dashboard_password_hash)
             if incarnation.model_route == "native"
             else runtime_config(
                 credentials["control_token"],
@@ -477,7 +482,7 @@ class Worker:
         incarnation.gateway_token_hash, incarnation.config_hash = digest, config_hash
         return credentials, config
 
-    async def wait_ready(self, container, token: str, *, retry=True):
+    async def wait_ready(self, container, token: str, *, retry=True, runtime_kind="openclaw"):
         identity = DeviceIdentity.load_or_create(
             self.settings.worker_state_dir / "control-device.pem"
         )
@@ -489,12 +494,22 @@ class Worker:
                 if b"ENOSPC" in output:
                     raise StorageFullError()
                 raise RuntimeError("Runtime exited before readiness")
-            client = OpenClawClient(
-                f"ws://{container.name}:18789", token, identity, timeout=10 if retry else 2
-            )
             try:
-                await client.connect()
-                await client.close()
+                if runtime_kind == "hermes":
+                    async with httpx.AsyncClient(
+                        timeout=10 if retry else 2, trust_env=False
+                    ) as client:
+                        response = await client.get(f"http://{container.name}:9119/api/health")
+                        response.raise_for_status()
+                        health = response.json()
+                        if health.get("ok") is not True or health.get("auth_required") is not True:
+                            raise RuntimeError("Hermes dashboard authentication is not ready")
+                else:
+                    client = OpenClawClient(
+                        f"ws://{container.name}:18789", token, identity, timeout=10 if retry else 2
+                    )
+                    await client.connect()
+                    await client.close()
                 return
             except GatewayError as error:
                 if not retry:
@@ -503,11 +518,11 @@ class Worker:
                     await asyncio.to_thread(approve_device, container, identity)
                 elif error.code != "UNAVAILABLE":
                     raise
-            except (OSError, TimeoutError, EOFError):
+            except (OSError, TimeoutError, EOFError, httpx.HTTPError):
                 if not retry:
                     raise
             await asyncio.sleep(1)
-        raise TimeoutError("OpenClaw readiness deadline exceeded")
+        raise TimeoutError("Runtime readiness deadline exceeded")
 
     def mark_stopped(self, session, agent: Agent):
         agent.observed_state = "stopped"
@@ -569,7 +584,14 @@ class Worker:
                     if proxy is None or proxy.status != "running":
                         raise RuntimeError("UI relay is not running")
                 credentials = read_credentials(incarnation)
-                asyncio.run(self.wait_ready(container, credentials["control_token"], retry=False))
+                asyncio.run(
+                    self.wait_ready(
+                        container,
+                        credentials["control_token"],
+                        retry=False,
+                        runtime_kind=agent.runtime_kind,
+                    )
+                )
             except OperationalError:
                 raise
             except Exception as error:
@@ -592,7 +614,7 @@ class Worker:
         with self.sessions() as session:
             agent = session.get(Agent, operation.agent_id)
             if (
-                agent.runtime_release != RUNTIME_RELEASE
+                agent.runtime_release != RUNTIME_RELEASES.get(agent.runtime_kind)
                 or agent.revision != operation.target_revision
             ):
                 raise OwnershipError("Operation does not match the approved agent revision")
@@ -611,43 +633,46 @@ class Worker:
                 raise RuntimeError("UI relay is unavailable; stop and start the agent")
             bindings = proxy.attrs["NetworkSettings"]["Ports"]["18789/tcp"]
             if len(bindings) != 1 or bindings[0]["HostIp"] != "127.0.0.1":
-                raise OwnershipError("OpenClaw UI must be published on loopback only")
-            result = container.exec_run(["node", "openclaw.mjs", "dashboard", "--json"])
-            if result.exit_code:
-                raise RuntimeError("OpenClaw dashboard handoff failed")
-            # --json can be preceded by plugin diagnostics. Never log the handoff.
-            output = result.output.decode()
-            data = None
-            for index, char in enumerate(output):
-                if char == "{":
-                    try:
-                        data = json.loads(output[index:])
-                        break
-                    except ValueError:
-                        continue
-            if not data or not data.get("ok") or not data.get("browserBootstrapExpiresAtMs"):
-                raise RuntimeError("OpenClaw did not issue a browser handoff")
-            target = urlsplit(data["browserUrl"])
-            if (
-                target.scheme != "http"
-                or target.hostname not in {"127.0.0.1", "localhost"}
-                or not target.fragment
-            ):
-                raise RuntimeError("Unexpected OpenClaw dashboard URL")
-            authority = "127.0.0.1:" + bindings[0]["HostPort"]
-            fragment = dict(parse_qsl(target.fragment))
-            if not fragment.get("bootstrapToken"):
-                raise RuntimeError("OpenClaw handoff has no bootstrap token")
-            fragment["gatewayUrl"] = "ws://" + authority
-            url = urlunsplit(
-                (
-                    "http",
-                    authority,
-                    target.path,
-                    target.query,
-                    urlencode(fragment),
+                raise OwnershipError("Native UI must be published on loopback only")
+            if agent.runtime_kind == "hermes":
+                url = f"http://{agent.id.hex}.localhost:" + bindings[0]["HostPort"]
+            else:
+                result = container.exec_run(["node", "openclaw.mjs", "dashboard", "--json"])
+                if result.exit_code:
+                    raise RuntimeError("OpenClaw dashboard handoff failed")
+                # --json can be preceded by plugin diagnostics. Never log the handoff.
+                output = result.output.decode()
+                data = None
+                for index, char in enumerate(output):
+                    if char == "{":
+                        try:
+                            data = json.loads(output[index:])
+                            break
+                        except ValueError:
+                            continue
+                if not data or not data.get("ok") or not data.get("browserBootstrapExpiresAtMs"):
+                    raise RuntimeError("OpenClaw did not issue a browser handoff")
+                target = urlsplit(data["browserUrl"])
+                if (
+                    target.scheme != "http"
+                    or target.hostname not in {"127.0.0.1", "localhost"}
+                    or not target.fragment
+                ):
+                    raise RuntimeError("Unexpected OpenClaw dashboard URL")
+                authority = "127.0.0.1:" + bindings[0]["HostPort"]
+                fragment = dict(parse_qsl(target.fragment))
+                if not fragment.get("bootstrapToken"):
+                    raise RuntimeError("OpenClaw handoff has no bootstrap token")
+                fragment["gatewayUrl"] = "ws://" + authority
+                url = urlunsplit(
+                    (
+                        "http",
+                        authority,
+                        target.path,
+                        target.query,
+                        urlencode(fragment),
+                    )
                 )
-            )
             with self.sessions.begin() as session:
                 current = session.get(Operation, operation.id)
                 current.dashboard_url = url
@@ -660,7 +685,7 @@ class Worker:
             observed = "stopped"
         elif operation.action == "start":
             self.client.images.get(
-                NATIVE_IMAGE if agent.runtime_mode == "native" else IMAGE
+                NATIVE_IMAGES[agent.runtime_kind] if agent.runtime_mode == "native" else IMAGE
             )  # Pull/install the approved image before starting the worker.
             incarnation = self.ensure_incarnation(operation)
             if incarnation.revoked_at is not None or incarnation.expires_at <= datetime.now(UTC):
@@ -673,8 +698,11 @@ class Worker:
                 proxy = self.ui_proxy(incarnation, ensure=True)
                 binding = proxy.attrs["NetworkSettings"]["Ports"]["18789/tcp"][0]
                 if binding["HostIp"] != "127.0.0.1":
-                    raise OwnershipError("OpenClaw UI must be published on loopback only")
-                control_origin = "http://127.0.0.1:" + binding["HostPort"]
+                    raise OwnershipError("Native UI must be published on loopback only")
+                host = (
+                    f"{agent.id.hex}.localhost" if agent.runtime_kind == "hermes" else "127.0.0.1"
+                )
+                control_origin = f"http://{host}:" + binding["HostPort"]
             container = self.owned_container(incarnation)
             if container is None:
                 prepare_volumes(
@@ -684,6 +712,7 @@ class Worker:
                     config,
                     self.labels(operation.agent_id),
                     native=agent.runtime_mode == "native",
+                    runtime_kind=agent.runtime_kind,
                 )
                 container = self.client.containers.create(
                     **launch_options(
@@ -701,6 +730,7 @@ class Worker:
                         else None,
                         control_token=credentials["control_token"],
                         control_origin=control_origin,
+                        runtime_kind=agent.runtime_kind,
                     )
                 )
             # A crash immediately above is recovered by looking up this exact
@@ -710,7 +740,11 @@ class Worker:
             container.reload()
             if container.status != "running":
                 container.start()
-            asyncio.run(self.wait_ready(container, credentials["control_token"]))
+            asyncio.run(
+                self.wait_ready(
+                    container, credentials["control_token"], runtime_kind=agent.runtime_kind
+                )
+            )
             observed = "ready"
         else:
             for incarnation in self.revoke_all(operation.agent_id):

@@ -1,0 +1,9 @@
+{
+  "release": "0.21.5",
+  "image": "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db",
+  "source_revision": "749220ef0007f8d87bd1531f1c24b0fe93816385",
+  "platform_manifests": {
+    "linux/amd64": "sha256:d566d4a435767265c2a0172030b778fbdaa1a9ab19442c75ec5aad1df32dec54",
+    "linux/arm64": "sha256:ba93938306a06f5187afaaeb817463cd2b819e348664fdb57038a8697b7d82aa"
+  }
+}
