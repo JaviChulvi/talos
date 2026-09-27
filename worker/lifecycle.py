@@ -38,28 +38,22 @@ from worker.openclaw import DeviceIdentity, GatewayError, OpenClawClient
 from worker.runtime import (
     IMAGE,
     NATIVE_IMAGES,
+    OwnershipError,
+    apply_native_permissions,
     approve_device,
     launch_options,
     model_profile,
     native_config,
     prepare_volumes,
+    require_labels,
     runtime_config,
 )
 
 MAX_ATTEMPTS = 5
 
 
-class OwnershipError(RuntimeError):
-    pass
-
-
 class StorageFullError(RuntimeError):
     message = "Docker storage is full. Free Docker disk space, then start the agent again."
-
-
-def require_labels(actual: dict, expected: dict):
-    if any(actual.get(key) != value for key, value in expected.items()):
-        raise OwnershipError("Docker resource does not belong to this agent installation")
 
 
 @contextmanager
@@ -386,11 +380,11 @@ class Worker:
 
     def remove_config(self, incarnation: WorkloadIncarnation):
         labels = self.labels(incarnation.agent_id)
-        try:
-            initializer = self.client.containers.get(incarnation.config_volume + "-init")
-        except NotFound:
-            pass
-        else:
+        for suffix in ("-init", "-permissions"):
+            try:
+                initializer = self.client.containers.get(incarnation.config_volume + suffix)
+            except NotFound:
+                continue
             require_labels(initializer.labels, labels)
             initializer.remove(force=True)
         self.remove_volume(incarnation.config_volume, labels)
@@ -695,18 +689,22 @@ class Worker:
             self.ensure_network(operation.agent_id, native=agent.runtime_mode == "native")
             self.ensure_state(operation.agent_id)
             observed = "stopped"
-        elif operation.action == "start":
+        elif operation.action in {"start", "apply_role"}:
             self.client.images.get(
                 NATIVE_IMAGES[agent.runtime_kind] if agent.runtime_mode == "native" else IMAGE
             )  # Pull/install the approved image before starting the worker.
             incarnation = self.ensure_incarnation(operation)
             if incarnation.revoked_at is not None or incarnation.expires_at <= datetime.now(UTC):
                 raise RuntimeError("Start identity is revoked or expired")
+            if operation.role_application:
+                with self.sessions.begin() as session:
+                    self.mark_stopped(session, session.get(Agent, agent.id))
             credentials, config = self.ensure_credentials(incarnation)
             self.ensure_network(operation.agent_id, native=agent.runtime_mode == "native")
             state, network = self.names(operation.agent_id)
+            restart = not operation.role_application or operation.role_application["restart"]
             control_origin = ""
-            if agent.runtime_mode == "native":
+            if agent.runtime_mode == "native" and restart:
                 proxy = self.ui_proxy(incarnation, ensure=True)
                 binding = proxy.attrs["NetworkSettings"]["Ports"]["18789/tcp"][0]
                 if binding["HostIp"] != "127.0.0.1":
@@ -726,6 +724,18 @@ class Worker:
                     native=agent.runtime_mode == "native",
                     runtime_kind=agent.runtime_kind,
                 )
+                if operation.role_application:
+                    apply_native_permissions(
+                        self.client,
+                        state,
+                        incarnation,
+                        agent.runtime_kind,
+                        operation.role_application["permissions"],
+                        self.labels(agent.id),
+                    )
+                if not restart:
+                    self.complete(operation, "stopped")
+                    return
                 container = self.client.containers.create(
                     **launch_options(
                         incarnation.container_name,
@@ -765,8 +775,13 @@ class Worker:
             if operation.action == "delete":
                 self.delete_resources(operation.agent_id)
                 observed = "deleted"
+        self.complete(operation, observed)
+
+    def complete(self, operation, observed):
         with self.sessions.begin() as session:
             agent = session.get(Agent, operation.agent_id, with_for_update=True)
+            if operation.role_application:
+                agent.applied_role = operation.role_application["role"]
             if observed in {"stopped", "deleted"}:
                 self.mark_stopped(session, agent)
             agent.observed_state, agent.last_error = observed, None
@@ -827,6 +842,7 @@ class Worker:
             agent.observed_state = {
                 "create": "provisioning",
                 "start": "starting",
+                "apply_role": "applying",
                 "stop": "stopping",
                 "delete": "deleting",
             }.get(operation.action, agent.observed_state)
@@ -835,11 +851,35 @@ class Worker:
         except OperationalError:
             raise
         except Exception as error:
+            stop_error = None
+            if operation.role_application:
+                with self.sessions() as session:
+                    incarnations = session.scalars(
+                        select(WorkloadIncarnation).where(
+                            WorkloadIncarnation.agent_id == operation.agent_id
+                        )
+                    ).all()
+                for incarnation in incarnations:
+                    try:
+                        self.stop_incarnation(incarnation)
+                    except Exception as cause:
+                        stop_error = cause
             message = (
                 StorageFullError.message
                 if isinstance(error, StorageFullError)
-                else f"{type(error).__name__}: lifecycle operation failed"
+                else (
+                    f"Role application failed ({type(error).__name__}). Agent stopped; "
+                    "check native configuration and retry Start or Apply."
+                    if operation.role_application
+                    else f"{type(error).__name__}: lifecycle operation failed"
+                )
             )
+            if stop_error is not None:
+                message = (
+                    f"Role application failed ({type(error).__name__}); runtime stop could not "
+                    f"be confirmed ({type(stop_error).__name__}). Inspect Docker runtime state "
+                    "before retrying Start or Apply."
+                )
             logging.error(
                 "Lifecycle %s failed for operation %s: %s",
                 operation.action,
@@ -850,7 +890,7 @@ class Worker:
                 current = session.get(Operation, operation.id)
                 terminal = current.attempts >= MAX_ATTEMPTS or isinstance(
                     error, (OwnershipError, StorageFullError)
-                )
+                ) or isinstance(stop_error, OwnershipError)
                 current.status = "failed" if terminal else "retry_wait"
                 current.error = message
                 current.next_retry_at = (
@@ -861,7 +901,15 @@ class Worker:
                 current.heartbeat_at = datetime.now(UTC)
                 agent = session.get(Agent, operation.agent_id)
                 if operation.action != "dashboard":
-                    agent.observed_state, agent.last_error = "error", current.error
+                    agent.observed_state, agent.last_error = (
+                        "stopped" if operation.role_application and stop_error is None else "error",
+                        current.error,
+                    )
+                    if operation.role_application:
+                        if stop_error is None:
+                            self.mark_stopped(session, agent)
+                        if terminal:
+                            agent.desired_state = "stopped"
                 if agent.current_incarnation_id and terminal and operation.action != "dashboard":
                     session.get(
                         WorkloadIncarnation, agent.current_incarnation_id
