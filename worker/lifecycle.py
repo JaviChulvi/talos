@@ -126,9 +126,7 @@ async def configure_inference(sessions, run, client):
         incarnation = session.get(WorkloadIncarnation, run.incarnation_id)
         if incarnation.model_route == "native":
             agent = session.get(Agent, run.agent_id)
-            if not agent.inference_override:
-                return
-            model_id = agent.inference_override["model_id"]
+            model_id = agent.inference_override["model_id"] if agent.inference_override else None
             if agent.runtime_kind == "hermes":
                 client.model_id = model_id
             else:
@@ -686,26 +684,6 @@ class Worker:
                     credentials["agent_token"],
                     self.labels(agent.id),
                 )
-            if (
-                not operation.model_selection
-                and agent.runtime_kind == "openclaw"
-                and agent.observed_state == "ready"
-            ):
-
-                async def clear_session_model():
-                    connection = await connect_runtime(self.sessions, agent.id)
-                    try:
-                        await connection.request(
-                            "sessions.patch",
-                            {
-                                "key": f"agent:main:talos:{agent.id}",
-                                "model": None,
-                            },
-                        )
-                    finally:
-                        await connection.close()
-
-                asyncio.run(clear_session_model())
             with self.sessions.begin() as session:
                 session.get(Agent, agent.id).inference_override = operation.model_selection or None
                 current = session.get(Operation, operation.id)

@@ -3,6 +3,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -137,9 +138,17 @@ def test_native_chat_keeps_runtime_configuration(client, sessions, agent_id, run
     assert submit(client, agent_id, key="concurrent").status_code == 409
     assert client.get(f"/api/v1/agents/{agent_id}/runs").json() == [run]
     assert client.get(f"/api/v1/agents/{uuid4()}/runs").status_code == 404
+    runtime = AsyncMock()
     with sessions() as session:
-        # No driver call, credential read, or managed config publication is allowed.
-        asyncio.run(configure_inference(sessions, session.get(Run, UUID(run["id"])), None))
+        # Only the Talos session selection changes; native configuration stays owned by the agent.
+        asyncio.run(configure_inference(sessions, session.get(Run, UUID(run["id"])), runtime))
+    if runtime_kind == "openclaw":
+        runtime.request.assert_awaited_once_with(
+            "sessions.patch", {"key": f"agent:main:talos:{agent_id}", "model": None}
+        )
+    else:
+        assert runtime.model_id is None
+        runtime.request.assert_not_called()
 
 
 def test_lifecycle_and_missing_agent_admission(client, sessions, agent_id):
