@@ -72,7 +72,7 @@ export function ModelPicker({ models, value, onChange, disabled, inputClass }: {
             {labs.map((lab) => <button key={lab.id} type="button" title={lab.name} aria-label={lab.name} aria-pressed={lab.id === selectedLab.id} disabled={disabled}
               className={cn("flex size-10 items-center justify-center rounded-md hover:bg-muted disabled:opacity-50", lab.id === selectedLab.id && "bg-muted text-primary ring-1 ring-primary")}
               onClick={() => {
-                onChange(lab.id === selectedLab.id ? value : catalog.find((model) => labId(model.id) === lab.id)!.id);
+                if (lab.id !== selectedLab.id) onChange(catalog.find((model) => labId(model.id) === lab.id)!.id);
                 details.current?.removeAttribute("open"); details.current?.querySelector("summary")?.focus();
               }}><LabIcon id={lab.id} name={lab.name} /></button>)}
           </div>

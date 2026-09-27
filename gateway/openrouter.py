@@ -30,8 +30,8 @@ class InferenceError(Exception):
 
 def text_messages(body: dict) -> list[dict]:
     messages = body.get("messages")
-    if not isinstance(messages, list) or not 1 <= len(messages) <= 256:
-        raise HTTPException(400, "Expected 1 to 256 text messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(400, "Expected a non-empty list of text messages")
     result = []
     for message in messages:
         if not isinstance(message, dict) or message.get("role") not in (
