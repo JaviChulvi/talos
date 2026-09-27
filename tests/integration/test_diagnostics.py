@@ -121,6 +121,27 @@ def test_idempotency_and_admission(client, sessions, agent_id):
     assert submit(client, agent_id, key="after-stop").status_code == 409
 
 
+@pytest.mark.parametrize("runtime_kind", ["openclaw", "hermes"])
+def test_native_chat_keeps_runtime_configuration(client, sessions, agent_id, runtime_kind):
+    from worker.lifecycle import configure_inference
+
+    with sessions.begin() as session:
+        agent = session.get(Agent, agent_id)
+        agent.runtime_mode, agent.runtime_kind = "native", runtime_kind
+        session.get(WorkloadIncarnation, agent.current_incarnation_id).model_route = "native"
+    response = submit(client, agent_id)
+    assert response.status_code == 202
+    run = response.json()
+    assert run["model_id"] == "native" and run["inference"] == {"source": "native"}
+    assert submit(client, agent_id).json()["id"] == run["id"]
+    assert submit(client, agent_id, key="concurrent").status_code == 409
+    assert client.get(f"/api/v1/agents/{agent_id}/runs").json() == [run]
+    assert client.get(f"/api/v1/agents/{uuid4()}/runs").status_code == 404
+    with sessions() as session:
+        # No driver call, credential read, or managed config publication is allowed.
+        asyncio.run(configure_inference(sessions, session.get(Run, UUID(run["id"])), None))
+
+
 def test_lifecycle_and_missing_agent_admission(client, sessions, agent_id):
     assert submit(client, uuid4()).status_code == 404
     with sessions.begin() as session:

@@ -20,7 +20,7 @@ type Agent = {
   inference_override: InferenceSelection | null;
 };
 type Operation = { action?: string; dashboard_url?: string | null; id: string; agent_id: string; status: string; error?: string | null };
-type Run = { inference_calls: InferenceCall[]; inference: { settings?: GenerationSettings }; model_id: string; id: string; agent_id: string; status: string; output?: string | null; error?: string | null; cancel_requested?: boolean };
+type Run = { message: string; inference_calls: InferenceCall[]; inference: { settings?: GenerationSettings }; model_id: string; id: string; agent_id: string; status: string; output?: string | null; error?: string | null; cancel_requested?: boolean };
 type RunEvent = { sequence: number; type: string; payload: Record<string, unknown> };
 type Mutation = {
   path: string;
@@ -70,9 +70,8 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [operationIds, setOperationIds] = useState(() => readIds("talos.operationIds"));
-  const [runIds, setRunIds] = useState(() => readIds("talos.runIds"));
   const [operation, setOperation] = useState<Operation | null>(null);
-  const [run, setRun] = useState<Run | null>(null);
+  const [runs, setRuns] = useState<Run[]>([]);
   const [events, setEvents] = useState<{ runId: string; items: RunEvent[] }>({ runId: "", items: [] });
   const cursor = useRef({ runId: "", sequence: 0 });
   const [loading, setLoading] = useState(true);
@@ -94,9 +93,10 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
   const runtimeName = runtimes[selected?.runtime_kind ?? "openclaw"];
   const effectiveModel = selected?.inference_override?.model_id ?? modelId;
   const operationId = operationIds[selectedId];
-  const runId = runIds[selectedId];
+  const selectedRuns = runs.filter((run) => run.agent_id === selectedId);
+  const selectedRun = selectedRuns[0];
+  const runId = selectedRun?.id;
   const selectedOperation = operation?.id === operationId ? operation : null;
-  const selectedRun = run?.id === runId ? run : null;
   const operationActive = !!selectedOperation && activeOperations.has(selectedOperation.status);
   const runActive = !!selectedRun && activeRuns.has(selectedRun.status);
   const busy = operationActive || runActive || agents.some((agent) => transitionalStates.has(agent.observed_state));
@@ -114,16 +114,16 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
           if (error instanceof ApiError && error.status === 404) return null;
           throw error;
         }) : Promise.resolve(null);
-        const latestRun = runId ? api<Run>(`/runs/${runId}`, options).catch((error) => {
-          if (error instanceof ApiError && error.status === 404) return null;
-          throw error;
-        }) : Promise.resolve(null);
-        const [nextAgents, nextOperation, nextRun, nextModel, dashboards] = await Promise.all([
-          api<Agent[]>("/agents", options), latestOperation, latestRun, api<InferenceSelection>("/inference", options),
+        const [nextAgents, nextOperation, nextRuns, nextModel, dashboards] = await Promise.all([
+          api<Agent[]>("/agents", options), latestOperation,
+          selectedId ? api<Run[]>(`/agents/${selectedId}/runs`, options) : Promise.resolve([]),
+          api<InferenceSelection>("/inference", options),
           Promise.all(Object.keys(dashboardWindows.current).map((id) => id === operationId ? latestOperation : api<Operation>(`/operations/${id}`, options))),
         ]);
-        const after = cursor.current.runId === runId ? cursor.current.sequence : 0;
-        const nextEvents = nextRun ? await api<RunEvent[]>(`/runs/${runId}/events?after=${after}`, options) : [];
+        const nextRun = nextRuns[0];
+        const nextRunId = nextRun?.id;
+        const after = cursor.current.runId === nextRunId ? cursor.current.sequence : 0;
+        const nextEvents = nextRun ? await api<RunEvent[]>(`/runs/${nextRunId}/events?after=${after}`, options) : [];
         if (stopped) return;
         for (const dashboard of dashboards) {
           if (!dashboard || activeOperations.has(dashboard.status)) continue;
@@ -139,10 +139,10 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
         setModelId(nextModel.model_id);
         setSelectedId((current) => nextAgents.some((agent) => agent.id === current) ? current : nextAgents[0]?.id ?? "");
         setOperation(nextOperation);
-        setRun(nextRun);
-        if (runId && nextRun) {
-          setEvents((current) => ({ runId, items: current.runId === runId ? [...current.items, ...nextEvents] : nextEvents }));
-          cursor.current = { runId, sequence: nextEvents.at(-1)?.sequence ?? after };
+        setRuns(nextRuns);
+        if (nextRunId) {
+          setEvents((current) => ({ runId: nextRunId, items: current.runId === nextRunId ? [...current.items, ...nextEvents] : nextEvents }));
+          cursor.current = { runId: nextRunId, sequence: nextEvents.at(-1)?.sequence ?? after };
         }
         setPollError(null);
       } catch (error) {
@@ -170,10 +170,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
       });
       if (request.kind === "dashboard" && request.popup && !request.popup.closed) dashboardWindows.current[result.id] = request.popup;
       if (request.kind === "diagnostic") {
-        const next = { ...runIds, [result.agent_id]: result.id };
-        setRunIds(next);
-        saveIds("talos.runIds", next);
-        setRun(result as Run);
+        setRuns((current) => [result as Run, ...current.filter((run) => run.id !== result.id)]);
         setMessage("");
       } else if (request.kind !== "cancel") {
         const next = { ...operationIds, [result.agent_id]: result.id };
@@ -279,7 +276,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
           <div className="flex items-center justify-between border-b px-5 py-4"><h2 className="text-sm font-semibold">All agents</h2><Badge variant="secondary">{agents.length}</Badge></div>
           <div className="max-h-72 overflow-y-auto p-2">
             {loading ? <p className="px-3 py-6 text-sm text-muted-foreground">Loading agents…</p> : agents.length === 0 ? <p className="px-3 py-6 text-sm leading-relaxed text-muted-foreground">No agents yet. Select New agent to get started.</p> : agents.map((agent) => (
-              <button key={agent.id} type="button" aria-pressed={selectedId === agent.id} onClick={() => setSelectedId(agent.id)} className={cn("mb-1 flex w-full items-start gap-3 rounded-md px-3 py-3 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring", selectedId === agent.id && "bg-primary/10 text-primary") }>
+              <button key={agent.id} type="button" aria-pressed={selectedId === agent.id} onClick={() => { setSelectedId(agent.id); setAgentView("conversation"); }} className={cn("mb-1 flex w-full items-start gap-3 rounded-md px-3 py-3 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring", selectedId === agent.id && "bg-primary/10 text-primary") }>
                 <RuntimeIcon kind={agent.runtime_kind} className="mt-0.5 size-6" />
                 <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{agent.display_name}</span><span className="mt-1 block truncate text-xs text-muted-foreground">{agent.employee_label || "Unassigned"}</span><span className="mt-2 block"><StateBadge state={agent.observed_state} /></span></span>
               </button>
@@ -301,39 +298,42 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
               {selected.last_error && <p role="alert" className="mt-3 text-sm text-danger">{selected.last_error}</p>}
             </div>
 
-            {selected.runtime_mode === "native" ? <div className="space-y-5 p-6">
+            <nav aria-label="Agent views" className="flex gap-6 border-b px-6">
+              {["conversation", "settings"].map((view) => <button key={view} type="button" aria-pressed={agentView === view} onClick={() => setAgentView(view)} className={cn("border-b-2 px-1 py-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring", agentView === view ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>{view === "conversation" ? "Chat" : "Settings"}</button>)}
+            </nav>
+            {active && agentView === "settings" && (selected.runtime_mode === "native" ? <div className="space-y-5 p-6">
               <div><h3 className="flex items-center gap-3 font-semibold"><RuntimeIcon kind={selected.runtime_kind} className="size-8" />Your {runtimeName} workspace</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">Chat, connect a model, add Telegram or Slack, and manage skills in {runtimeName}’s own interface. Your configuration and files persist across stops and starts.</p></div>
               <Button disabled={writesDisabled || operationActive || selected.observed_state !== "ready"} onClick={openNativeWorkspace}><ExternalLink aria-hidden="true" />{selectedOperation?.action === "dashboard" && operationActive ? `Opening ${runtimeName}…` : `Open ${runtimeName}`}</Button>
               {selectedOperation?.dashboard_url && <p className="text-sm"><a href={selectedOperation.dashboard_url} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-4">Continue if the new tab did not open</a></p>}
               <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">{selected.observed_state !== "ready" ? "Start this agent to open its workspace." : `First visit: ${selected.runtime_kind === "hermes" ? "sign in as talos with the dashboard password you chose, then " : ""}choose a model provider in ${runtimeName}. Talos’s managed model settings do not apply here.`}</p>
               <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Free search is preconfigured. Available tools depend on the runtime and any accounts you connect. Remote Docker hosts require a tunnel for the workspace port.</p>
-            </div> : <>
-            <nav aria-label="Agent views" className="flex gap-6 border-b px-6">
-              {["conversation", "settings"].map((view) => <button key={view} type="button" aria-pressed={agentView === view} onClick={() => setAgentView(view)} className={cn("border-b-2 px-1 py-3 text-sm capitalize outline-none focus-visible:ring-2 focus-visible:ring-ring", agentView === view ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>{view}</button>)}
-            </nav>
-            {active && agentView === "settings" && <div className="p-6"><InferenceSettings key={selected.id} agentId={selected.id} onSaved={(selection) => setAgents((current) => current.map((agent) => agent.id === selected.id ? { ...agent, inference_override: selection.inherited ? null : selection } : agent))} /></div>}
+            </div> : <div className="p-6"><InferenceSettings key={selected.id} agentId={selected.id} onSaved={(selection) => setAgents((current) => current.map((agent) => agent.id === selected.id ? { ...agent, inference_override: selection.inherited ? null : selection } : agent))} /></div>)}
             <div className="p-6" hidden={agentView !== "conversation"}>
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">Conversation</h3>{selectedRun && <StateBadge state={selectedRun.status} />}</div>
-              <p className="mb-5 text-sm leading-relaxed text-muted-foreground">{selected.model_route === "fixture"
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">Chat</h3>{selectedRun && <StateBadge state={selectedRun.status} />}</div>
+              <p className="mb-5 text-sm leading-relaxed text-muted-foreground">{selected.runtime_mode === "native" ? `Chat with ${runtimeName} using its own model, tools, and saved conversation. Configure providers and integrations in Settings.` : selected.model_route === "fixture"
                 ? "This runtime uses the local simulator. Stop and start it once to enable the model picker."
                 : effectiveModel === "fixture" ? "Local simulator selected. No external provider is called."
                 : "Messages use this agent’s model configuration. Responses and events are saved by Talos."}</p>
-              <div className="max-h-80 min-h-40 overflow-y-auto rounded-md border bg-background p-4" role="log" aria-label="Recorded diagnostic output" aria-live="polite">
-                {selectedRun?.output ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{selectedRun.output}</p> : <p className="text-sm text-muted-foreground">{runActive ? "Waiting for recorded output…" : "Send a message to see recorded output here."}</p>}
+              <div className="max-h-80 min-h-40 overflow-y-auto rounded-md border bg-background p-4" role="log" aria-label="Agent conversation" aria-live="polite">
+                {selectedRuns.length ? [...selectedRuns].reverse().map((item) => <div key={item.id} className="mb-5 last:mb-0">
+                  <p className="mb-1 text-xs font-medium text-muted-foreground">You</p>
+                  <p className="mb-3 whitespace-pre-wrap break-words text-sm">{item.message}</p>
+                  <p className="mb-1 text-xs font-medium text-muted-foreground">{runtimeName}</p>
+                  <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{item.output || item.error || (activeRuns.has(item.status) ? "Waiting for a response…" : `Message ${item.status.replaceAll("_", " ")}.`)}</p>
+                </div>) : <p className="text-sm text-muted-foreground">Send a message to start your conversation.</p>}
               </div>
-              {selectedRun && <p className="mt-2 break-words text-xs text-muted-foreground">Recorded model: {selectedRun.model_id === "fixture" ? "Local simulator" : selectedRun.model_id}</p>}
+              {selectedRun && <p className="mt-2 break-words text-xs text-muted-foreground">Model: {selectedRun.model_id === "native" ? `Configured in ${runtimeName}` : selectedRun.model_id === "fixture" ? "Local simulator" : selectedRun.model_id}</p>}
               {selectedRun && <UsageDetails calls={selectedRun.inference_calls ?? []} />}
-              {selectedRun && selectedRun.model_id !== "fixture" && <p className="mt-2 text-xs text-muted-foreground">Run settings: {Object.keys(selectedRun.inference?.settings ?? {}).length ? Object.entries(selectedRun.inference.settings!).map(([key, value]) => `${key.replaceAll("_", " ")}: ${value}`).join(" · ") : "Model defaults"}</p>}
+              {selectedRun && !["fixture", "native"].includes(selectedRun.model_id) && <p className="mt-2 text-xs text-muted-foreground">Run settings: {Object.keys(selectedRun.inference?.settings ?? {}).length ? Object.entries(selectedRun.inference.settings!).map(([key, value]) => `${key.replaceAll("_", " ")}: ${value}`).join(" · ") : "Model defaults"}</p>}
               {runEvents.length > 0 && <details className="mt-3 text-xs text-muted-foreground"><summary className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{runEvents.length} recorded events</summary><ol className="mt-2 max-h-36 space-y-1 overflow-y-auto pl-4">{runEvents.map((event) => <li key={event.sequence}>{event.sequence}. {event.type.replaceAll("_", " ")}</li>)}</ol></details>}
               {selectedRun?.error && <p role="alert" className="mt-3 text-sm text-danger">{selectedRun.error}</p>}
-              {selectedRun?.status === "unknown" && <p role="status" className="mt-3 text-sm text-warning">Delivery could not be confirmed. Talos will not resend this message automatically. Stop the agent before starting another diagnostic.</p>}
+              {selectedRun?.status === "unknown" && <p role="status" className="mt-3 text-sm text-warning">Delivery could not be confirmed. Talos will not resend this message automatically. Stop the agent before sending another message.</p>}
               <form onSubmit={sendDiagnostic} className="mt-5">
                 <label htmlFor="diagnostic-message" className="mb-2 block text-sm font-medium">Message</label>
-                <textarea id="diagnostic-message" rows={3} maxLength={4000} className={cn(inputClass, "resize-y")} placeholder="Send a test message to your agent" value={message} onChange={(event) => setMessage(event.target.value)} disabled={writesDisabled || runActive || operationActive || !["ready", "running"].includes(selected.observed_state)} required />
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{!["ready", "running"].includes(selected.observed_state) ? "Start the agent to send a diagnostic." : "Output and events are saved by Talos."}</span><div className="flex gap-2">{runActive && selectedRun?.status !== "unknown" && <Button type="button" variant="outline" disabled={writesDisabled || selectedRun?.cancel_requested || selectedRun?.status === "cancel_requested"} onClick={() => void mutate({ path: `/runs/${runId}/cancel`, method: "POST", key: crypto.randomUUID(), kind: "cancel", agentId: selected.id })}><Square aria-hidden="true" />{selectedRun?.cancel_requested || selectedRun?.status === "cancel_requested" ? "Cancelling" : "Cancel run"}</Button>}<Button type="submit" disabled={writesDisabled || runActive || operationActive || !message.trim() || !["ready", "running"].includes(selected.observed_state)}><Send aria-hidden="true" />Send</Button></div></div>
+                <textarea id="diagnostic-message" rows={3} maxLength={4000} className={cn(inputClass, "resize-y")} placeholder="Message your agent" value={message} onChange={(event) => setMessage(event.target.value)} disabled={writesDisabled || runActive || operationActive || !["ready", "running"].includes(selected.observed_state)} required />
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{!["ready", "running"].includes(selected.observed_state) ? "Start the agent to send a message." : "Output and events are saved by Talos."}</span><div className="flex gap-2">{runActive && selectedRun?.status !== "unknown" && <Button type="button" variant="outline" disabled={writesDisabled || selectedRun?.cancel_requested || selectedRun?.status === "cancel_requested"} onClick={() => void mutate({ path: `/runs/${runId}/cancel`, method: "POST", key: crypto.randomUUID(), kind: "cancel", agentId: selected.id })}><Square aria-hidden="true" />{selectedRun?.cancel_requested || selectedRun?.status === "cancel_requested" ? "Cancelling" : "Cancel run"}</Button>}<Button type="submit" disabled={writesDisabled || runActive || operationActive || !message.trim() || !["ready", "running"].includes(selected.observed_state)}><Send aria-hidden="true" />Send</Button></div></div>
               </form>
             </div>
-            </>}
           </>}
         </div>
       </div>

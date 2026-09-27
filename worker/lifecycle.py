@@ -33,6 +33,7 @@ from backend.app.models import (
     Operation,
     WorkloadIncarnation,
 )
+from worker.hermes import HermesClient
 from worker.openclaw import DeviceIdentity, GatewayError, OpenClawClient
 from worker.runtime import (
     IMAGE,
@@ -87,7 +88,7 @@ def read_credentials(incarnation: WorkloadIncarnation) -> dict:
     return credentials
 
 
-async def connect_runtime(sessions, agent_id: UUID) -> OpenClawClient:
+async def connect_runtime(sessions, agent_id: UUID) -> OpenClawClient | HermesClient:
     """Connect diagnostics using the worker-only identity, never a browser token."""
     with sessions() as session:
         agent = session.get(Agent, agent_id)
@@ -103,6 +104,17 @@ async def connect_runtime(sessions, agent_id: UUID) -> OpenClawClient:
             raise RuntimeError("Agent identity is inactive")
         credentials = read_credentials(incarnation)
         name = incarnation.container_name
+        hermes = agent.runtime_kind == "hermes"
+    if hermes:
+        worker = Worker(sessions=sessions)
+        try:
+            container = await asyncio.to_thread(worker.owned_container, incarnation)
+            if container is None:
+                raise RuntimeError("Hermes container is missing")
+            return HermesClient(worker.client, container.id)
+        except (APIError, RuntimeError, asyncio.CancelledError):
+            worker.client.close()
+            raise
     identity = DeviceIdentity.load_or_create(get_settings().worker_state_dir / "control-device.pem")
     return await OpenClawClient(
         f"ws://{name}:18789", credentials["control_token"], identity
@@ -113,7 +125,7 @@ async def configure_inference(sessions, run, client):
     """Publish a model profile before send, then wait for the runtime's active catalog."""
     with sessions() as session:
         incarnation = session.get(WorkloadIncarnation, run.incarnation_id)
-        if incarnation.model_route == "fixture":
+        if incarnation.model_route in {"fixture", "native"}:
             return
         credentials = read_credentials(incarnation)
     config, identifier = model_profile(
