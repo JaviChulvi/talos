@@ -24,3 +24,8 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unable to reach the local API.";
 }
+
+export type Role = { id: string; name: string; description?: string; revision: number; capabilities: string[] };
+export type Employee = { id: string; name: string; email: string | null; role_id: string };
+export type Capability = { id: string; name: string; description: string; openclaw: string[]; hermes: string[]; hermes_tools: string[] };
+export type AgentPermissions = { id: string; display_name: string; employee_id: string | null; employee_name: string; role: Role | null; applied_role: Role | null; permissions_pending: boolean; runtime_mode: string; observed_state: string; desired_state: string };
