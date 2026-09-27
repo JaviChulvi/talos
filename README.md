@@ -159,7 +159,7 @@ the key is configured; selecting a model does not create credentials.
 Native model changes use the existing durable operation worker and can be saved while
 the agent runs. OpenRouter changes affect the next provider request; requests already
 sent retain their captured model. Native sessions with explicit model overrides may
-need a new session. Talos Test agent selects the saved model on every turn. Runtimes
+need a new session. Talos conversations select the saved model on every turn. Runtimes
 started before this feature need one stop/start to add the internal gateway proxy
 exclusion. Returning to **Handled by agent** restores the prior native model settings.
 Role permissions, other provider credentials, workspace and history are preserved.

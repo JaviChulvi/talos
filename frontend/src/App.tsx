@@ -1,8 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Bot, Boxes, Check, ChevronRight, CircleAlert, Database, LayoutDashboard, Menu, Network, RefreshCw, Server, Settings, ShieldCheck, Users, X } from "lucide-react";
+import {
+  Boxes,
+  Check,
+  CircleAlert,
+  Database,
+  Network,
+  RefreshCw,
+  Server,
+} from "lucide-react";
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { InferenceSettings, OpenRouterSettings } from "@/components/inference-settings";
+import {
+  InferenceSettings,
+  OpenRouterSettings,
+} from "@/components/inference-settings";
 import { Administration } from "@/components/administration";
 import { AgentWorkspace } from "@/components/agent-workspace";
 
@@ -16,16 +30,43 @@ type Status = {
 
 const services = [
   { key: "status", name: "Control plane", detail: "Local API", icon: Server },
-  { key: "database", name: "Database", detail: "Persistent platform state", icon: Database },
-  { key: "worker", name: "Worker", detail: "Agent lifecycle management", icon: Boxes },
-  { key: "gateway", name: "Gateway", detail: "Agent access boundary", icon: Network },
+  {
+    key: "database",
+    name: "Database",
+    detail: "Persistent platform state",
+    icon: Database,
+  },
+  {
+    key: "worker",
+    name: "Worker",
+    detail: "Agent lifecycle management",
+    icon: Boxes,
+  },
+  {
+    key: "gateway",
+    name: "Gateway",
+    detail: "Agent access boundary",
+    icon: Network,
+  },
 ] as const;
 
 function ServiceStatus({ value }: { value?: string }) {
   const healthy = value === "ok" || value === "ready";
-  const label = value === "scaffold" ? "Scaffold only" : value?.replaceAll("_", " ") ?? "Unknown";
+  const label =
+    value === "scaffold"
+      ? "Scaffold only"
+      : (value?.replaceAll("_", " ") ?? "Unknown");
   return (
-    <Badge variant={healthy ? "success" : ["scaffold", "configured"].includes(value ?? "") || !value ? "secondary" : "warning"} className="capitalize">
+    <Badge
+      variant={
+        healthy
+          ? "success"
+          : ["scaffold", "configured"].includes(value ?? "") || !value
+            ? "secondary"
+            : "warning"
+      }
+      className="capitalize"
+    >
       {healthy && <Check className="size-3" aria-hidden="true" />}
       {label}
     </Badge>
@@ -36,31 +77,62 @@ function readIds(key: string): Record<string, string> {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
     if (value && typeof value === "object" && !Array.isArray(value)) {
-      return Object.fromEntries(Object.entries(value).filter(([, id]) => typeof id === "string"));
+      return Object.fromEntries(
+        Object.entries(value).filter(([, id]) => typeof id === "string"),
+      );
     }
-  } catch { /* Stored identifiers are optional; the server owns all records. */ }
+  } catch {
+    /* Stored identifiers are optional; the server owns all records. */
+  }
   return {};
 }
 
 function saveIds(key: string, ids: Record<string, string>) {
-  try { localStorage.setItem(key, JSON.stringify(ids)); } catch { /* Continue when local storage is disabled. */ }
+  try {
+    localStorage.setItem(key, JSON.stringify(ids));
+  } catch {
+    /* Continue when local storage is disabled. */
+  }
 }
 
 export default function App() {
-  const [operationIds, setOperationIds] = useState(() => readIds("talos.operationIds"));
+  const [operationIds, setOperationIds] = useState(() =>
+    readIds("talos.operationIds"),
+  );
   const recordOperation = useCallback((agentId: string, id: string) => {
     setOperationIds((current) => ({ ...current, [agentId]: id }));
   }, []);
-  useEffect(() => { saveIds("talos.operationIds", operationIds); }, [operationIds]);
-  const [page, setPage] = useState(() => ["#platform", "#settings", "#roles", "#employees"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
-  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => {
+    saveIds("talos.operationIds", operationIds);
+  }, [operationIds]);
+  const [page, setPage] = useState(() =>
+    ["#platform", "#settings", "#roles", "#employees"].includes(
+      window.location.hash,
+    )
+      ? window.location.hash.slice(1)
+      : "agents",
+  );
 
   useEffect(() => {
     const navigate = () => {
-      if (["", "#platform", "#agents", "#settings", "#roles", "#employees"].includes(window.location.hash)) {
-        setPage(["#platform", "#settings", "#roles", "#employees"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
+      if (
+        [
+          "",
+          "#platform",
+          "#agents",
+          "#settings",
+          "#roles",
+          "#employees",
+        ].includes(window.location.hash)
+      ) {
+        setPage(
+          ["#platform", "#settings", "#roles", "#employees"].includes(
+            window.location.hash,
+          )
+            ? window.location.hash.slice(1)
+            : "agents",
+        );
       }
-      setMenuOpen(false);
     };
     window.addEventListener("hashchange", navigate);
     return () => window.removeEventListener("hashchange", navigate);
@@ -77,10 +149,20 @@ export default function App() {
     request.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     try {
-      const response = await fetch("/api/v1/status", { signal: controller.signal, cache: "no-store" });
-      if (!response.ok) throw new Error(`The status request returned HTTP ${response.status}.`);
+      const response = await fetch("/api/v1/status", {
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      if (!response.ok)
+        throw new Error(`The status request returned HTTP ${response.status}.`);
       const data: unknown = await response.json();
-      if (!data || typeof data !== "object" || !["status", "database", "worker", "gateway", "version"].every((key) => typeof (data as Record<string, unknown>)[key] === "string")) {
+      if (
+        !data ||
+        typeof data !== "object" ||
+        !["status", "database", "worker", "gateway", "version"].every(
+          (key) => typeof (data as Record<string, unknown>)[key] === "string",
+        )
+      ) {
         throw new Error("The API returned an unexpected status response.");
       }
       if (request.current !== controller) return;
@@ -90,7 +172,13 @@ export default function App() {
     } catch (cause) {
       if (request.current !== controller) return;
       setStatus(null);
-      setError(controller.signal.aborted ? "The API did not respond in time. Check that the local stack is running." : cause instanceof Error ? cause.message : "Unable to reach the local API.");
+      setError(
+        controller.signal.aborted
+          ? "The API did not respond in time. Check that the local stack is running."
+          : cause instanceof Error
+            ? cause.message
+            : "Unable to reach the local API.",
+      );
     } finally {
       window.clearTimeout(timeout);
       if (request.current === controller) setLoading(false);
@@ -109,77 +197,112 @@ export default function App() {
   }, [refresh]);
 
   return (
-    <div className="app-shell">
-      <a className="skip-link" href="#main-content">Skip to content</a>
-      <aside className="app-sidebar" aria-label="Workspace navigation">
-        <div className="brand-row">
-          <a href="#agents" className="brand" aria-label="Talos agents" onClick={() => setMenuOpen(false)}>
-            <img src="/talos.svg" width="29" height="29" alt="" />
-            <span>Talos</span>
-          </a>
-          <button className="mobile-menu" type="button" aria-expanded={menuOpen} aria-controls="workspace-navigation" aria-label={menuOpen ? "Close navigation" : "Open navigation"} onClick={() => setMenuOpen(!menuOpen)}>
-            {menuOpen ? <X size={20} /> : <Menu size={20} />}
-          </button>
+    <SidebarProvider defaultOpen>
+      <AgentWorkspace
+        page={page}
+        connected={status?.status === "ok"}
+        version={status?.version}
+        operationIds={operationIds}
+        onOperation={recordOperation}
+      >
+        <div hidden={page !== "roles"}>
+          <Administration
+            kind="roles"
+            active={page === "roles"}
+            onOperation={recordOperation}
+          />
         </div>
-        <div id="workspace-navigation" className={`sidebar-body ${menuOpen ? "is-open" : ""}`}>
-          <div className="workspace-context">
-            <span className="workspace-icon"><Server size={17} aria-hidden="true" /></span>
-            <div><p>Local workspace</p><span>Single-host installation</span></div>
-          </div>
-          <nav className="main-navigation" aria-label="Main">
-            <a href="#agents" aria-current={page === "agents" ? "page" : undefined} onClick={() => setMenuOpen(false)}><Bot size={18} aria-hidden="true" />Agents</a>
-            <a href="#employees" aria-current={page === "employees" ? "page" : undefined} onClick={() => setMenuOpen(false)}><Users size={18} aria-hidden="true" />Employees</a>
-            <a href="#roles" aria-current={page === "roles" ? "page" : undefined} onClick={() => setMenuOpen(false)}><ShieldCheck size={18} aria-hidden="true" />Roles</a>
-            <a href="#settings" aria-current={page === "settings" ? "page" : undefined} onClick={() => setMenuOpen(false)}><Settings size={18} aria-hidden="true" />Settings</a>
-            <a href="#platform" aria-current={page === "platform" ? "page" : undefined} onClick={() => setMenuOpen(false)}><LayoutDashboard size={18} aria-hidden="true" />Platform status</a>
-          </nav>
-          <div className="sidebar-footer">
-            <a href="/docs" className="reference-link">API reference<ArrowUpRight size={15} aria-hidden="true" /></a>
-            <div className="installation-status"><span className={`status-dot ${status?.status === "ok" ? "is-healthy" : ""}`} /><span>{status?.status === "ok" ? "Local API connected" : "Local API unavailable"}</span></div>
-            <span className="version-label">Talos {status ? `v${status.version}` : "foundation"}</span>
-          </div>
+        <div hidden={page !== "employees"}>
+          <Administration
+            kind="employees"
+            active={page === "employees"}
+            onOperation={recordOperation}
+          />
         </div>
-      </aside>
-
-      <div className="app-main">
-        <header className="topbar">
-          <nav aria-label="Breadcrumb" className="breadcrumb"><span>Local workspace</span><ChevronRight size={14} aria-hidden="true" /><span aria-current="page">{page === "agents" ? "Agents" : page === "settings" ? "Settings" : page === "employees" ? "Employees" : page === "roles" ? "Roles" : "Platform status"}</span></nav>
-          <span className="local-label"><span className="status-dot" />Local development</span>
-        </header>
-        <main id="main-content" tabIndex={-1} className="page-content">
-          <div hidden={page !== "roles"}><Administration kind="roles" active={page === "roles"} onOperation={recordOperation} /></div>
-          <div hidden={page !== "employees"}><Administration kind="employees" active={page === "employees"} onOperation={recordOperation} /></div>
-          <div hidden={page !== "agents"}>
-            <AgentWorkspace active={page === "agents"} operationIds={operationIds} onOperation={recordOperation} />
-          </div>
-          {page === "settings" && <section aria-labelledby="settings-heading">
-            <div className="page-heading"><div><h1 id="settings-heading">Settings</h1><p>Provider credentials and defaults for your agents.</p></div></div>
+        {page === "settings" && (
+          <section
+            aria-labelledby="settings-heading"
+            className="mx-auto max-w-2xl"
+          >
+            <div className="page-heading">
+              <div>
+                <h1 id="settings-heading">Settings</h1>
+                <p>Provider credentials and defaults for your agents.</p>
+              </div>
+            </div>
             <OpenRouterSettings />
             <InferenceSettings />
-          </section>}
-          <section hidden={page !== "platform"} aria-labelledby="status-heading">
-            <div className="page-heading">
-              <div><h1 id="status-heading">Platform status</h1><p>Check the services behind your agent workspace.</p></div>
-              <Button variant="outline" onClick={() => { setLoading(true); void refresh(); }} disabled={loading}>
-                <RefreshCw aria-hidden="true" className={loading ? "animate-spin" : ""} />{loading ? "Checking" : "Refresh status"}
-              </Button>
-            </div>
-            {error && <div role="alert" className="notice notice-warning mb-5"><CircleAlert className="size-4 shrink-0" aria-hidden="true" /><p>{error} Start or inspect the local services, then refresh.</p></div>}
-            <dl className="service-grid">
-              {services.map(({ key, name, detail, icon: Icon }) => (
-                <div key={key} className="service-card">
-                  <dt><Icon size={19} strokeWidth={1.5} aria-hidden="true" /><span>{name}</span></dt>
-                  <dd><ServiceStatus value={status?.[key]} /></dd>
-                  <dd className="service-detail">{detail}</dd>
-                </div>
-              ))}
-            </dl>
-            <p className="mt-5 text-sm text-muted-foreground">Worker and gateway labels show configured capabilities, not live health.</p>
-            <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">{loading ? "Checking local services…" : error ? "Status unavailable. Retrying every 15 seconds." : `Last checked ${checkedAt?.toLocaleTimeString()}. Refreshes every 15 seconds.`}</p>
           </section>
-          <footer className="page-footer">Local administrator workspace. Employee sign-in and business integrations are not enabled.</footer>
-        </main>
-      </div>
-    </div>
+        )}
+        <section
+          hidden={page !== "platform"}
+          aria-labelledby="status-heading"
+          className="mx-auto max-w-2xl"
+        >
+          <div className="page-heading">
+            <div>
+              <h1 id="status-heading">Platform status</h1>
+              <p>The services behind your workspace.</p>
+            </div>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setLoading(true);
+                void refresh();
+              }}
+              disabled={loading}
+            >
+              <RefreshCw
+                aria-hidden="true"
+                className={loading ? "animate-spin" : ""}
+              />
+              {loading ? "Checking" : "Refresh"}
+            </Button>
+          </div>
+          {error && (
+            <Alert className="mb-5">
+              <CircleAlert />
+              <AlertDescription>
+                {error} Start or inspect the local services, then refresh.
+              </AlertDescription>
+            </Alert>
+          )}
+          <dl className="divide-y border-y">
+            {services.map(({ key, name, detail, icon: Icon }) => (
+              <div key={key} className="flex items-center gap-4 py-5">
+                <Icon
+                  className="size-5 text-muted-foreground"
+                  aria-hidden="true"
+                />
+                <div className="min-w-0 flex-1">
+                  <dt className="text-sm font-medium">{name}</dt>
+                  <dd className="mt-1 text-sm text-muted-foreground">
+                    {detail}
+                  </dd>
+                </div>
+                <dd>
+                  {loading && !status ? (
+                    <Skeleton className="h-6 w-20" />
+                  ) : (
+                    <ServiceStatus value={status?.[key]} />
+                  )}
+                </dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-5 text-sm text-muted-foreground">
+            Worker and gateway labels show configured capabilities, not live
+            health.
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
+            {loading
+              ? "Checking local services…"
+              : error
+                ? "Status unavailable. Retrying every 15 seconds."
+                : `Last checked ${checkedAt?.toLocaleTimeString()}. Refreshes every 15 seconds.`}
+          </p>
+        </section>
+      </AgentWorkspace>
+    </SidebarProvider>
   );
 }
