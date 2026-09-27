@@ -19,6 +19,18 @@ request = json.loads(control.readline())
 path = Path('/opt/data/talos-chat-session')
 command = ['hermes', 'chat', '--oneshot', '--format', 'stream-json',
            '--query', request['message']]
+if not request.get('model_id') and Path('/opt/data/config.yaml').exists():
+    from hermes_cli.config import load_config
+    model = load_config().get('model') or {}
+    if isinstance(model, dict) and model.get('default'):
+        command += ['--model', model['default']]
+        if model.get('provider'):
+            command += ['--provider', model['provider']]
+if request.get('model_id'):
+    command += ['--model', request['model_id'], '--provider', 'custom']
+# Older running containers predate this internal endpoint's proxy exclusion.
+for key in ('NO_PROXY', 'no_proxy'):
+    os.environ[key] = os.environ.get(key, '') + ',talos-gateway'
 if path.exists():
     command += ['--resume', path.read_text().strip()]
 else:
@@ -38,6 +50,8 @@ try:
         if child.stdout in ready:
             chunk = os.read(child.stdout.fileno(), 65536)
             if not chunk:
+                # Reap normal EOF before cleanup can signal an already-exiting group.
+                child.wait(timeout=3)
                 break
             buffer += chunk
             while b'\n' in buffer:
@@ -82,6 +96,7 @@ class HermesClient:
         self.reader = None
         self.events = asyncio.Queue()
         self.run_id = None
+        self.model_id = None
         self.output = ""
         self.max_frame = get_settings().inference_max_output_chars * 6 + 65536
 
@@ -108,6 +123,7 @@ class HermesClient:
                         "session": session,
                         "message": message,
                         "max_frame": self.max_frame,
+                        "model_id": self.model_id,
                     }
                 )
                 + "\n"

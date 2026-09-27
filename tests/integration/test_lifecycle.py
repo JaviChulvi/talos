@@ -133,6 +133,63 @@ def provision(client, worker):
     return agent_id, response.json()["id"]
 
 
+def test_native_model_operation_retries_without_stopping_or_granting_early(
+    client,
+    worker,
+    session_maker,
+    monkeypatch,
+):
+    from gateway.identity import native_selection
+
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    with session_maker.begin() as session:
+        agent = session.get(Agent, UUID(agent_id))
+        agent.runtime_mode = "native"
+        incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        incarnation.model_route, incarnation.image_digest = "native", IMAGE
+        incarnation_id = incarnation.id
+    runtime = worker.owned_container(incarnation)
+    runtime.attrs["Config"]["Env"] = ["no_proxy=localhost,talos-gateway"]
+    credentials = read_credentials(incarnation)
+    assert native_selection(credentials["agent_token"]) is None
+
+    async def catalog():
+        return [{"id": "test/model", "name": "Test", "context_length": 32000}]
+
+    monkeypatch.setattr("backend.app.inference.catalog", catalog)
+    writer = Mock(side_effect=RuntimeError("synthetic failure"))
+    monkeypatch.setattr("worker.lifecycle.apply_native_model", writer)
+    response = client.post(
+        f"/api/v1/inference/agents/{agent_id}/native",
+        json={"model_id": "test/model"},
+        headers={"Idempotency-Key": "model-change"},
+    )
+    assert response.status_code == 202
+    operation_id = UUID(response.json()["id"])
+    worker.process_one()
+    with session_maker.begin() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation.status == "retry_wait"
+        operation.next_retry_at = None
+        assert session.get(Agent, UUID(agent_id)).observed_state == "ready"
+    assert native_selection(credentials["agent_token"]) is None
+    assert runtime.status == "running"
+    writer.side_effect = None
+    worker.process_one()
+    with session_maker() as session:
+        agent = session.get(Agent, UUID(agent_id))
+        assert agent.inference_override["model_id"] == "test/model"
+        assert agent.current_incarnation_id == incarnation_id and agent.observed_state == "ready"
+        assert session.get(Operation, operation_id).status == "succeeded"
+    assert writer.call_count == 2
+    assert native_selection(credentials["agent_token"])["model_id"] == "test/model"
+    assert native_selection("unrecognized-agent-identity") is None
+    with session_maker.begin() as session:
+        session.get(WorkloadIncarnation, incarnation_id).revoked_at = datetime.now(UTC)
+    assert native_selection(credentials["agent_token"]) is None
+
+
 def test_crash_after_creation_adopts_exact_container_and_state(client, worker, session_maker):
     agent_id, operation_id = provision(client, worker)
     worker.client.containers.crash_after_create = True

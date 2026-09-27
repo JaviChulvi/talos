@@ -79,6 +79,79 @@ def create(client, key="create-one", name="Sales helper"):
     )
 
 
+def test_native_model_creation_and_durable_selection(client, session_maker, monkeypatch):
+    async def catalog():
+        return [
+            {
+                "id": "test/model",
+                "name": "Test",
+                "context_length": 32000,
+                "supported_parameters": [],
+            }
+        ]
+
+    monkeypatch.setattr("backend.app.inference.catalog", catalog)
+    response = client.post(
+        "/api/v1/agents",
+        json={
+            "display_name": "Native",
+            "employee_label": "Alex",
+            "model_id": "test/model",
+        },
+        headers={"Idempotency-Key": "native-model-create"},
+    )
+    assert response.status_code == 202
+    agent_id = response.json()["agent_id"]
+    assert (
+        client.get(f"/api/v1/agents/{agent_id}").json()["inference_override"]["model_id"]
+        == "test/model"
+    )
+    complete_operation(session_maker, response.json()["id"])
+    path = f"/api/v1/inference/agents/{agent_id}/native"
+    response = client.post(
+        path, json={"model_id": "test/model"}, headers={"Idempotency-Key": "native-model-set"}
+    )
+    assert response.status_code == 202
+    assert response.json()["action"] == "configure_model"
+    assert (
+        client.post(
+            path, json={"model_id": "test/model"}, headers={"Idempotency-Key": "native-model-set"}
+        ).json()
+        == response.json()
+    )
+    assert (
+        client.post(
+            path,
+            json={"model_id": "test/model"},
+            headers={"Idempotency-Key": "native-model-conflict"},
+        ).status_code
+        == 409
+    )
+    complete_operation(session_maker, response.json()["id"])
+    assert (
+        client.post(
+            path, json={"model_id": "unknown"}, headers={"Idempotency-Key": "unknown"}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            path, json={"model_id": "fixture"}, headers={"Idempotency-Key": "fixture"}
+        ).status_code
+        == 400
+    )
+    response = client.post(
+        path,
+        content="null",
+        headers={"Content-Type": "application/json", "Idempotency-Key": "reset"},
+    )
+    assert response.status_code == 202
+    with session_maker() as session:
+        assert session.get(Operation, UUID(response.json()["id"])).model_selection == {}
+    # Native selections must not silently fall through the managed settings API.
+    assert client.delete(f"/api/v1/inference/agents/{agent_id}").status_code == 409
+
+
 def complete_operation(session_maker, operation_id, observed_state="stopped"):
     with session_maker.begin() as session:
         operation = session.get(Operation, UUID(operation_id))

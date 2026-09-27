@@ -59,6 +59,19 @@ def selected_request(token: str) -> dict:
         return {"run_id": str(run.id), "model_id": run.model_id, **run.inference}
 
 
+def native_selection(token: str) -> dict | None:
+    """Native entry points use their incarnation identity without a Talos chat run."""
+    if not validate_token(token):
+        return None
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    with session_factory()() as session:
+        return session.scalar(
+            select(Agent.inference_override)
+            .join(WorkloadIncarnation, Agent.current_incarnation_id == WorkloadIncarnation.id)
+            .where(WorkloadIncarnation.gateway_token_hash == digest, Agent.runtime_mode == "native")
+        )
+
+
 def record_inference(run_id: str, report: dict):
     from uuid import UUID
 

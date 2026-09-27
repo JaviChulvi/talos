@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { ChevronDown, FlaskConical } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -33,11 +33,13 @@ function LabIcon({ id, name }: { id: string; name: string }) {
     : <span aria-hidden="true" className="text-xs font-semibold uppercase">{name.slice(0, 2)}</span>;
 }
 
-export function ModelPicker({ models, value, onChange, disabled, inputClass }: {
+export function ModelPicker({ models, value, onChange, disabled, inputClass, includeFixture = true }: {
   models: Model[]; value: string; onChange: (id: string) => void; disabled: boolean; inputClass: string;
+  includeFixture?: boolean;
 }) {
+  const id = useId();
   const details = useRef<HTMLDetailsElement>(null);
-  const catalog = [{ id: "fixture", name: "Local simulator" }, ...models];
+  const catalog = [...(includeFixture ? [{ id: "fixture", name: "Local simulator" }] : []), ...models];
   if (!catalog.some((model) => model.id === value)) catalog.push({ id: value, name: value });
   const labs = Array.from(new Set(catalog.map((model) => labId(model.id)))).map((id) => {
     const first = catalog.find((model) => labId(model.id) === id)!;
@@ -80,8 +82,8 @@ export function ModelPicker({ models, value, onChange, disabled, inputClass }: {
       </details>
     </div>
     <div className="min-w-0 flex-1">
-      <label htmlFor="default-model" className="mb-2 block text-xs text-muted-foreground">Model</label>
-      <select id="default-model" className={cn(inputClass, "h-10")} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled} aria-describedby="model-help">
+      <label htmlFor={id} className="mb-2 block text-xs text-muted-foreground">Model</label>
+      <select id={id} className={cn(inputClass, "h-10")} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
         {visibleModels.map((model) => <option key={model.id} value={model.id}>{model.name.replace(/^[^:]+: /, "")}</option>)}
       </select>
     </div>

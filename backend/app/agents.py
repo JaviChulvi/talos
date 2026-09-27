@@ -59,6 +59,7 @@ class CreateAgent(BaseModel):
     display_name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
     employee_label: str = Field(default="", max_length=160, pattern=r"^[^\x00]*$")
     employee_id: UUID | None = None
+    model_id: str | None = Field(default=None, min_length=1, max_length=255)
 
     @model_validator(mode="after")
     def employee_identity(self):
@@ -158,14 +159,16 @@ def recover_duplicate(
 
 
 @router.post("/agents", status_code=202, response_model=OperationResponse)
-def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, session: Database):
+async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, session: Database):
     scope = "create-agent"
-    payload = body.model_dump(exclude={"dashboard_password"})
+    payload = body.model_dump(exclude={"dashboard_password", "model_id"})
     request = {key: value for key, value in payload.items() if key != "runtime_kind"}
     if body.employee_id is not None:
         request["employee_id"] = str(body.employee_id)
     if body.employee_id is None:
         request.pop("employee_id")  # Retain replay hashes for legacy requests.
+    if body.model_id is not None:
+        request["model_id"] = body.model_id
     if body.runtime_kind == "hermes":
         request.update(
             runtime_kind="hermes",
@@ -180,6 +183,18 @@ def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, session: Da
             ).hex(),
         )
     digest = request_hash(request)
+    # Replay before catalog/network validation so a provider outage cannot hide a success.
+    replay = find_replay(session, scope, idempotency_key, digest)
+    session.rollback()
+    if replay:
+        return replay
+    selection = None
+    if body.model_id is not None:
+        from backend.app.inference import ModelSelection, validated_selection
+
+        selection = await validated_selection(ModelSelection(model_id=body.model_id))
+        if body.runtime_mode == "native" and body.model_id == "fixture":
+            raise HTTPException(400, "Native agents require an OpenRouter model")
     try:
         with session.begin():
             replay = find_replay(session, scope, idempotency_key, digest)
@@ -212,6 +227,7 @@ def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, session: Da
                 **payload,
                 runtime_release=RUNTIME_RELEASES[body.runtime_kind],
                 dashboard_password_hash=password_hash,
+                inference_override=selection,
             )
             session.add(agent)
             session.flush()
