@@ -13,6 +13,7 @@ IMAGE = (
     "ghcr.io/openclaw/openclaw@sha256:"
     "0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15"
 )
+NATIVE_IMAGE = "talos-openclaw-native:local"
 STATE_PATH = "/home/node/.openclaw"
 CONFIG_PATH = "/etc/talos/openclaw.json"
 
@@ -64,6 +65,28 @@ def runtime_config(
     }
 
 
+def native_config() -> dict:
+    """Seed once; subsequent configuration belongs to the OpenClaw user."""
+    return {
+        "gateway": {
+            "mode": "local",
+            "bind": "lan",
+            "port": 18789,
+            "auth": {"mode": "token", "token": "${OPENCLAW_GATEWAY_TOKEN}"},
+            "controlUi": {"enabled": True, "allowedOrigins": ["${TALOS_CONTROL_ORIGIN}"]},
+        },
+        "agents": {"defaults": {"workspace": STATE_PATH + "/workspace"}},
+        "tools": {
+            "profile": "full",
+            "web": {"search": {"provider": "parallel-free"}, "fetch": {"useTrustedEnvProxy": True}},
+        },
+        "plugins": {
+            "load": {"paths": ["/opt/talos-plugins/node_modules/@openclaw/parallel-plugin"]},
+            "entries": {"parallel": {"enabled": True}},
+        },
+    }
+
+
 def model_profile(config: dict, model_id: str, capabilities: dict) -> tuple[dict, str]:
     """Only the trusted worker replaces inference fields in the launch contract."""
     if model_id == "fixture":
@@ -101,8 +124,18 @@ def model_profile(config: dict, model_id: str, capabilities: dict) -> tuple[dict
     return config, identifier
 
 
-def launch_options(name: str, volume: str, network: str, config_volume: str, labels: dict) -> dict:
-    return {
+def launch_options(
+    name: str,
+    volume: str,
+    network: str,
+    config_volume: str,
+    labels: dict,
+    *,
+    native_image: str | None = None,
+    control_token: str = "",
+    control_origin: str = "",
+) -> dict:
+    options = {
         "image": IMAGE,
         "name": name,
         "command": ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"],
@@ -131,8 +164,28 @@ def launch_options(name: str, volume: str, network: str, config_volume: str, lab
         "detach": True,
     }
 
+    if native_image:
+        options["image"] = native_image
+        options["environment"].update(
+            {
+                "OPENCLAW_CONFIG_PATH": STATE_PATH + "/openclaw.json",
+                "OPENCLAW_GATEWAY_TOKEN": control_token,
+                "TALOS_CONTROL_ORIGIN": control_origin,
+                "HTTP_PROXY": "http://talos-egress:3128",
+                "HTTPS_PROXY": "http://talos-egress:3128",
+                "http_proxy": "http://talos-egress:3128",
+                "https_proxy": "http://talos-egress:3128",
+                "NO_PROXY": "localhost,127.0.0.1,::1",
+                "no_proxy": "localhost,127.0.0.1,::1",
+                "NODE_USE_ENV_PROXY": "1",
+            }
+        )
+    return options
 
-def prepare_volumes(client, state_name: str, config_name: str, config: dict, labels: dict):
+
+def prepare_volumes(
+    client, state_name: str, config_name: str, config: dict, labels: dict, *, native=False
+):
     """Seed approved configuration and state ownership without host bind mounts."""
     for name in (state_name, config_name):
         try:
@@ -157,8 +210,13 @@ def prepare_volumes(client, state_name: str, config_name: str, config: dict, lab
         network_mode="none",
         entrypoint=["node", "-e"],
         command=[
-            "const fs=require('fs');fs.chownSync('/state',1000,1000);fs.chmodSync('/state',448);"
-            "fs.renameSync('/config/openclaw.json.next','/config/openclaw.json');"
+            "const fs=require('fs');fs.chownSync('/state',0,0);fs.chmodSync('/state',448);"
+            + (
+                "if(!fs.existsSync('/state/openclaw.json')){fs.copyFileSync('/config/openclaw.json.next','/state/openclaw.json');fs.chownSync('/state/openclaw.json',1000,1000);fs.chmodSync('/state/openclaw.json',384);}fs.unlinkSync('/config/openclaw.json.next');"
+                if native
+                else "fs.renameSync('/config/openclaw.json.next','/config/openclaw.json');"
+            )
+            + "fs.chownSync('/state',1000,1000);"
         ],
         volumes={
             state_name: {"bind": "/state", "mode": "rw"},
@@ -177,7 +235,12 @@ def prepare_volumes(client, state_name: str, config_name: str, config: dict, lab
         payload = json.dumps(config).encode()
         with tarfile.open(fileobj=data, mode="w") as archive:
             entry = tarfile.TarInfo("openclaw.json.next")
-            entry.size, entry.mode, entry.uid, entry.gid = len(payload), 0o400, 1000, 1000
+            entry.size, entry.mode, entry.uid, entry.gid = (
+                len(payload),
+                0o444 if native else 0o400,
+                1000,
+                1000,
+            )
             archive.addfile(entry, io.BytesIO(payload))
         initializer.put_archive("/config", data.getvalue())
         initializer.start()

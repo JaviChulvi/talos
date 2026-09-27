@@ -111,7 +111,7 @@ def worker(session_maker, monkeypatch, tmp_path):
     for service in ("worker", "gateway"):
         containers.create(name=f"platform-{service}", labels=worker.service_labels(service)).start()
 
-    def prepare(client, state, config, payload, labels):
+    def prepare(client, state, config, payload, labels, *, native=False):
         for name in (state, config):
             try:
                 client.volumes.get(name)
@@ -423,7 +423,7 @@ def test_worker_loop_retries_database_outages_without_replacing_operation(
             raise outage
         original_recover(**kwargs)
 
-    def ensure_network(agent_id):
+    def ensure_network(agent_id, **kwargs):
         nonlocal fail_transaction, failed
         if not failed and failure_stage == "execute":
             failed = True
@@ -431,7 +431,7 @@ def test_worker_loop_retries_database_outages_without_replacing_operation(
         if not failed and failure_stage == "record":
             fail_transaction = True
             raise OSError("Docker temporarily unavailable")
-        return original_ensure_network(agent_id)
+        return original_ensure_network(agent_id, **kwargs)
 
     monkeypatch.setattr(session_maker, "begin", begin)
     monkeypatch.setattr(worker, "recover", recover)
@@ -549,3 +549,69 @@ def test_replacement_worker_recovers_network_before_queued_diagnostic(
 
     asyncio.run(scenario())
     assert driver.sent == 1
+
+
+def test_dashboard_handoff_rewrites_both_addresses_without_changing_agent_state(
+    client, worker, session_maker, monkeypatch
+):
+    import json
+    from urllib.parse import parse_qs, urlsplit
+
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    with session_maker.begin() as session:
+        agent = session.get(Agent, UUID(agent_id))
+        agent.runtime_mode = "native"
+        incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        incarnation.model_route = "native"
+        incarnation.image_digest = IMAGE
+        revision = agent.revision
+        container_name = incarnation.container_name
+    container = worker.client.containers.get(container_name)
+    container.exec_run = lambda _: SimpleNamespace(
+        exit_code=0,
+        output=(
+            "plugin log\n"
+            + json.dumps(
+                {
+                    "ok": True,
+                    "browserBootstrapExpiresAtMs": 9999999999999,
+                    "browserUrl": "http://127.0.0.1:18789/#bootstrapToken=one-use-test&gatewayUrl=ws%3A%2F%2F127.0.0.1%3A18789",
+                }
+            )
+        ).encode(),
+    )
+    proxy = SimpleNamespace(
+        status="running",
+        attrs={
+            "NetworkSettings": {
+                "Ports": {"18789/tcp": [{"HostIp": "127.0.0.1", "HostPort": "32123"}]}
+            }
+        },
+    )
+    monkeypatch.setattr(worker, "ui_proxy", lambda _: proxy)
+    response = client.post(
+        f"/api/v1/agents/{agent_id}/dashboard", headers={"Idempotency-Key": "open"}
+    )
+    assert response.status_code == 202
+    worker.process_one()
+    operation = client.get("/api/v1/operations/" + response.json()["id"]).json()
+    assert operation["status"] == "succeeded"
+    target = urlsplit(operation["dashboard_url"])
+    assert target.netloc == "127.0.0.1:32123"
+    assert parse_qs(target.fragment) == {
+        "bootstrapToken": ["one-use-test"],
+        "gatewayUrl": ["ws://127.0.0.1:32123"],
+    }
+    after = client.get(f"/api/v1/agents/{agent_id}").json()
+    assert (after["revision"], after["observed_state"]) == (revision, "ready")
+
+    proxy.attrs["NetworkSettings"]["Ports"]["18789/tcp"][0]["HostIp"] = "0.0.0.0"
+    rejected = client.post(
+        f"/api/v1/agents/{agent_id}/dashboard", headers={"Idempotency-Key": "bad-bind"}
+    )
+    worker.process_one()
+    assert client.get("/api/v1/operations/" + rejected.json()["id"]).json()["dashboard_url"] is None
+    assert client.get(f"/api/v1/agents/{agent_id}").json()["observed_state"] == "ready"
+    with session_maker() as session:
+        assert session.get(WorkloadIncarnation, incarnation.id).revoked_at is None

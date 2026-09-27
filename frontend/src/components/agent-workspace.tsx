@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Bot, CircleAlert, LoaderCircle, Play, Plus, Send, Square, Trash2 } from "lucide-react";
+import { ExternalLink, Bot, CircleAlert, LoaderCircle, Play, Plus, Send, Square, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { UsageDetails, type GenerationSettings, type InferenceSelection, type InferenceCall } from "@/components/generation-settings";
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 type Agent = {
   id: string;
+  runtime_mode: "native" | "managed";
   display_name: string;
   employee_label: string;
   desired_state: string;
@@ -17,7 +18,7 @@ type Agent = {
   model_route: string;
   inference_override: InferenceSelection | null;
 };
-type Operation = { id: string; agent_id: string; status: string; error?: string | null };
+type Operation = { action?: string; dashboard_url?: string | null; id: string; agent_id: string; status: string; error?: string | null };
 type Run = { inference_calls: InferenceCall[]; inference: { settings?: GenerationSettings }; model_id: string; id: string; agent_id: string; status: string; output?: string | null; error?: string | null; cancel_requested?: boolean };
 type RunEvent = { sequence: number; type: string; payload: Record<string, unknown> };
 type Mutation = {
@@ -25,7 +26,7 @@ type Mutation = {
   method: "POST" | "DELETE";
   body?: object;
   key: string;
-  kind: "create" | "lifecycle" | "diagnostic" | "cancel";
+  kind: "create" | "lifecycle" | "diagnostic" | "cancel" | "dashboard";
   agentId?: string;
 };
 
@@ -72,6 +73,9 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
   const [retryRequest, setRetryRequest] = useState<Mutation | null>(null);
   const [refresh, setRefresh] = useState(0);
   const createDialog = useRef<HTMLDialogElement>(null);
+  const [runtimeMode, setRuntimeMode] = useState<"native" | "managed">("native");
+  const dashboardWindow = useRef<Window | null>(null);
+  const dashboardOperation = useRef<string | null>(null);
   const [displayName, setDisplayName] = useState("");
   const [employeeLabel, setEmployeeLabel] = useState("");
   const [message, setMessage] = useState("");
@@ -132,6 +136,14 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
     return () => { stopped = true; window.clearTimeout(timer); controller.abort(); };
   }, [selectedId, operationId, runId, busy, refresh, active]);
 
+  useEffect(() => {
+    if (!operation || operation.id !== dashboardOperation.current || activeOperations.has(operation.status)) return;
+    if (operation.dashboard_url && dashboardWindow.current) dashboardWindow.current.location.replace(operation.dashboard_url);
+    else dashboardWindow.current?.close();
+    dashboardOperation.current = null;
+    dashboardWindow.current = null;
+  }, [operation]);
+
   async function mutate(request: Mutation) {
     setSubmitting(true);
     setActionError(null);
@@ -142,6 +154,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
         body: request.body ? JSON.stringify(request.body) : undefined,
         signal: AbortSignal.timeout(15_000),
       });
+      if (request.kind === "dashboard") dashboardOperation.current = result.id;
       if (request.kind === "diagnostic") {
         const next = { ...runIds, [result.agent_id]: result.id };
         setRunIds(next);
@@ -159,6 +172,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
       setRetryRequest(null);
       setRefresh((value) => value + 1);
     } catch (error) {
+      if (request.kind === "dashboard") { dashboardWindow.current?.close(); dashboardWindow.current = null; }
       const uncertain = !(error instanceof ApiError) || error.status >= 500;
       setRetryRequest(uncertain ? request : null);
       setActionError(uncertain
@@ -173,7 +187,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
     event.preventDefault();
     if (!displayName.trim() || !employeeLabel.trim() || employeeLabel.trim().length > 160 || writesDisabled) return;
     void mutate({ path: "/agents", method: "POST", key: crypto.randomUUID(), kind: "create", body: {
-      display_name: displayName.trim(), employee_label: employeeLabel.trim(),
+      display_name: displayName.trim(), employee_label: employeeLabel.trim(), runtime_mode: runtimeMode,
     } });
   }
 
@@ -181,6 +195,13 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
     if (!selected || writesDisabled || operationActive) return;
     if (action === "delete" && !window.confirm(`Delete ${selected.display_name}? This removes its runtime and private agent state. This cannot be undone.`)) return;
     void mutate({ path: `/agents/${selected.id}${action === "delete" ? "" : `/${action}`}`, method: action === "delete" ? "DELETE" : "POST", key: crypto.randomUUID(), kind: "lifecycle", agentId: selected.id });
+  }
+
+  function openOpenClaw() {
+    if (!selected || writesDisabled || operationActive) return;
+    dashboardWindow.current = window.open("about:blank", "_blank");
+    if (dashboardWindow.current) dashboardWindow.current.opener = null;
+    void mutate({ path: `/agents/${selected.id}/dashboard`, method: "POST", key: crypto.randomUUID(), kind: "dashboard", agentId: selected.id });
   }
 
   function sendDiagnostic(event: FormEvent) {
@@ -206,6 +227,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
           <h2 id="create-agent-title" className="text-lg font-semibold tracking-tight">Create an agent</h2>
           <div><label htmlFor="agent-name" className="mb-1.5 block text-xs text-muted-foreground">Name</label><input id="agent-name" autoFocus className={inputClass} value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Sales assistant" maxLength={120} required disabled={writesDisabled} /></div>
           <div><label htmlFor="employee-label" className="mb-1.5 block text-xs text-muted-foreground">Employee label</label><input id="employee-label" className={inputClass} value={employeeLabel} onChange={(event) => setEmployeeLabel(event.target.value)} placeholder="Alex" required minLength={1} maxLength={160} disabled={writesDisabled} /></div>
+          <div><label htmlFor="runtime-mode" className="mb-1.5 block text-xs text-muted-foreground">Runtime</label><select id="runtime-mode" className={inputClass} value={runtimeMode} onChange={(event) => setRuntimeMode(event.target.value as "native" | "managed")} disabled={writesDisabled}><option value="native">Native OpenClaw</option><option value="managed">Talos-managed conversation</option></select><p className="mt-2 text-xs leading-relaxed text-muted-foreground">{runtimeMode === "native" ? "Your own OpenClaw workspace with native tools and free web search. Configure a model and integrations in OpenClaw after starting." : "Use Talos’s existing model settings and recorded conversations. Tools remain disabled."}</p></div>
           {(actionError || pollError) && <div role="alert" className="space-y-3 text-sm text-danger">
             <p>{actionError ?? pollError}</p>
             {retryRequest?.kind === "create" && <Button type="button" variant="outline" disabled={submitting} onClick={() => void mutate(retryRequest)}>Retry same request</Button>}
@@ -234,7 +256,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
           {!selected ? <div className="flex min-h-96 flex-col items-center justify-center px-6 py-16 text-center lg:min-h-[480px]"><span className="mb-5 flex size-14 items-center justify-center rounded-xl border bg-muted/40"><Bot className="size-7 text-muted-foreground" strokeWidth={1.5} aria-hidden="true" /></span><h3 className="font-medium">No agent selected</h3><p className="mt-2 max-w-xs text-sm leading-relaxed text-muted-foreground">Create your first agent or select one from the list to manage its runtime.</p></div> : <>
             <div className="border-b p-6">
               <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h2 className="break-words text-lg font-semibold tracking-tight">{selected.display_name}</h2><p className="mt-1 text-sm text-muted-foreground">{selected.employee_label || "No employee label"}</p></div><StateBadge state={selected.observed_state} /></div>
-              <p className="mt-3 break-words text-xs text-muted-foreground">{selected.inference_override ? "Custom model" : "Workspace default"} · {effectiveModel === "fixture" ? "Local simulator" : effectiveModel ?? "Loading…"}</p>
+              <p className="mt-3 break-words text-xs text-muted-foreground">{selected.runtime_mode === "native" ? "Native OpenClaw · Models and integrations configured in OpenClaw" : `${selected.inference_override ? "Custom model" : "Workspace default"} · ${effectiveModel === "fixture" ? "Local simulator" : effectiveModel ?? "Loading…"}`}</p>
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["ready", "running", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("start")}><Play aria-hidden="true" />Start</Button>
                 <Button variant="outline" size="sm" disabled={writesDisabled || operationActive || ["stopped", "deleted"].includes(selected.observed_state)} onClick={() => lifecycle("stop")}><Square aria-hidden="true" />Stop</Button>
@@ -244,6 +266,13 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
               {selected.last_error && <p role="alert" className="mt-3 text-sm text-danger">{selected.last_error}</p>}
             </div>
 
+            {selected.runtime_mode === "native" ? <div className="space-y-5 p-6">
+              <div><h3 className="font-semibold">Your OpenClaw workspace</h3><p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">Chat, connect a model, add Telegram or Slack, and manage skills in OpenClaw’s own interface. Your configuration and files persist across stops and starts.</p></div>
+              <Button disabled={writesDisabled || operationActive || selected.observed_state !== "ready"} onClick={openOpenClaw}><ExternalLink aria-hidden="true" />{selectedOperation?.action === "dashboard" && operationActive ? "Opening OpenClaw…" : "Open OpenClaw"}</Button>
+              {selectedOperation?.dashboard_url && <p className="text-sm"><a href={selectedOperation.dashboard_url} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-4">Continue if the new tab did not open</a></p>}
+              <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">{selected.observed_state !== "ready" ? "Start this agent to open its workspace." : "First visit: choose a model provider in OpenClaw. OpenRouter is optional; Talos’s managed model settings do not apply here."}</p>
+              <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">Free search is preconfigured. Browser automation needs a compatible sandboxed browser. Access links open on this Docker host’s loopback address; remote hosts require an SSH tunnel.</p>
+            </div> : <>
             <nav aria-label="Agent views" className="flex gap-6 border-b px-6">
               {["conversation", "settings"].map((view) => <button key={view} type="button" aria-pressed={agentView === view} onClick={() => setAgentView(view)} className={cn("border-b-2 px-1 py-3 text-sm capitalize outline-none focus-visible:ring-2 focus-visible:ring-ring", agentView === view ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>{view}</button>)}
             </nav>
@@ -269,6 +298,7 @@ export function AgentWorkspace({ active = true }: { active?: boolean }) {
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{!["ready", "running"].includes(selected.observed_state) ? "Start the agent to send a diagnostic." : "Output and events are saved by Talos."}</span><div className="flex gap-2">{runActive && selectedRun?.status !== "unknown" && <Button type="button" variant="outline" disabled={writesDisabled || selectedRun?.cancel_requested || selectedRun?.status === "cancel_requested"} onClick={() => void mutate({ path: `/runs/${runId}/cancel`, method: "POST", key: crypto.randomUUID(), kind: "cancel", agentId: selected.id })}><Square aria-hidden="true" />{selectedRun?.cancel_requested || selectedRun?.status === "cancel_requested" ? "Cancelling" : "Cancel run"}</Button>}<Button type="submit" disabled={writesDisabled || runActive || operationActive || !message.trim() || !["ready", "running"].includes(selected.observed_state)}><Send aria-hidden="true" />Send</Button></div></div>
               </form>
             </div>
+            </>}
           </>}
         </div>
       </div>

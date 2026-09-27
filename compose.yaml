@@ -19,6 +19,29 @@ x-platform: &platform
   cap_drop: [ALL]
 
 services:
+  native-runtime:
+    profiles: [build]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: native-runtime
+    image: talos-openclaw-native:local
+  egress:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      target: egress
+    image: talos-egress:local
+    restart: unless-stopped
+    labels:
+      io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
+    networks: [egress]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    pids_limit: 64
   db:
     image: postgres:17-bookworm@sha256:639ab7ceb90e13123085b741fb31ef493fba25463002f6da665352e7b534b652
     environment:
@@ -66,6 +89,7 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
 networks:
+  egress:
   ingress:
   control:
     internal: true

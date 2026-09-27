@@ -26,3 +26,17 @@ USER root
 COPY tests/ tests/
 RUN uv sync --frozen
 CMD ["python", "-m", "tests.runtime_proof"]
+
+# Native runtime: the upstream image plus a pinned key-free search plugin.
+FROM ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15 AS native-runtime
+USER root
+COPY deploy/native/ /opt/talos-plugins/
+RUN cd /opt/talos-plugins && npm ci --omit=dev --ignore-scripts --legacy-peer-deps
+USER node
+
+# Standard forwarding proxy; agents retain their internal Docker networks.
+FROM python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS egress
+RUN apt-get update && apt-get install -y --no-install-recommends squid && rm -rf /var/lib/apt/lists/*
+COPY deploy/squid.conf /etc/squid/squid.conf
+USER proxy
+CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]

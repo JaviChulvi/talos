@@ -103,3 +103,45 @@ def test_real_private_network_and_owned_cleanup(client, session_maker, monkeypat
         if control:
             control.remove()
         docker_client.close()
+
+
+def test_native_configuration_is_seeded_once_and_remains_private():
+    from worker.runtime import STATE_PATH, native_config, prepare_volumes
+
+    client = docker.from_env(timeout=30)
+    prefix = "talos-native-volume-test-" + uuid4().hex
+    state, config = prefix + "-state", prefix + "-config"
+    labels = {"io.talos.test": prefix}
+    try:
+        prepare_volumes(client, state, config, native_config(), labels, native=True)
+        script = (
+            "const fs=require('fs'); const p=process.env.HOME+'/.openclaw/openclaw.json';"
+            "const c=JSON.parse(fs.readFileSync(p));"
+            "if(c.tools.web.search.provider!=='parallel-free')process.exit(1);"
+            "c.agents.defaults.heartbeat={every:'0m'};fs.writeFileSync(p,JSON.stringify(c));"
+        )
+        options = dict(
+            entrypoint=["node", "-e"],
+            user="1000:1000",
+            read_only=True,
+            cap_drop=["ALL"],
+            network_mode="none",
+            remove=True,
+            volumes={state: {"bind": STATE_PATH, "mode": "rw"}},
+        )
+        client.containers.run(IMAGE, command=[script], **options)
+        prepare_volumes(client, state, config, native_config(), labels, native=True)
+        check = (
+            "const fs=require('fs');const p=process.env.HOME+'/.openclaw/openclaw.json';"
+            "const c=JSON.parse(fs.readFileSync(p));"
+            "if(c.agents.defaults.heartbeat.every!=='0m')process.exit(1);"
+            "if((fs.statSync(p).mode&511)!==384)process.exit(2);"
+        )
+        client.containers.run(IMAGE, command=[check], **options)
+    finally:
+        for name in (state, config):
+            try:
+                client.volumes.get(name).remove()
+            except NotFound:
+                pass
+        client.close()
