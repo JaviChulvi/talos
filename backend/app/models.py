@@ -26,6 +26,27 @@ HERMES_RELEASE = "hermes-0.21.5"
 RUNTIME_RELEASES = {"openclaw": RUNTIME_RELEASE, "hermes": HERMES_RELEASE}
 
 
+class Role(Base):
+    __tablename__ = "roles"
+    __table_args__ = (CheckConstraint("revision > 0"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(120), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class Employee(Base):
+    __tablename__ = "employees"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(160))
+    email: Mapped[str | None] = mapped_column(String(254))
+    role_id: Mapped[UUID] = mapped_column(ForeignKey("roles.id"), index=True)
+    role: Mapped["Role"] = relationship(lazy="selectin")
+
+
 class Agent(Base):
     __tablename__ = "agents"
     __table_args__ = (
@@ -39,6 +60,25 @@ class Agent(Base):
     runtime_mode: Mapped[str] = mapped_column(String(20), default="managed")
     display_name: Mapped[str] = mapped_column(String(120))
     employee_label: Mapped[str] = mapped_column(String(160))
+    employee_id: Mapped[UUID | None] = mapped_column(ForeignKey("employees.id"), index=True)
+    employee: Mapped["Employee | None"] = relationship(lazy="selectin")
+
+    @property
+    def employee_name(self) -> str:
+        return self.employee.name if self.employee else self.employee_label
+
+    @property
+    def role(self) -> dict | None:
+        if self.employee is None:
+            return None
+        role = self.employee.role
+        return {
+            "id": role.id,
+            "name": role.name,
+            "revision": role.revision,
+            "capabilities": role.capabilities,
+        }
+
     inference_override: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     runtime_release: Mapped[str] = mapped_column(String(100), default=RUNTIME_RELEASE)
     desired_state: Mapped[str] = mapped_column(String(20), default="stopped")

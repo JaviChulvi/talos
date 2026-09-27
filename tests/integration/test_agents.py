@@ -48,7 +48,9 @@ def session_maker(database_engine):
     # Every table is inside this module's random schema; other database users and
     # the development stack are unaffected.
     with database_engine.begin() as connection:
-        connection.execute(text("TRUNCATE agents, workload_incarnations, operations CASCADE"))
+        connection.execute(
+            text("TRUNCATE agents, workload_incarnations, operations, employees, roles CASCADE")
+        )
     return sessionmaker(database_engine, expire_on_commit=False)
 
 
@@ -321,3 +323,63 @@ def test_hermes_password_is_hashed_private_and_part_of_idempotency(client, sessi
         )
         assert rejected.status_code == 422
         assert payload["dashboard_password"] not in rejected.text
+
+
+def test_employee_role_assignment_preserves_legacy_agents(client, session_maker):
+    legacy = create(client).json()
+    complete_operation(session_maker, legacy["id"])
+    role = client.post("/api/v1/roles", json={"name": "Sales"}).json()
+    assert role["capabilities"] == [] and role["revision"] == 1
+    assert client.post("/api/v1/roles", json={"name": "Sales"}).status_code == 409
+    assert (
+        client.post(
+            "/api/v1/roles", json={"name": "Bad", "capabilities": ["send_mail"]}
+        ).status_code
+        == 422
+    )
+    employee = client.post("/api/v1/employees", json={"name": "Alex", "role_id": role["id"]}).json()
+    path = f"/api/v1/agents/{legacy['agent_id']}"
+    before = client.get(path).json()
+    assert before["employee_id"] is None and before["employee_label"] == "Alex"
+    assigned = client.put(path + "/employee", json={"employee_id": employee["id"]})
+    assert assigned.status_code == 200
+    assert assigned.json()["role"]["id"] == role["id"]
+    assert assigned.json()["employee_label"] == "Alex"
+    assert client.delete("/api/v1/roles/" + role["id"]).status_code == 409
+    assert client.delete("/api/v1/employees/" + employee["id"]).status_code == 409
+    updated = client.put(
+        "/api/v1/roles/" + role["id"], json={"name": "Sales", "capabilities": ["web_research"]}
+    ).json()
+    assert updated["revision"] == 2
+    assert client.get(path).json()["role"]["capabilities"] == ["web_research"]
+    created = client.post(
+        "/api/v1/agents",
+        json={"display_name": "Assigned", "employee_id": employee["id"]},
+        headers={"Idempotency-Key": "assigned"},
+    )
+    assert created.status_code == 202
+    assert (
+        client.put(
+            f"/api/v1/agents/{created.json()['agent_id']}/employee",
+            json={"employee_id": employee["id"]},
+        ).status_code
+        == 409
+    )
+    assert len(client.get("/api/v1/capabilities").json()) == 3
+
+
+def test_employee_and_role_edits_and_deletion(client):
+    role = client.post("/api/v1/roles", json={"name": "Sales"}).json()
+    path = "/api/v1/roles/" + role["id"]
+    assert client.put(path, json={"name": "Renamed"}).json()["revision"] == 1
+    employee = client.post("/api/v1/employees", json={"name": "Alex", "role_id": role["id"]}).json()
+    ep = "/api/v1/employees/" + employee["id"]
+    assert (
+        client.put(
+            ep, json={"name": "Alexander", "email": "alex@example.com", "role_id": role["id"]}
+        ).status_code
+        == 200
+    )
+    assert client.put(ep, json={"name": "Alex", "role_id": str(uuid4())}).status_code == 404
+    assert client.delete(ep).status_code == 204
+    assert client.delete(path).status_code == 204

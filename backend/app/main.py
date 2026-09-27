@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from backend.app.administration import router as administration_router
 from backend.app.agents import router as agents_router
 from backend.app.config import get_settings
 from backend.app.db import get_engine
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
             "version": "0.1.0",
         }
 
+    app.include_router(administration_router)
     app.include_router(agents_router)
     app.include_router(diagnostics_router)
     app.include_router(inference_router)
