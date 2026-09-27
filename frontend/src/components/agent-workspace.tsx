@@ -661,6 +661,7 @@ export function AgentWorkspace({
                   <SidebarMenuItem key={agent.id}>
                     <SidebarMenuButton
                       isActive={active && selectedId === agent.id}
+                      aria-pressed={active && selectedId === agent.id}
                       className="h-11"
                       onClick={() => {
                         if (agent.id !== selectedId) setHistoryLoading(true);
@@ -1097,7 +1098,7 @@ export function AgentWorkspace({
             <span className="text-sm font-medium">{pageTitle}</span>
           )}
         </header>
-        <main
+        <div
           id="main-content"
           tabIndex={-1}
           className="flex min-h-0 flex-1 flex-col outline-none"
@@ -1470,7 +1471,7 @@ export function AgentWorkspace({
               </p>
             </div>
           </div>
-        </main>
+        </div>
       </SidebarInset>
       <Dialog
         open={createOpen}
