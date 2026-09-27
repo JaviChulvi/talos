@@ -12,6 +12,7 @@ import {
   LoaderCircle,
   Play,
   Plus,
+  ArrowLeft,
   ArrowUp,
   Square,
   Trash2,
@@ -57,14 +58,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -72,11 +65,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -238,14 +226,16 @@ export function AgentWorkspace({
   operationIds: Record<string, string>;
   onOperation: (agentId: string, id: string) => void;
 }) {
-  const active = page === "agents";
-  const { setOpenMobile, setOpen } = useSidebar();
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const settingsAgentId = /^agents\/([^/]+)\/settings$/.exec(page)?.[1];
+  const settingsActive = !!settingsAgentId;
+  const active = page === "agents" || settingsActive;
+  const { setOpenMobile } = useSidebar();
   const [agentView, setAgentView] = useState("settings");
   const [createOpen, setCreateOpen] = useState(false);
-  const [confirmation, setConfirmation] = useState<
-    "delete" | "apply-role" | null
-  >(null);
+  const [confirmation, setConfirmation] = useState<{
+    action: "delete" | "apply-role";
+    agentId: string;
+  } | null>(null);
   const conversation = useRef<HTMLDivElement>(null);
   const actionsTrigger = useRef<HTMLButtonElement>(null);
   const confirmationTrigger = useRef<HTMLElement | null>(null);
@@ -253,7 +243,8 @@ export function AgentWorkspace({
   const navigationTrigger = useRef<HTMLButtonElement>(null);
   const [modelId, setModelId] = useState<string | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const [chatAgentId, setChatAgentId] = useState(settingsAgentId ?? "");
+  const selectedId = settingsAgentId ?? chatAgentId;
   const [operation, setOperation] = useState<Operation | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
   const [events, setEvents] = useState<{ runId: string; items: RunEvent[] }>({
@@ -284,6 +275,11 @@ export function AgentWorkspace({
   const message = drafts[selectedId] ?? "";
 
   const selected = agents.find((agent) => agent.id === selectedId);
+  const hasSelected = !!selected;
+  useEffect(() => {
+    if (settingsActive && hasSelected)
+      document.getElementById("agent-settings-heading")?.focus();
+  }, [settingsActive, hasSelected, selectedId]);
   const runtimeName = runtimes[selected?.runtime_kind ?? "openclaw"];
   const effectiveModel = selected?.inference_override?.model_id ?? modelId;
   const operationId = operationIds[selectedId];
@@ -379,7 +375,7 @@ export function AgentWorkspace({
         )
           ? selectedId
           : (nextAgents[0]?.id ?? "");
-        setSelectedId(nextSelectedId);
+        setChatAgentId(nextSelectedId);
         setHistoryLoading(!!nextSelectedId && nextSelectedId !== selectedId);
         setOperation(nextOperation);
         setRuns(nextRuns);
@@ -447,7 +443,7 @@ export function AgentWorkspace({
         onOperation(result.agent_id, result.id);
         setOperation(result);
         if (result.agent_id !== selectedId) setHistoryLoading(true);
-        setSelectedId(result.agent_id);
+        setChatAgentId(result.agent_id);
         if (request.kind === "create") {
           setDisplayName("");
           setEmployeeLabel("");
@@ -507,27 +503,34 @@ export function AgentWorkspace({
   function lifecycle(
     action: "start" | "stop" | "delete" | "apply-role",
     confirmed = false,
+    agent = selected,
   ) {
-    if (!selected || writesDisabled || operationActive) return;
+    if (
+      !agent ||
+      writesDisabled ||
+      transitionalStates.has(agent.observed_state) ||
+      (agent.id === selectedId && operationActive)
+    )
+      return;
     if (
       !confirmed &&
       (action === "delete" ||
-        (action === "apply-role" && selected.desired_state === "running"))
+        (action === "apply-role" && agent.desired_state === "running"))
     ) {
       confirmationTrigger.current =
         document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null;
-      setConfirmation(action);
+      setConfirmation({ action, agentId: agent.id });
       return;
     }
     setConfirmation(null);
     void mutate({
-      path: `/agents/${selected.id}${action === "delete" ? "" : `/${action}`}`,
+      path: `/agents/${agent.id}${action === "delete" ? "" : `/${action}`}`,
       method: action === "delete" ? "DELETE" : "POST",
       key: crypto.randomUUID(),
       kind: "lifecycle",
-      agentId: selected.id,
+      agentId: agent.id,
     });
   }
 
@@ -588,7 +591,19 @@ export function AgentWorkspace({
 
   const navigate = () => {
     setOpenMobile(false);
-    setDetailsOpen(false);
+  };
+  const selectAgent = (id: string) => {
+    if (id !== selectedId) setHistoryLoading(true);
+    setChatAgentId(id);
+    window.location.assign("#agents");
+    navigate();
+  };
+  const openAgentSettings = (id: string) => {
+    if (id !== selectedId) setHistoryLoading(true);
+    setChatAgentId(id);
+    setAgentView("settings");
+    setOpenMobile(false);
+    window.location.assign(`#agents/${id}/settings`);
   };
   const pageTitle =
     page === "employees"
@@ -620,10 +635,8 @@ export function AgentWorkspace({
             <Button
               variant="ghost"
               size="icon-sm"
-              onClick={() => {
-                setOpen(false);
-                setOpenMobile(false);
-              }}
+              className="md:hidden"
+              onClick={() => setOpenMobile(false)}
               aria-label="Close sidebar"
             >
               <PanelLeftClose />
@@ -662,34 +675,117 @@ export function AgentWorkspace({
                     <SidebarMenuButton
                       isActive={active && selectedId === agent.id}
                       aria-pressed={active && selectedId === agent.id}
-                      className="h-11"
-                      onClick={() => {
-                        if (agent.id !== selectedId) setHistoryLoading(true);
-                        setSelectedId(agent.id);
-                        window.location.assign("#agents");
-                        navigate();
-                      }}
+                      className="h-14 gap-3 pr-11"
+                      onClick={() => selectAgent(agent.id)}
                       tooltip={agent.display_name}
                     >
                       <RuntimeIcon
                         kind={agent.runtime_kind}
-                        className="size-4"
+                        className="size-5 shrink-0"
                       />
-                      <span>{agent.display_name}</span>
-                      <span
-                        className={cn(
-                          "ml-auto size-1.5 shrink-0 rounded-full",
-                          ["ready", "running"].includes(agent.observed_state)
-                            ? "bg-success"
-                            : ["failed", "error"].includes(agent.observed_state)
-                              ? "bg-warning"
-                              : "bg-muted-foreground",
-                        )}
-                      />
-                      <span className="sr-only">
-                        {agent.observed_state.replaceAll("_", " ")}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">
+                          {agent.display_name}
+                        </span>
+                        <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              "size-2 shrink-0 rounded-full",
+                              ["ready", "running"].includes(agent.observed_state)
+                                ? "bg-success"
+                                : ["failed", "error", "unknown"].includes(
+                                      agent.observed_state,
+                                    )
+                                  ? "bg-warning"
+                                  : "bg-muted-foreground",
+                            )}
+                          />
+                          <span className="truncate capitalize">
+                            {agent.observed_state.replaceAll("_", " ")}
+                          </span>
+                        </span>
                       </span>
                     </SidebarMenuButton>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="absolute right-1 top-1/2 -translate-y-1/2"
+                          aria-label={`Actions for ${agent.display_name}`}
+                          onClick={(event) => {
+                            actionsTrigger.current = event.currentTarget;
+                          }}
+                        >
+                          <MoreHorizontal />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onSelect={() => openAgentSettings(agent.id)}
+                        >
+                          <Settings2 />
+                          Agent settings
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          disabled={
+                            writesDisabled ||
+                            transitionalStates.has(agent.observed_state) ||
+                            (agent.id === selectedId && operationActive) ||
+                            ["ready", "running", "deleted"].includes(
+                              agent.observed_state,
+                            )
+                          }
+                          onSelect={() => {
+                            selectAgent(agent.id);
+                            lifecycle("start", false, agent);
+                          }}
+                        >
+                          <Play />
+                          Start agent
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={
+                            writesDisabled ||
+                            transitionalStates.has(agent.observed_state) ||
+                            (agent.id === selectedId && operationActive) ||
+                            ["stopped", "deleted"].includes(
+                              agent.observed_state,
+                            )
+                          }
+                          onSelect={() => {
+                            selectAgent(agent.id);
+                            lifecycle("stop", false, agent);
+                          }}
+                        >
+                          <Square />
+                          Stop agent
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          disabled={
+                            writesDisabled ||
+                            transitionalStates.has(agent.observed_state) ||
+                            (agent.id === selectedId && operationActive) ||
+                            agent.observed_state === "deleted"
+                          }
+                          onSelect={() => {
+                            selectAgent(agent.id);
+                            confirmationTrigger.current = actionsTrigger.current;
+                            setConfirmation({
+                              action: "delete",
+                              agentId: agent.id,
+                            });
+                          }}
+                        >
+                          <Trash2 />
+                          Delete agent
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </SidebarMenuItem>
                 ))
               )}
@@ -750,350 +846,19 @@ export function AgentWorkspace({
         <header className="flex h-16 shrink-0 items-center gap-3 px-4 sm:px-6">
           <SidebarTrigger ref={navigationTrigger} className="-ml-1 size-10" />
           {active ? (
-            <>
-              <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-2">
                 <h1 className="truncate text-base font-medium">
                   {selected?.display_name ?? "Talos"}
                 </h1>
-                {selected && (
-                  <p className="truncate text-xs text-muted-foreground">
-                    {runtimeName}
-                    <span className="mx-1.5">·</span>
-                    {selected.observed_state.replaceAll("_", " ")}
-                  </p>
-                )}
+                {selected && <StateBadge state={selected.observed_state} />}
               </div>
               {selected && (
-                <>
-                  <Sheet open={detailsOpen} onOpenChange={setDetailsOpen}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <SheetTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Agent settings"
-                            onClick={() => setAgentView("settings")}
-                          >
-                            <Settings2 />
-                          </Button>
-                        </SheetTrigger>
-                      </TooltipTrigger>
-                      <TooltipContent>Agent settings</TooltipContent>
-                    </Tooltip>
-                    <SheetContent
-                      className="w-full overflow-y-auto sm:max-w-lg"
-                      onCloseAutoFocus={(event) => {
-                        if (!active) event.preventDefault();
-                      }}
-                    >
-                      <SheetHeader>
-                        <SheetTitle>{selected.display_name}</SheetTitle>
-                        <SheetDescription>
-                          {runtimeName} ·{" "}
-                          {selected.employee_name || "Unassigned"}
-                        </SheetDescription>
-                      </SheetHeader>
-                      <Tabs
-                        value={agentView}
-                        onValueChange={setAgentView}
-                        className="px-5 pb-8"
-                      >
-                        <TabsList className="mb-5 w-full">
-                          <TabsTrigger value="settings">Settings</TabsTrigger>
-                          <TabsTrigger value="permissions">
-                            Permissions
-                          </TabsTrigger>
-                        </TabsList>
-                        <TabsContent value="settings">
-                          {selected.runtime_mode === "native" ? (
-                            <div className="space-y-5">
-                              <NativeModelSettings
-                                key={selected.id}
-                                agentId={selected.id}
-                                modelId={
-                                  selected.inference_override?.model_id ?? null
-                                }
-                                disabled={writesDisabled || operationActive}
-                                onOperation={onOperation}
-                              />
-                              <div>
-                                <h3 className="flex items-center gap-3 font-semibold">
-                                  <RuntimeIcon
-                                    kind={selected.runtime_kind}
-                                    className="size-8"
-                                  />
-                                  Your {runtimeName} workspace
-                                </h3>
-                                <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
-                                  Open {runtimeName} to manage native settings,
-                                  credentials and integrations. Your
-                                  configuration and files persist across stops
-                                  and starts.
-                                </p>
-                              </div>
-                              <Button
-                                disabled={
-                                  writesDisabled ||
-                                  operationActive ||
-                                  selected.observed_state !== "ready"
-                                }
-                                onClick={openNativeWorkspace}
-                              >
-                                <ExternalLink aria-hidden="true" />
-                                {selectedOperation?.action === "dashboard" &&
-                                operationActive
-                                  ? `Opening ${runtimeName}…`
-                                  : `Open ${runtimeName}`}
-                              </Button>
-                              {selectedOperation?.dashboard_url && (
-                                <p className="text-sm">
-                                  <a
-                                    href={selectedOperation.dashboard_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-primary underline underline-offset-4"
-                                  >
-                                    Continue if the new tab did not open
-                                  </a>
-                                </p>
-                              )}
-                              <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-                                {selected.observed_state !== "ready"
-                                  ? "Start this agent to open its workspace."
-                                  : `First visit: ${selected.runtime_kind === "hermes" ? "sign in as talos with the dashboard password you chose, then " : ""}configure a provider in ${runtimeName} if you selected “Handled by agent”.`}
-                              </p>
-                              <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
-                                Assigned agents use their applied role
-                                permissions. Saving a role does not change
-                                running agents. Remote Docker hosts require a
-                                tunnel for the workspace port.
-                              </p>
-                            </div>
-                          ) : (
-                            <div>
-                              <InferenceSettings
-                                key={selected.id}
-                                agentId={selected.id}
-                                onSaved={(selection) =>
-                                  setAgents((current) =>
-                                    current.map((agent) =>
-                                      agent.id === selected.id
-                                        ? {
-                                            ...agent,
-                                            inference_override:
-                                              selection.inherited
-                                                ? null
-                                                : selection,
-                                          }
-                                        : agent,
-                                    ),
-                                  )
-                                }
-                              />
-                            </div>
-                          )}
-                        </TabsContent>
-                        <TabsContent value="permissions" className="space-y-5">
-                          {" "}
-                          <div>
-                            <Label
-                              htmlFor="assigned-employee"
-                              className="mb-2 block text-sm font-medium"
-                            >
-                              Employee assignment
-                            </Label>
-                            <Select
-                              value={selected.employee_id ?? ""}
-                              disabled={
-                                writesDisabled ||
-                                operationActive ||
-                                selected.desired_state !== "stopped" ||
-                                selected.observed_state !== "stopped"
-                              }
-                              onValueChange={(value) =>
-                                void assignEmployee(value)
-                              }
-                            >
-                              <SelectTrigger
-                                id="assigned-employee"
-                                className="w-full"
-                              >
-                                <SelectValue placeholder="Choose an employee" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {employees.map((employee) => (
-                                  <SelectItem
-                                    key={employee.id}
-                                    value={employee.id}
-                                  >
-                                    {employee.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <p className="mt-2 text-xs text-muted-foreground">
-                              Stop the agent before changing its assignment.{" "}
-                              <a
-                                href="#employees"
-                                className="text-primary underline"
-                              >
-                                Manage employees
-                              </a>
-                            </p>
-                          </div>
-                          {selected.runtime_mode === "managed" ? (
-                            <p className="text-sm text-muted-foreground">
-                              Managed conversations have no native tools,
-                              regardless of the assigned role.
-                            </p>
-                          ) : selected.role ? (
-                            <>
-                              <div className="flex flex-wrap items-center gap-3">
-                                <h3 className="font-semibold">
-                                  {selected.role.name}
-                                </h3>
-                                <Badge
-                                  variant={
-                                    selected.permissions_pending
-                                      ? "warning"
-                                      : "success"
-                                  }
-                                >
-                                  {selected.permissions_pending
-                                    ? "Changes pending"
-                                    : "Applied"}
-                                </Badge>
-                              </div>
-                              <dl className="grid gap-5 sm:grid-cols-2">
-                                <div>
-                                  <dt className="text-sm font-medium">
-                                    Saved permissions · revision{" "}
-                                    {selected.role.revision}
-                                  </dt>
-                                  <dd className="mt-2 text-sm text-muted-foreground">
-                                    {selected.role.capabilities
-                                      .map(
-                                        (id) =>
-                                          catalog.find(
-                                            (capability) =>
-                                              capability.id === id,
-                                          )?.name ?? id,
-                                      )
-                                      .join(", ") || "No tools"}
-                                  </dd>
-                                </div>
-                                <div>
-                                  <dt className="text-sm font-medium">
-                                    Applied permissions
-                                    {selected.applied_role
-                                      ? ` · ${selected.applied_role.name}, revision ${selected.applied_role.revision}`
-                                      : ""}
-                                  </dt>
-                                  <dd className="mt-2 text-sm text-muted-foreground">
-                                    {selected.applied_role
-                                      ? selected.applied_role.capabilities
-                                          .map(
-                                            (id) =>
-                                              catalog.find(
-                                                (capability) =>
-                                                  capability.id === id,
-                                              )?.name ?? id,
-                                          )
-                                          .join(", ") || "No tools"
-                                      : "Not applied yet"}
-                                  </dd>
-                                </div>
-                              </dl>
-                              <p className="text-sm text-muted-foreground">
-                                Apply interrupts running work and restarts the
-                                agent if it was running. Starting a stopped
-                                agent applies its current role automatically.
-                              </p>
-                              <Button
-                                variant="outline"
-                                disabled={writesDisabled || operationActive}
-                                onClick={() => lifecycle("apply-role")}
-                              >
-                                Apply saved role
-                              </Button>
-                              <p className="text-xs leading-relaxed text-muted-foreground">
-                                Terminal execution permits file and network
-                                operations even when dedicated tools are
-                                disabled. Native settings are a trusted
-                                administrator surface; direct edits there are
-                                outside role management.
-                              </p>
-                            </>
-                          ) : (
-                            <p className="text-sm text-muted-foreground">
-                              This agent uses its existing native permissions.
-                              Assign an employee to manage it through a role.
-                            </p>
-                          )}
-                        </TabsContent>
-                      </Tabs>
-                    </SheetContent>
-                  </Sheet>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        ref={actionsTrigger}
-                        aria-label="Agent actions"
-                      >
-                        <MoreHorizontal />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        disabled={
-                          writesDisabled ||
-                          operationActive ||
-                          ["ready", "running", "deleted"].includes(
-                            selected.observed_state,
-                          )
-                        }
-                        onSelect={() => lifecycle("start")}
-                      >
-                        <Play />
-                        Start agent
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        disabled={
-                          writesDisabled ||
-                          operationActive ||
-                          ["stopped", "deleted"].includes(
-                            selected.observed_state,
-                          )
-                        }
-                        onSelect={() => lifecycle("stop")}
-                      >
-                        <Square />
-                        Stop agent
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        variant="destructive"
-                        disabled={
-                          writesDisabled ||
-                          operationActive ||
-                          selected.observed_state === "deleted"
-                        }
-                        onSelect={() => {
-                          confirmationTrigger.current = actionsTrigger.current;
-                          setConfirmation("delete");
-                        }}
-                      >
-                        <Trash2 />
-                        Delete agent
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </>
+                <p className="truncate text-xs text-muted-foreground">
+                  {runtimeName}
+                </p>
               )}
-            </>
+            </div>
           ) : (
             <span className="text-sm font-medium">{pageTitle}</span>
           )}
@@ -1104,7 +869,7 @@ export function AgentWorkspace({
           className="flex min-h-0 flex-1 flex-col outline-none"
         >
           <section
-            hidden={!active}
+            hidden={!active || settingsActive}
             aria-label="Agent workspace"
             className="flex min-h-0 flex-1 flex-col"
           >
@@ -1367,10 +1132,7 @@ export function AgentWorkspace({
                           variant="ghost"
                           size="sm"
                           className="max-w-[70%] text-muted-foreground"
-                          onClick={() => {
-                            setAgentView("settings");
-                            setDetailsOpen(true);
-                          }}
+                          onClick={() => openAgentSettings(selected.id)}
                         >
                           <span className="truncate">
                             {selected.runtime_mode === "native"
@@ -1461,6 +1223,287 @@ export function AgentWorkspace({
                 </div>
               </>
             )}
+          </section>
+          <section
+            hidden={!settingsActive}
+            aria-label="Agent settings"
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="w-full max-w-3xl px-5 py-8 sm:px-8 sm:py-10">
+              <Button variant="ghost" size="sm" className="-ml-3 mb-6" asChild>
+                <a
+                  href="#agents"
+                  onClick={() => {
+                    if (selected) setChatAgentId(selected.id);
+                    navigate();
+                  }}
+                >
+                  <ArrowLeft />
+                  Back to chat
+                </a>
+              </Button>
+              {selected ? (
+                <>
+                  <div className="mb-8">
+                    <h2
+                      id="agent-settings-heading"
+                      tabIndex={-1}
+                      className="text-2xl font-semibold tracking-tight"
+                    >
+                      Agent settings
+                    </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {selected.display_name} · {runtimeName} ·{" "}
+                      {selected.employee_name || "Unassigned"}
+                    </p>
+                  </div>
+                  <Tabs
+                    value={agentView}
+                    onValueChange={setAgentView}
+                    className="pb-8"
+                  >
+                    <TabsList className="mb-7 w-full sm:w-72">
+                      <TabsTrigger value="settings">Settings</TabsTrigger>
+                      <TabsTrigger value="permissions">
+                        Permissions
+                      </TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="settings">
+                      {selected.runtime_mode === "native" ? (
+                        <div className="space-y-5">
+                          <NativeModelSettings
+                            key={selected.id}
+                            agentId={selected.id}
+                            modelId={
+                              selected.inference_override?.model_id ?? null
+                            }
+                            disabled={writesDisabled || operationActive}
+                            onOperation={onOperation}
+                          />
+                          <div>
+                            <h3 className="flex items-center gap-3 font-semibold">
+                              <RuntimeIcon
+                                kind={selected.runtime_kind}
+                                className="size-8"
+                              />
+                              Your {runtimeName} workspace
+                            </h3>
+                            <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
+                              Open {runtimeName} to manage native settings,
+                              credentials and integrations. Your
+                              configuration and files persist across stops
+                              and starts.
+                            </p>
+                          </div>
+                          <Button
+                            disabled={
+                              writesDisabled ||
+                              operationActive ||
+                              selected.observed_state !== "ready"
+                            }
+                            onClick={openNativeWorkspace}
+                          >
+                            <ExternalLink aria-hidden="true" />
+                            {selectedOperation?.action === "dashboard" &&
+                            operationActive
+                              ? `Opening ${runtimeName}…`
+                              : `Open ${runtimeName}`}
+                          </Button>
+                          {selectedOperation?.dashboard_url && (
+                            <p className="text-sm">
+                              <a
+                                href={selectedOperation.dashboard_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary underline underline-offset-4"
+                              >
+                                Continue if the new tab did not open
+                              </a>
+                            </p>
+                          )}
+                          <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
+                            {selected.observed_state !== "ready"
+                              ? "Start this agent to open its workspace."
+                              : `First visit: ${selected.runtime_kind === "hermes" ? "sign in as talos with the dashboard password you chose, then " : ""}configure a provider in ${runtimeName} if you selected “Handled by agent”.`}
+                          </p>
+                          <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
+                            Assigned agents use their applied role
+                            permissions. Saving a role does not change
+                            running agents. Remote Docker hosts require a
+                            tunnel for the workspace port.
+                          </p>
+                        </div>
+                      ) : (
+                        <div>
+                          <InferenceSettings
+                            key={selected.id}
+                            agentId={selected.id}
+                            onSaved={(selection) =>
+                              setAgents((current) =>
+                                current.map((agent) =>
+                                  agent.id === selected.id
+                                    ? {
+                                        ...agent,
+                                        inference_override:
+                                          selection.inherited
+                                            ? null
+                                            : selection,
+                                      }
+                                    : agent,
+                                ),
+                              )
+                            }
+                          />
+                        </div>
+                      )}
+                    </TabsContent>
+                    <TabsContent value="permissions" className="space-y-5">
+                      <div>
+                        <Label
+                          htmlFor="assigned-employee"
+                          className="mb-2 block text-sm font-medium"
+                        >
+                          Employee assignment
+                        </Label>
+                        <Select
+                          value={selected.employee_id ?? ""}
+                          disabled={
+                            writesDisabled ||
+                            operationActive ||
+                            selected.desired_state !== "stopped" ||
+                            selected.observed_state !== "stopped"
+                          }
+                          onValueChange={(value) =>
+                            void assignEmployee(value)
+                          }
+                        >
+                          <SelectTrigger
+                            id="assigned-employee"
+                            className="w-full"
+                          >
+                            <SelectValue placeholder="Choose an employee" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {employees.map((employee) => (
+                              <SelectItem
+                                key={employee.id}
+                                value={employee.id}
+                              >
+                                {employee.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          Stop the agent before changing its assignment.{" "}
+                          <a
+                            href="#employees"
+                            className="text-primary underline"
+                          >
+                            Manage employees
+                          </a>
+                        </p>
+                      </div>
+                      {selected.runtime_mode === "managed" ? (
+                        <p className="text-sm text-muted-foreground">
+                          Managed conversations have no native tools,
+                          regardless of the assigned role.
+                        </p>
+                      ) : selected.role ? (
+                        <>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <h3 className="font-semibold">
+                              {selected.role.name}
+                            </h3>
+                            <Badge
+                              variant={
+                                selected.permissions_pending
+                                  ? "warning"
+                                  : "success"
+                              }
+                            >
+                              {selected.permissions_pending
+                                ? "Changes pending"
+                                : "Applied"}
+                            </Badge>
+                          </div>
+                          <dl className="grid gap-5 sm:grid-cols-2">
+                            <div>
+                              <dt className="text-sm font-medium">
+                                Saved permissions · revision{" "}
+                                {selected.role.revision}
+                              </dt>
+                              <dd className="mt-2 text-sm text-muted-foreground">
+                                {selected.role.capabilities
+                                  .map(
+                                    (id) =>
+                                      catalog.find(
+                                        (capability) =>
+                                          capability.id === id,
+                                      )?.name ?? id,
+                                  )
+                                  .join(", ") || "No tools"}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt className="text-sm font-medium">
+                                Applied permissions
+                                {selected.applied_role
+                                  ? ` · ${selected.applied_role.name}, revision ${selected.applied_role.revision}`
+                                  : ""}
+                              </dt>
+                              <dd className="mt-2 text-sm text-muted-foreground">
+                                {selected.applied_role
+                                  ? selected.applied_role.capabilities
+                                      .map(
+                                        (id) =>
+                                          catalog.find(
+                                            (capability) =>
+                                              capability.id === id,
+                                          )?.name ?? id,
+                                      )
+                                      .join(", ") || "No tools"
+                                  : "Not applied yet"}
+                              </dd>
+                            </div>
+                          </dl>
+                          <p className="text-sm text-muted-foreground">
+                            Apply interrupts running work and restarts the
+                            agent if it was running. Starting a stopped
+                            agent applies its current role automatically.
+                          </p>
+                          <Button
+                            variant="outline"
+                            disabled={writesDisabled || operationActive}
+                            onClick={() => lifecycle("apply-role")}
+                          >
+                            Apply saved role
+                          </Button>
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            Terminal execution permits file and network
+                            operations even when dedicated tools are
+                            disabled. Native settings are a trusted
+                            administrator surface; direct edits there are
+                            outside role management.
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          This agent uses its existing native permissions.
+                          Assign an employee to manage it through a role.
+                        </p>
+                      )}
+                    </TabsContent>
+                  </Tabs>
+                </>
+              ) : loading ? (
+                <Skeleton className="h-48 w-full" />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  This agent is no longer available.
+                </p>
+              )}
+            </div>
           </section>
           <div hidden={active} className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-10 sm:py-10">
@@ -1720,46 +1763,56 @@ export function AgentWorkspace({
           </form>
         </DialogContent>
       </Dialog>
-      <AlertDialog
-        open={!!confirmation}
-        onOpenChange={(open) => {
-          if (!open) setConfirmation(null);
-        }}
-      >
-        <AlertDialogContent
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            (confirmationTrigger.current?.isConnected
-              ? confirmationTrigger.current
-              : (actionsTrigger.current ?? navigationTrigger.current)
-            )?.focus();
+      {confirmation && (
+        <AlertDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setConfirmation(null);
           }}
         >
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {confirmation === "delete"
-                ? `Delete ${selected?.display_name}?`
-                : "Apply saved role?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmation === "delete"
-                ? "This removes its runtime and private agent state. This cannot be undone."
-                : "Running work will be interrupted. This agent will restart with the captured permissions."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant={confirmation === "delete" ? "destructive" : "default"}
-              onClick={() => {
-                if (confirmation) lifecycle(confirmation, true);
-              }}
-            >
-              {confirmation === "delete" ? "Delete agent" : "Apply and restart"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+          <AlertDialogContent
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              (confirmationTrigger.current?.isConnected
+                ? confirmationTrigger.current
+                : (actionsTrigger.current ?? navigationTrigger.current)
+              )?.focus();
+            }}
+          >
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {confirmation.action === "delete"
+                  ? `Delete ${agents.find((agent) => agent.id === confirmation.agentId)?.display_name ?? "agent"}?`
+                  : "Apply saved role?"}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {confirmation.action === "delete"
+                  ? "This removes its runtime and private agent state. This cannot be undone."
+                  : "Running work will be interrupted. This agent will restart with the captured permissions."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant={
+                  confirmation.action === "delete" ? "destructive" : "default"
+                }
+                onClick={() => {
+                  lifecycle(
+                    confirmation.action,
+                    true,
+                    agents.find((agent) => agent.id === confirmation.agentId),
+                  );
+                }}
+              >
+                {confirmation.action === "delete"
+                  ? "Delete agent"
+                  : "Apply and restart"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </>
   );
 }
