@@ -1,4 +1,4 @@
-"""Durable diagnostic requests; the worker alone talks to OpenClaw."""
+"""Durable conversation requests; only the worker talks to agent runtimes."""
 
 from datetime import datetime
 from typing import Annotated
@@ -100,23 +100,24 @@ def create_run(
             select(Run.id).where(Run.agent_id == agent_id, Run.status.in_(ACTIVE_RUN_STATUSES))
         ):
             raise HTTPException(409, "Agent has an active or unresolved diagnostic run")
-        if agent.runtime_mode == "native":
-            raise HTTPException(409, "Use this agent’s native interface for conversations")
+        native = agent.runtime_mode == "native"
         config = agent.inference_override or config_response(session.get(InferenceConfig, 1))
-        managed = agent.model_route != "fixture"
+        managed = not native and agent.model_route != "fixture"
         if managed and config["model_id"] != "fixture" and not config["capabilities"]:
             raise HTTPException(409, "Apply the model selection once to load its capabilities")
         run = Run(
             agent_id=agent_id,
             incarnation_id=agent.current_incarnation_id,
             message=body.message,
-            model_id=config["model_id"] if managed else "fixture",
+            model_id="native" if native else config["model_id"] if managed else "fixture",
             inference={
                 "settings": config["settings"],
                 "capabilities": config["capabilities"],
                 "source": "agent" if agent.inference_override else "workspace",
             }
             if managed
+            else {"source": "native"}
+            if native
             else {},
             idempotency_key=idempotency_key,
             request_hash=digest,
@@ -125,6 +126,15 @@ def create_run(
         session.flush()
         append_event(session, run, "queued", {})
         return run
+
+
+@router.get("/agents/{agent_id}/runs", response_model=list[RunResponse])
+def list_runs(agent_id: UUID, session: Database):
+    if session.get(Agent, agent_id) is None:
+        raise HTTPException(404, "Agent not found")
+    return session.scalars(
+        select(Run).where(Run.agent_id == agent_id).order_by(Run.created_at.desc()).limit(20)
+    ).all()
 
 
 @router.get("/runs/{run_id}", response_model=RunResponse)

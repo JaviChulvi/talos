@@ -1,0 +1,188 @@
+"""Native Hermes chat over its structured CLI, inside the owned agent container."""
+
+import asyncio
+import json
+import socket
+
+from docker.utils.socket import frames_iter
+
+from backend.app.config import get_settings
+
+# The supervisor owns the child for its entire lifetime. Cancellation and a lost
+# worker connection both reap it; the CLI never reads the control channel.
+BRIDGE = r"""
+import json, os, select, signal, subprocess, sys
+from contextlib import suppress
+from pathlib import Path
+control = sys.stdin.buffer.raw
+request = json.loads(control.readline())
+path = Path('/opt/data/talos-chat-session')
+command = ['hermes', 'chat', '--oneshot', '--format', 'stream-json',
+           '--query', request['message']]
+if path.exists():
+    command += ['--resume', path.read_text().strip()]
+else:
+    command += ['--continue', request['session'], '--create-if-missing']
+child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+cancelled = False
+buffer = b''
+try:
+    while True:
+        ready, _, _ = select.select([control, child.stdout], [], [], 0.25)
+        if control in ready:
+            # Only cancel can follow the initial message; EOF also cancels.
+            control.readline()
+            cancelled = True
+            break
+        if child.stdout in ready:
+            chunk = os.read(child.stdout.fileno(), 65536)
+            if not chunk:
+                break
+            buffer += chunk
+            while b'\n' in buffer:
+                line, buffer = buffer.split(b'\n', 1)
+                if len(line) > request['max_frame']:
+                    raise ValueError('Hermes frame too large')
+                # Hermes 0.21.5 prints its optional scanner warning on stdout.
+                # Only JSON records belong to the chat protocol.
+                if not line.startswith(b'{'):
+                    continue
+                event = json.loads(line)
+                if event.get('session_id'):
+                    # Keep the actual native identity even if its title changes.
+                    temp = path.with_suffix('.next')
+                    temp.write_text(event['session_id'])
+                    temp.chmod(0o600)
+                    temp.replace(path)
+                print(json.dumps(event), flush=True)
+            if len(buffer) > request['max_frame']:
+                raise ValueError('Hermes frame too large')
+finally:
+    if cancelled or child.poll() is None:
+        with suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGTERM)
+        try:
+            child.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass
+        with suppress(ProcessLookupError):
+            os.killpg(child.pid, signal.SIGKILL)
+    child.wait()
+print(json.dumps({'type': 'talos_exit', 'cancelled': cancelled,
+                  'exit_code': child.returncode}), flush=True)
+"""
+
+
+class HermesClient:
+    def __init__(self, docker_client, container_id):
+        self.docker = docker_client
+        self.container_id = container_id
+        self.connection = None
+        self.reader = None
+        self.events = asyncio.Queue()
+        self.run_id = None
+        self.output = ""
+        self.max_frame = get_settings().inference_max_output_chars * 6 + 65536
+
+    async def send(self, session: str, message: str, run_id: str) -> dict:
+        self.run_id = run_id
+        api = self.docker.api
+        execution = await asyncio.to_thread(
+            api.exec_create,
+            self.container_id,
+            ["python", "-u", "-c", BRIDGE],
+            stdin=True,
+            stdout=True,
+            stderr=False,
+            user="10000:10000",
+            workdir="/opt/data/workspace",
+        )
+        self.connection = await asyncio.to_thread(api.exec_start, execution["Id"], socket=True)
+        self.reader = asyncio.create_task(self._read())
+        await asyncio.to_thread(
+            self.connection._sock.sendall,
+            (
+                json.dumps(
+                    {
+                        "session": session,
+                        "message": message,
+                        "max_frame": self.max_frame,
+                    }
+                )
+                + "\n"
+            ).encode(),
+        )
+        return {"runId": run_id}
+
+    async def _read(self):
+        buffer = b""
+        result = None
+        try:
+            frames = frames_iter(self.connection, tty=False)
+            while (frame := await asyncio.to_thread(next, frames, None)) is not None:
+                stream, data = frame
+                if stream != 1:
+                    continue
+                buffer += data
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    if len(line) > self.max_frame:
+                        raise ValueError("Hermes frame too large")
+                    event = json.loads(line)
+                    if event["type"] == "text":
+                        self.output += event["text"]
+                        if len(self.output) > get_settings().inference_max_output_chars:
+                            raise ValueError("Hermes output too large")
+                        await self._event("delta", deltaText=event["text"])
+                    elif event["type"] == "result":
+                        result = event
+                    elif event["type"] == "talos_exit":
+                        if event["cancelled"]:
+                            await self._event("aborted", message={"content": self.output})
+                        elif result is not None:
+                            await self._event(
+                                "error" if result["exit_code"] else "final",
+                                message={"content": result["text"]},
+                            )
+                        else:
+                            # A process exit without a result cannot prove delivery.
+                            await self.events.put({"type": "disconnect"})
+                        return
+                if len(buffer) > self.max_frame:
+                    raise ValueError("Hermes frame too large")
+            await self.events.put({"type": "disconnect"})
+        except (OSError, ValueError, KeyError):
+            await self.events.put({"type": "disconnect"})
+
+    async def _event(self, state, **payload):
+        await self.events.put(
+            {
+                "event": "chat",
+                "payload": {
+                    "runId": self.run_id,
+                    "state": state,
+                    **payload,
+                },
+            }
+        )
+
+    async def next_event(self, timeout=0.25):
+        return await asyncio.wait_for(self.events.get(), timeout)
+
+    async def abort(self, session, run_id):
+        await asyncio.to_thread(self.connection._sock.sendall, b'{"cancel":true}\n')
+
+    async def close(self):
+        try:
+            if self.connection is not None:
+                try:
+                    self.connection._sock.shutdown(socket.SHUT_WR)
+                    if self.reader:
+                        await asyncio.wait_for(asyncio.shield(self.reader), timeout=5)
+                finally:
+                    self.connection.close()
+                    if self.reader and not self.reader.done():
+                        self.reader.cancel()
+        finally:
+            self.docker.close()
