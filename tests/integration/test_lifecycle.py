@@ -701,3 +701,40 @@ def test_stopped_role_application_never_starts_and_failure_stays_stopped(
     assert not [
         c for c in worker.client.containers.items.values() if "io.talos.incarnation" in c.labels
     ]
+
+
+@pytest.mark.parametrize("ownership_conflict", [False, True])
+def test_role_stop_failure_is_durable_and_does_not_block_other_agents(
+    client, worker, session_maker, role_agent, monkeypatch, ownership_conflict
+):
+    agent_id, _, _ = role_agent
+    path = "/api/v1/agents/" + agent_id
+    client.post(path + "/start", headers={"Idempotency-Key": "start-before-stop-failure"})
+    worker.process_one()
+    with session_maker() as session:
+        incarnation = session.get(
+            WorkloadIncarnation, session.get(Agent, UUID(agent_id)).current_incarnation_id
+        )
+    container = worker.owned_container(incarnation)
+    if ownership_conflict:
+        container.labels["io.talos.agent"] = "foreign"
+    else:
+        monkeypatch.setattr(container, "stop", Mock(side_effect=OSError("Docker unavailable")))
+    operation = client.post(
+        path + "/apply-role", headers={"Idempotency-Key": "stop-failure"}
+    ).json()
+    attempts = 1 if ownership_conflict else 5
+    for attempt in range(1, attempts + 1):
+        assert worker.process_one()
+        with session_maker.begin() as session:
+            current = session.get(Operation, UUID(operation["id"]))
+            assert current.status == ("failed" if attempt == attempts else "retry_wait")
+            assert "stop could not be confirmed" in current.error
+            current.next_retry_at = None
+    agent = client.get(path).json()
+    assert agent["observed_state"] == "error"  # Never claim an unconfirmed stop succeeded.
+    assert agent["desired_state"] == "stopped"
+    assert container.status == "running"
+    other = create(client, key="after-stop-failure").json()
+    assert worker.process_one()
+    assert client.get("/api/v1/operations/" + other["id"]).json()["status"] == "succeeded"

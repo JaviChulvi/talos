@@ -222,6 +222,16 @@ def test_role_config_validates_in_pinned_native_image_and_preserves_state(runtim
             native=True,
             runtime_kind=runtime_kind,
         )
+        # A killed worker leaves this named initializer behind. Docker adds the
+        # pinned image's own labels, which are not an ownership conflict.
+        orphan = client.containers.create(
+            incarnation.image_digest,
+            name=incarnation.config_volume + "-permissions",
+            entrypoint=["true"],
+            labels=labels,
+            network_mode="none",
+        )
+        assert orphan.labels != labels
         for capabilities in (
             [],
             ["web_research"],

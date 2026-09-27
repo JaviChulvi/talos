@@ -38,29 +38,22 @@ from worker.openclaw import DeviceIdentity, GatewayError, OpenClawClient
 from worker.runtime import (
     IMAGE,
     NATIVE_IMAGES,
+    OwnershipError,
     apply_native_permissions,
     approve_device,
     launch_options,
     model_profile,
     native_config,
     prepare_volumes,
+    require_labels,
     runtime_config,
 )
 
 MAX_ATTEMPTS = 5
 
 
-class OwnershipError(RuntimeError):
-    pass
-
-
 class StorageFullError(RuntimeError):
     message = "Docker storage is full. Free Docker disk space, then start the agent again."
-
-
-def require_labels(actual: dict, expected: dict):
-    if any(actual.get(key) != value for key, value in expected.items()):
-        raise OwnershipError("Docker resource does not belong to this agent installation")
 
 
 @contextmanager
@@ -858,6 +851,7 @@ class Worker:
         except OperationalError:
             raise
         except Exception as error:
+            stop_error = None
             if operation.role_application:
                 with self.sessions() as session:
                     incarnations = session.scalars(
@@ -866,7 +860,10 @@ class Worker:
                         )
                     ).all()
                 for incarnation in incarnations:
-                    self.stop_incarnation(incarnation)
+                    try:
+                        self.stop_incarnation(incarnation)
+                    except Exception as cause:
+                        stop_error = cause
             message = (
                 StorageFullError.message
                 if isinstance(error, StorageFullError)
@@ -877,6 +874,12 @@ class Worker:
                     else f"{type(error).__name__}: lifecycle operation failed"
                 )
             )
+            if stop_error is not None:
+                message = (
+                    f"Role application failed ({type(error).__name__}); runtime stop could not "
+                    f"be confirmed ({type(stop_error).__name__}). Inspect Docker runtime state "
+                    "before retrying Start or Apply."
+                )
             logging.error(
                 "Lifecycle %s failed for operation %s: %s",
                 operation.action,
@@ -887,7 +890,7 @@ class Worker:
                 current = session.get(Operation, operation.id)
                 terminal = current.attempts >= MAX_ATTEMPTS or isinstance(
                     error, (OwnershipError, StorageFullError)
-                )
+                ) or isinstance(stop_error, OwnershipError)
                 current.status = "failed" if terminal else "retry_wait"
                 current.error = message
                 current.next_retry_at = (
@@ -899,11 +902,12 @@ class Worker:
                 agent = session.get(Agent, operation.agent_id)
                 if operation.action != "dashboard":
                     agent.observed_state, agent.last_error = (
-                        "stopped" if operation.role_application else "error",
+                        "stopped" if operation.role_application and stop_error is None else "error",
                         current.error,
                     )
                     if operation.role_application:
-                        self.mark_stopped(session, agent)
+                        if stop_error is None:
+                            self.mark_stopped(session, agent)
                         if terminal:
                             agent.desired_state = "stopped"
                 if agent.current_incarnation_id and terminal and operation.action != "dashboard":
