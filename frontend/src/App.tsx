@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Bot, Boxes, Check, ChevronRight, CircleAlert, Database, LayoutDashboard, Menu, Network, RefreshCw, Server, Settings, X } from "lucide-react";
+import { ArrowUpRight, Bot, Boxes, Check, ChevronRight, CircleAlert, Database, LayoutDashboard, Menu, Network, RefreshCw, Server, Settings, ShieldCheck, Users, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InferenceSettings } from "@/components/inference-settings";
+import { Administration } from "@/components/administration";
 import { AgentWorkspace } from "@/components/agent-workspace";
 
 type Status = {
@@ -32,13 +33,13 @@ function ServiceStatus({ value }: { value?: string }) {
 }
 
 export default function App() {
-  const [page, setPage] = useState(() => ["#platform", "#settings"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
+  const [page, setPage] = useState(() => ["#platform", "#settings", "#roles", "#employees"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
   const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const navigate = () => {
-      if (["", "#platform", "#agents", "#settings"].includes(window.location.hash)) {
-        setPage(["#platform", "#settings"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
+      if (["", "#platform", "#agents", "#settings", "#roles", "#employees"].includes(window.location.hash)) {
+        setPage(["#platform", "#settings", "#roles", "#employees"].includes(window.location.hash) ? window.location.hash.slice(1) : "agents");
       }
       setMenuOpen(false);
     };
@@ -108,6 +109,8 @@ export default function App() {
           </div>
           <nav className="main-navigation" aria-label="Main">
             <a href="#agents" aria-current={page === "agents" ? "page" : undefined} onClick={() => setMenuOpen(false)}><Bot size={18} aria-hidden="true" />Agents</a>
+            <a href="#employees" aria-current={page === "employees" ? "page" : undefined} onClick={() => setMenuOpen(false)}><Users size={18} aria-hidden="true" />Employees</a>
+            <a href="#roles" aria-current={page === "roles" ? "page" : undefined} onClick={() => setMenuOpen(false)}><ShieldCheck size={18} aria-hidden="true" />Roles</a>
             <a href="#settings" aria-current={page === "settings" ? "page" : undefined} onClick={() => setMenuOpen(false)}><Settings size={18} aria-hidden="true" />Settings</a>
             <a href="#platform" aria-current={page === "platform" ? "page" : undefined} onClick={() => setMenuOpen(false)}><LayoutDashboard size={18} aria-hidden="true" />Platform status</a>
           </nav>
@@ -121,10 +124,12 @@ export default function App() {
 
       <div className="app-main">
         <header className="topbar">
-          <nav aria-label="Breadcrumb" className="breadcrumb"><span>Local workspace</span><ChevronRight size={14} aria-hidden="true" /><span aria-current="page">{page === "agents" ? "Agents" : page === "settings" ? "Settings" : "Platform status"}</span></nav>
+          <nav aria-label="Breadcrumb" className="breadcrumb"><span>Local workspace</span><ChevronRight size={14} aria-hidden="true" /><span aria-current="page">{page === "agents" ? "Agents" : page === "settings" ? "Settings" : page === "employees" ? "Employees" : page === "roles" ? "Roles" : "Platform status"}</span></nav>
           <span className="local-label"><span className="status-dot" />Local development</span>
         </header>
         <main id="main-content" tabIndex={-1} className="page-content">
+          <div hidden={page !== "roles"}><Administration kind="roles" active={page === "roles"} /></div>
+          <div hidden={page !== "employees"}><Administration kind="employees" active={page === "employees"} /></div>
           <div hidden={page !== "agents"}>
             <AgentWorkspace active={page === "agents"} />
           </div>
@@ -152,7 +157,7 @@ export default function App() {
             <p className="mt-5 text-sm text-muted-foreground">Worker and gateway labels show configured capabilities, not live health.</p>
             <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">{loading ? "Checking local services…" : error ? "Status unavailable. Retrying every 15 seconds." : `Last checked ${checkedAt?.toLocaleTimeString()}. Refreshes every 15 seconds.`}</p>
           </section>
-          <footer className="page-footer">Local prototype. Employee accounts and business permissions are not available yet.</footer>
+          <footer className="page-footer">Local administrator workspace. Employee sign-in and business integrations are not enabled.</footer>
         </main>
       </div>
     </div>
