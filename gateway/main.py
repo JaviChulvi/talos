@@ -69,6 +69,7 @@ async def native_completion(request: Request):
             "max_tokens",
             "max_completion_tokens",
             "reasoning",
+            "reasoning_effort",
             "stop",
             "stream",
             "stream_options",
@@ -97,7 +98,7 @@ async def native_completion(request: Request):
         )
         async with asyncio.timeout(get_settings().inference_timeout_seconds):
             while True:
-                if not await asyncio.to_thread(native_selection, token):
+                if not await asyncio.to_thread(validate_token, token):
                     raise HTTPException(401, "Native OpenRouter access was revoked")
                 if await request.is_disconnected():
                     raise HTTPException(499, "Caller disconnected")
@@ -126,7 +127,7 @@ async def native_completion(request: Request):
         try:
             async with asyncio.timeout(get_settings().inference_timeout_seconds):
                 while True:
-                    if not await asyncio.to_thread(native_selection, token):
+                    if not await asyncio.to_thread(validate_token, token):
                         return
                     if not payload.get("stream") and await request.is_disconnected():
                         return
