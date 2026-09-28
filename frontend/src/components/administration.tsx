@@ -16,6 +16,7 @@ import {
   type Employee,
   type Capability,
   type AgentPermissions,
+  type SetupPreview,
 } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -59,6 +60,13 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  ApplyPreview,
+  ConnectionBindings,
+  RoleSetupFields,
+} from "@/components/setup-controls";
+import type { Setup } from "@/components/setups";
+import type { Connection } from "@/components/connections";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const pending = new Set(["queued", "running", "retry_wait"]);
@@ -82,6 +90,20 @@ export function Administration({
   const [roles, setRoles] = useState<Role[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [agents, setAgents] = useState<AgentPermissions[]>([]);
+  const [setups, setSetups] = useState<Setup[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [setupRevisionId, setSetupRevisionId] = useState("");
+  const [connectorGrants, setConnectorGrants] = useState<string[]>([]);
+  const [connectionBindings, setConnectionBindings] = useState<
+    Record<string, string>
+  >({});
+  const [connectionOverrides, setConnectionOverrides] = useState<
+    Record<string, string>
+  >({});
+  const [previews, setPreviews] = useState<
+    { name: string; preview: SetupPreview }[]
+  >([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [catalog, setCatalog] = useState<Capability[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [name, setName] = useState("");
@@ -128,13 +150,21 @@ export function Administration({
             AbortSignal.timeout(8000),
           ]),
         };
-        const [nextRoles, nextEmployees, nextAgents, nextCatalog] =
-          await Promise.all([
-            api<Role[]>("/roles", options),
-            api<Employee[]>("/employees", options),
-            api<AgentPermissions[]>("/agents", options),
-            api<Capability[]>("/capabilities", options),
-          ]);
+        const [
+          nextRoles,
+          nextEmployees,
+          nextAgents,
+          nextCatalog,
+          nextSetups,
+          nextConnections,
+        ] = await Promise.all([
+          api<Role[]>("/roles", options),
+          api<Employee[]>("/employees", options),
+          api<AgentPermissions[]>("/agents", options),
+          api<Capability[]>("/capabilities", options),
+          api<Setup[]>("/setups", options),
+          api<Connection[]>("/connections", options),
+        ]);
         const updates = await Promise.all(
           results
             .filter((result) => result.id && pending.has(result.status))
@@ -148,6 +178,8 @@ export function Administration({
         setEmployees(nextEmployees);
         setAgents(nextAgents);
         setCatalog(nextCatalog);
+        setSetups(nextSetups);
+        setConnections(nextConnections);
         if (updates.length)
           setResults((current) => {
             const changed = updates.some((update) =>
@@ -198,6 +230,22 @@ export function Administration({
     );
     setEmail(record && "email" in record ? (record.email ?? "") : "");
     setRoleId(record && "role_id" in record ? record.role_id : "");
+    setSetupRevisionId(
+      record && "capabilities" in record
+        ? (record.setup_revision_id ?? "")
+        : "",
+    );
+    setConnectorGrants(
+      record && "capabilities" in record ? (record.connector_grants ?? []) : [],
+    );
+    setConnectionBindings(
+      record && "capabilities" in record
+        ? (record.connection_bindings ?? {})
+        : {},
+    );
+    setConnectionOverrides(
+      record && "role_id" in record ? (record.connection_overrides ?? {}) : {},
+    );
     setChecked([]);
     setError(null);
     setNotice("");
@@ -215,8 +263,20 @@ export function Administration({
           method: selectedId ? "PUT" : "POST",
           body: JSON.stringify(
             isRole
-              ? { name, description, capabilities }
-              : { name, email: email || null, role_id: roleId },
+              ? {
+                  name,
+                  description,
+                  capabilities,
+                  setup_revision_id: setupRevisionId || null,
+                  connector_grants: connectorGrants,
+                  connection_bindings: connectionBindings,
+                }
+              : {
+                  name,
+                  email: email || null,
+                  role_id: roleId,
+                  connection_overrides: connectionOverrides,
+                },
           ),
         },
       );
@@ -224,8 +284,8 @@ export function Administration({
       setRefresh((value) => value + 1);
       setNotice(
         isRole
-          ? "Role saved. Apply it to agents, or start them, to use these permissions."
-          : "Employee saved. Role changes take effect when each agent starts or applies its role.",
+          ? "Role saved. Apply it explicitly to update agents. Starts preserve their selected configuration."
+          : "Employee saved. Apply the saved role to update agents and their account bindings.",
       );
     } catch (cause) {
       setError(errorMessage(cause));
@@ -287,19 +347,29 @@ export function Administration({
   }
 
   function applySelected(confirmed = false) {
-    if (
-      !confirmed &&
-      associated.some(
-        (agent) =>
-          selectedAgentIds.includes(agent.id) &&
-          agent.desired_state === "running",
-      )
-    ) {
+    if (!confirmed) {
       confirmationTrigger.current =
         document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null;
       setConfirmation("apply");
+      setPreviews([]);
+      setPreviewLoading(true);
+      void Promise.all(
+        selectedAgentIds.map(async (id) => ({
+          name: associated.find((agent) => agent.id === id)?.display_name ?? id,
+          preview: await api<SetupPreview>(`/agents/${id}/setup-preview`, {
+            method: "POST",
+            signal: AbortSignal.timeout(15_000),
+          }).catch((cause) => ({
+            application: null,
+            changes: [],
+            blockers: [errorMessage(cause)],
+          })),
+        })),
+      )
+        .then(setPreviews)
+        .finally(() => setPreviewLoading(false));
       return;
     }
     setConfirmation(null);
@@ -536,6 +606,17 @@ export function Administration({
                       disabled={saving}
                     />
                   </div>
+                  <RoleSetupFields
+                    setups={setups}
+                    connections={connections}
+                    revisionId={setupRevisionId}
+                    grants={connectorGrants}
+                    bindings={connectionBindings}
+                    disabled={saving}
+                    onRevision={setSetupRevisionId}
+                    onGrants={setConnectorGrants}
+                    onBindings={setConnectionBindings}
+                  />
                   <fieldset disabled={saving}>
                     <legend className="mb-1 font-medium">Capabilities</legend>
                     <p className="mb-3 text-sm text-muted-foreground">
@@ -629,7 +710,10 @@ export function Administration({
                     <Select
                       required
                       value={roleId}
-                      onValueChange={setRoleId}
+                      onValueChange={(id) => {
+                        setRoleId(id);
+                        setConnectionOverrides({});
+                      }}
                       disabled={saving}
                     >
                       <SelectTrigger id="employee-role" className="w-full">
@@ -652,6 +736,23 @@ export function Administration({
                       </a>
                     )}
                   </div>
+                  <ConnectionBindings
+                    slots={
+                      setups
+                        .flatMap((setup) => setup.revisions)
+                        .find(
+                          (revision) =>
+                            revision.id ===
+                            roles.find((role) => role.id === roleId)
+                              ?.setup_revision_id,
+                        )?.manifest.connection_slots ?? []
+                    }
+                    connections={connections}
+                    value={connectionOverrides}
+                    onChange={setConnectionOverrides}
+                    disabled={saving}
+                    overrides
+                  />
                 </>
               )}
               <div className="flex flex-wrap gap-3">
@@ -740,16 +841,20 @@ export function Administration({
                             </span>
                             <Badge
                               variant={
-                                agent.permissions_pending
+                                agent.permissions_pending || agent.setup_pending || !!agent.setup_blockers?.length
                                   ? "warning"
                                   : "secondary"
                               }
                             >
                               {agent.runtime_mode === "managed"
                                 ? "No tools"
-                                : agent.permissions_pending
-                                  ? "Changes pending"
-                                  : "Applied"}
+                                : agent.setup_blockers?.length
+                                  ? "Blocked"
+                                  : agent.permissions_pending || agent.setup_pending
+                                    ? "Update available"
+                                    : agent.setup_status === "verified_ready"
+                                      ? "Verified ready"
+                                      : "Applied"}
                             </Badge>
                           </Label>
                           {result && (
@@ -824,9 +929,18 @@ export function Administration({
                 : "Running work on the selected agents will be interrupted. Agents that were running will restart with the captured permissions."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {confirmation === "apply" && (
+            <ApplyPreview previews={previews} loading={previewLoading} />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              disabled={
+                confirmation === "apply" &&
+                (previewLoading ||
+                  !previews.length ||
+                  previews.some(({ preview }) => preview.blockers.length > 0))
+              }
               variant={confirmation === "delete" ? "destructive" : "default"}
               onClick={() =>
                 confirmation === "delete" ? void remove() : applySelected(true)

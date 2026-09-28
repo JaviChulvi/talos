@@ -1,10 +1,16 @@
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
     super(message);
   }
 }
 
-export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function api<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     cache: "no-store",
     ...options,
@@ -12,20 +18,79 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   });
   const data: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = data && typeof data === "object" && "detail" in data ? data.detail : null;
-    const message = typeof detail === "string" ? detail : Array.isArray(detail)
-      ? detail.map((entry: { msg?: string }) => entry.msg ?? "Invalid request").join("; ")
-      : `The request failed (HTTP ${response.status}).`;
+    const detail =
+      data && typeof data === "object" && "detail" in data ? data.detail : null;
+    const message =
+      typeof detail === "string"
+        ? detail
+        : Array.isArray(detail)
+          ? detail
+              .map((entry: { msg?: string }) => entry.msg ?? "Invalid request")
+              .join("; ")
+          : `The request failed (HTTP ${response.status}).`;
     throw new ApiError(message, response.status);
   }
   return data as T;
 }
 
 export function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unable to reach the local API.";
+  return error instanceof Error
+    ? error.message
+    : "Unable to reach the local API.";
 }
 
-export type Role = { id: string; name: string; description?: string; revision: number; capabilities: string[] };
-export type Employee = { id: string; name: string; email: string | null; role_id: string };
-export type Capability = { id: string; name: string; description: string; openclaw: string[]; hermes: string[]; hermes_tools: string[] };
-export type AgentPermissions = { id: string; display_name: string; employee_id: string | null; employee_name: string; role: Role | null; applied_role: Role | null; permissions_pending: boolean; runtime_mode: string; observed_state: string; desired_state: string };
+export type Role = {
+  id: string;
+  name: string;
+  description?: string;
+  revision: number;
+  capabilities: string[];
+  setup_revision_id?: string | null;
+  connector_grants?: string[];
+  connection_bindings?: Record<string, string>;
+};
+export type Employee = {
+  id: string;
+  name: string;
+  email: string | null;
+  role_id: string;
+  connection_overrides?: Record<string, string>;
+};
+export type Capability = {
+  id: string;
+  name: string;
+  description: string;
+  openclaw: string[];
+  hermes: string[];
+  hermes_tools: string[];
+};
+export type ApplicationSnapshot = {
+  setup_revision_id?: string | null;
+  setup?: { id?: string; name?: string; version?: number };
+  role?: Role;
+  artifact_hash?: string;
+  [key: string]: unknown;
+};
+export type SetupPreview = {
+  application: ApplicationSnapshot | null;
+  changes: string[];
+  blockers: string[];
+  restart_required?: boolean;
+};
+export type AgentPermissions = {
+  id: string;
+  display_name: string;
+  employee_id: string | null;
+  employee_name: string;
+  role: Role | null;
+  applied_role: Role | null;
+  permissions_pending: boolean;
+  runtime_mode: string;
+  observed_state: string;
+  desired_state: string;
+  selected_application?: ApplicationSnapshot | null;
+  applied_application?: ApplicationSnapshot | null;
+  setup_status?: string;
+  setup_blockers?: string[];
+  setup_pending?: boolean;
+};

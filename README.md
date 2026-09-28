@@ -355,13 +355,13 @@ cannot be deleted. These are administrator records, not employee login accounts.
 Create an agent with `employee_id`, or attach a stopped agent with
 `PUT /api/v1/agents/{id}/employee`. Legacy `employee_label` requests remain supported;
 existing labels are never automatically converted into employee identities.
-No running agent is changed by saving a role; apply it explicitly or start the agent.
+Saving a role leaves existing agent selections unchanged. Apply the saved role explicitly.
 
 ### Applying role permissions
 
-For assigned native agents, Start captures the current role and applies it before
-starting the runtime. Saving a role or changing an employee's role leaves running
-agents unchanged. `POST /api/v1/agents/{id}/apply-role` accepts an `Idempotency-Key`,
+For assigned native agents, the first Start captures the current role. Later starts
+reuse the selected application, including setup and connection versions. Saving a
+role or changing an employee's role leaves existing selections unchanged. `POST /api/v1/agents/{id}/apply-role` accepts an `Idempotency-Key`,
 returns HTTP 202, and uses the existing operation polling endpoint. It interrupts
 running work, applies the captured revision while stopped, and restarts only when
 previously running. A newer edit remains pending. Failed applications leave the
@@ -396,3 +396,38 @@ is unknown, including interrupted calls without final provider accounting.
 Employee attribution is captured at admission and remains unchanged after agent
 reassignment or deletion. Legacy run usage remains readable but is not backfilled
 into this ledger. Tracking begins when migration 0012 is applied.
+
+
+## Reusable agent setups
+
+A setup is a versioned recipe for native OpenClaw and Hermes agents. Configure one reference agent, stop it, choose **Create setup from this agent**, review its captured skills and MCP connectors, then publish a version. Alternatively upload a prepared setup ZIP on **Setups**. Assign a published version to a role, select connector grants and account connections, and apply the role to selected agents.
+
+Published setup versions are immutable. Publishing a new version does not change roles; select the version on a role explicitly. Saving roles or rotating credentials does not change an existing agent's selected configuration. **Start preserves the selected application**, including permissions and connection versions. Use **Apply saved role** to adopt changes. Applying to a running agent interrupts its work and restarts it; applying to a stopped agent leaves it stopped. Preflight failures preserve a running agent; failures after stopping leave it stopped until retried. Employee reassignment requires Apply before Start.
+
+### Capturing an existing agent
+
+Capture requires a stopped native agent with no unresolved work. The worker reads its private state with a read-only mount and networking disabled. It reads raw configuration without loading plugins or expanding credentials. The captured draft contains candidate skill folders, supported MCP definitions, and review information. Account values become named connection requirements. Personal credential files, sessions, memory, and unrelated workspace files are excluded; review selected skill source files as you would any code before publishing.
+
+A manually installed tool is portable only when its complete runnable payload is available. Commands that depend on global installations, package downloads, outside paths, or native plugins appear as unresolved requirements. Supply a prepared bundle or remove the candidate before publication. Capture does not clone the agent's identity or automatically install anything on the source agent.
+
+### Prepared bundle format
+
+A ZIP contains `manifest.json` and its declared files. The manifest uses `schema_version: 1` and includes `instructions`, `targets`, `skills`, `connectors`, `connection_slots`, `assets` (relative path to SHA-256), and `unresolved` (empty for publication). Each target declares `runtime_kind`, the exact Talos `runtime_release`, and `architecture` (`amd64` or `arm64`). Local Node/Python connectors also require the matching `node_major` or `python_version`.
+
+Skill entries declare `id`, `name`, `path` under `skills/`, and `enabled`. Include the complete directory, starting with `SKILL.md`. IDs use lowercase letters, digits, and hyphens and begin with a letter. Avoid skill names already provided by the selected runtime or the destination agent; shadowing blocks application rather than silently selecting different instructions.
+
+Connectors declare `id`, `name`, `enabled`, `transport`, and an explicit `tools` list. Hosted MCP supports `streamable-http` and `sse`, with a URL and optional headers. URLs must not contain credentials or query strings. Local MCP uses `stdio`, a `node` or `python3` runner, a relative `entrypoint` inside `connectors/<id>/`, optional arguments/environment, and dependency `provenance`. Include all vendored dependencies and their lock/provenance files. Talos does not fetch packages, run installation scripts, or resolve `npx`/`uvx` commands. Native dependencies must match the target Linux architecture, interpreter ABI, and runtime libraries.
+
+Environment/header values are either non-secret strings or references such as `{"slot":"crm","field":"token"}`. Declare each slot in `connection_slots`, for example `{"id":"crm","label":"CRM account","fields":["token"]}`. Put actual credential values only in **Settings → Connections**. Roles select organization defaults; Employees can override individual slots. An invalid override blocks application instead of falling back to another account.
+
+Archive import validates paths, links, duplicate entries, sizes, and content hashes without executing anything. Publication validates the complete manifest. Runtime application validates compatibility and native discovery. These are distinct checks: importing a ZIP does not prove its tools are usable. Native runtime permissions apply; terminal access still permits file and network operations beyond dedicated tool grants.
+
+### Account changes, verification, and backups
+
+Connection credentials are write-only. Rotation creates a new credential version and makes an update available; existing selections retain their previous version until Apply. Credential versions remain available while referenced by an agent or active operation. Detach bindings and apply the replacement before deleting a referenced connection. Provider-side revocation remains controlled by that provider.
+
+The worker verifies skill discovery and the actual allowed MCP tool names without performing business actions. An installed setup is distinct from a currently verified ready agent. Hosted services can change outside Talos; reproducibility covers the declared artifacts, configuration, and permissions.
+
+Include the `setup-artifacts` and `connection-secrets` volumes in the consistent backups described above, together with PostgreSQL and agent state. The API and worker share service group 10001: credential files use mode 0640 in a mode-0750 directory, and the worker mounts that volume read-only. Setup artifacts use mode 0640 in a mode-2770 directory so API uploads and worker captures remain mutually readable. Agents receive only their selected values in mode-0600 private environment files. Protect host access and backups as for existing native credentials. Restore code, database, artifacts, secrets, and runtime images together.
+
+OAuth sign-in, package-registry discovery, native plugin installation, and department inheritance are outside this first version. One Talos installation remains one organization.
