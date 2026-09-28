@@ -100,6 +100,21 @@ def usage(
         else "tracked",
         "coverage": COVERAGE,
         "total": total,
+        "budgets": [
+            employee_budget(session, employee)
+            for employee in session.scalars(
+                select(Employee)
+                .where(
+                    Employee.id == employee_id if employee_id else True,
+                    Employee.id.in_(select(Agent.employee_id).where(Agent.id == agent_id))
+                    if agent_id and not employee_id
+                    else True,
+                )
+                .order_by(Employee.name, Employee.id)
+            )
+        ]
+        if start == month_bounds()[0]
+        else [],
         **groups,
         "options": {
             "employees": [
@@ -193,4 +208,34 @@ def calls(
             for row in page
         ],
         "next_cursor": next_cursor,
+    }
+
+
+def employee_budget(session, employee: Employee, now: datetime | None = None) -> dict:
+    start, end = month_bounds((now or datetime.now(UTC)).strftime("%Y-%m"))
+    total = totals(
+        session.execute(
+            select(*aggregate_columns()).where(*call_filters(start, end, employee.id, None))
+        )
+        .mappings()
+        .one()
+    )
+    allowance = employee.monthly_allowance_usd
+    spend = Decimal(total["known_spend_usd"])
+    status = (
+        "unlimited"
+        if allowance is None
+        else "exhausted"
+        if spend >= allowance
+        else "warning"
+        if spend >= allowance * Decimal("0.8")
+        else "available"
+    )
+    return {
+        "employee_id": employee.id,
+        "employee_name": employee.name,
+        "monthly_allowance_usd": str(allowance) if allowance is not None else None,
+        "period": {"start": start, "end": end, "timezone": "UTC"},
+        "status": status,
+        **total,
     }

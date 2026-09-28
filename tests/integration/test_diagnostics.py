@@ -499,6 +499,7 @@ def test_gateway_requires_admission_and_revokes_on_cancel(sessions, agent_id, mo
 
     from gateway.identity import admit_inference, record_inference, selected_request, validate_token
 
+    ledger_identity(sessions, agent_id, monkeypatch)
     token = "test-workload-token-at-least-twenty-chars"
     monkeypatch.setattr("gateway.identity.session_factory", lambda: sessions)
     with sessions.begin() as session:

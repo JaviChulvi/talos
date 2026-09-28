@@ -8,10 +8,17 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.app.db import session_factory
-from backend.app.models import Agent, InferenceCall, Run, WorkloadIncarnation
+from backend.app.models import Agent, Employee, InferenceCall, Run, WorkloadIncarnation
+from backend.app.usage import employee_budget
 
 
-def validate_token(token: str, *, require_run: bool = False, run_id=None) -> bool:
+class AdmissionDenied(HTTPException):
+    def __init__(self, status_code: int, code: str, message: str):
+        super().__init__(status_code, message)
+        self.code = code
+
+
+def validate_token(token: str, *, require_run: bool = False, run_id=None, accounting=False) -> bool:
     if not 20 <= len(token) <= 256:
         return False
     digest = hashlib.sha256(token.encode()).hexdigest()
@@ -42,37 +49,53 @@ def validate_token(token: str, *, require_run: bool = False, run_id=None) -> boo
                 )
             return session.scalar(query) is not None
     except SQLAlchemyError:
+        if accounting:
+            raise AdmissionDenied(
+                503, "accounting_unavailable", "Inference accounting is unavailable"
+            ) from None
         return False
 
 
 def selected_request(token: str) -> dict:
     digest = hashlib.sha256(token.encode()).hexdigest()
-    with session_factory()() as session:
-        run = session.scalar(
-            select(Run)
-            .join(WorkloadIncarnation, Run.incarnation_id == WorkloadIncarnation.id)
-            .where(
-                WorkloadIncarnation.gateway_token_hash == digest,
-                Run.status.in_(("dispatching", "running")),
-                Run.cancel_requested.is_(False),
+    try:
+        with session_factory()() as session:
+            run = session.scalar(
+                select(Run)
+                .join(WorkloadIncarnation, Run.incarnation_id == WorkloadIncarnation.id)
+                .where(
+                    WorkloadIncarnation.gateway_token_hash == digest,
+                    Run.status.in_(("dispatching", "running")),
+                    Run.cancel_requested.is_(False),
+                )
             )
-        )
-        if run is None:
-            raise ValueError("No admitted inference request")
-        return {"run_id": str(run.id), "model_id": run.model_id, **run.inference}
+            if run is None:
+                raise ValueError("No admitted inference request")
+            return {"run_id": str(run.id), "model_id": run.model_id, **run.inference}
+    except SQLAlchemyError:
+        raise AdmissionDenied(
+            503, "accounting_unavailable", "Inference accounting is unavailable"
+        ) from None
 
 
 def native_selection(token: str) -> dict | None:
     """Native entry points use their incarnation identity without a Talos chat run."""
-    if not validate_token(token):
+    if not validate_token(token, accounting=True):
         return None
     digest = hashlib.sha256(token.encode()).hexdigest()
-    with session_factory()() as session:
-        return session.scalar(
-            select(Agent.inference_override)
-            .join(WorkloadIncarnation, Agent.current_incarnation_id == WorkloadIncarnation.id)
-            .where(WorkloadIncarnation.gateway_token_hash == digest, Agent.runtime_mode == "native")
-        )
+    try:
+        with session_factory()() as session:
+            return session.scalar(
+                select(Agent.inference_override)
+                .join(WorkloadIncarnation, Agent.current_incarnation_id == WorkloadIncarnation.id)
+                .where(
+                    WorkloadIncarnation.gateway_token_hash == digest, Agent.runtime_mode == "native"
+                )
+            )
+    except SQLAlchemyError:
+        raise AdmissionDenied(
+            503, "accounting_unavailable", "Inference accounting is unavailable"
+        ) from None
 
 
 def usage_values(usage: dict) -> dict:
@@ -137,9 +160,26 @@ def admit_inference(token: str, run_id: str | None = None, native_model: str | N
                 if agent.runtime_mode != "native" or not agent.inference_override:
                     raise HTTPException(401, "Native OpenRouter access is inactive")
                 model = native_model or agent.inference_override["model_id"]
+            if agent.employee_id is None:
+                raise AdmissionDenied(
+                    403,
+                    "employee_assignment_required",
+                    "Assign this agent to an employee before using a provider through Talos",
+                )
+            employee = session.get(
+                Employee, agent.employee_id, with_for_update=True, populate_existing=True
+            )
             admitted_at = datetime.now(UTC)
             if incarnation.expires_at <= admitted_at:
                 raise HTTPException(401, "Agent identity expired while awaiting admission")
+            budget = employee_budget(session, employee, admitted_at)
+            if budget["status"] == "exhausted":
+                raise AdmissionDenied(
+                    402,
+                    "employee_budget_exceeded",
+                    "Employee monthly allowance reached; increase the allowance "
+                    "or wait for the next UTC month",
+                )
             call = InferenceCall(
                 agent_id=agent.id,
                 incarnation_id=incarnation.id,
@@ -152,11 +192,19 @@ def admit_inference(token: str, run_id: str | None = None, native_model: str | N
             session.flush()
             return call.id
     except SQLAlchemyError:
-        raise HTTPException(503, "Inference accounting is unavailable") from None
+        raise AdmissionDenied(
+            503, "accounting_unavailable", "Inference accounting is unavailable"
+        ) from None
 
 
 def record_inference(call_id: UUID, report: dict):
     with session_factory().begin() as session:
+        # Attribution is immutable. Lock employee before call, matching admission and edits.
+        employee_id = session.scalar(
+            select(InferenceCall.employee_id).where(InferenceCall.id == call_id)
+        )
+        if employee_id is not None:
+            session.get(Employee, employee_id, with_for_update=True)
         call = session.get(InferenceCall, call_id, with_for_update=True)
         if call.completed_at is not None:
             return

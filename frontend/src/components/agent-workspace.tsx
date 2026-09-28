@@ -1,3 +1,4 @@
+import { AgentBudget } from "@/components/employee-budget";
 import {
   useEffect,
   useRef,
@@ -607,6 +608,9 @@ export function AgentWorkspace({
     setOpenMobile(false);
     window.location.assign(`#agents/${id}/settings`);
   };
+  const budgetCoverage = selected?.runtime_mode === "native"
+    ? selected.inference_override ? "gateway" : "external"
+    : effectiveModel === "fixture" ? "simulator" : "gateway";
   const pageTitle =
     page.startsWith("usage")
       ? "Usage"
@@ -1110,6 +1114,11 @@ export function AgentWorkspace({
                         : ""}
                     </p>
                   )}
+                  {active && !settingsActive && (
+                    <div className="mb-4">
+                      <AgentBudget employeeId={selected.employee_id} agentId={selected.id} coverage={budgetCoverage} />
+                    </div>
+                  )}
                   <form onSubmit={sendDiagnostic}>
                     <Label htmlFor="diagnostic-message" className="sr-only">
                       Message
@@ -1293,6 +1302,11 @@ export function AgentWorkspace({
                       </TabsTrigger>
                     </TabsList>
                     <TabsContent value="settings">
+                      {settingsActive && (
+                        <div className="mb-5">
+                          <AgentBudget employeeId={selected.employee_id} agentId={selected.id} coverage={budgetCoverage} />
+                        </div>
+                      )}
                       <a href={`#usage?agent_id=${selected.id}`} className="mb-5 block text-sm text-primary underline">View agent usage</a>
                       {selected.runtime_mode === "native" ? (
                         <div className="space-y-5">

@@ -19,7 +19,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { api, errorMessage } from "@/lib/api";
+import { BudgetStatus } from "@/components/employee-budget";
+import { formatUsd as usd } from "@/lib/utils";
+import { api, errorMessage, type Budget } from "@/lib/api";
 
 export type UsageTotals = {
   calls: number;
@@ -43,6 +45,7 @@ type Summary = {
   history_status: string;
   coverage: string;
   total: UsageTotals;
+  budgets: Budget[];
   employees: (UsageTotals & { id: string | null })[];
   agents: (UsageTotals & { id: string })[];
   options: { employees: Option[]; agents: Option[] };
@@ -63,13 +66,6 @@ type Call = {
   duration_ms: number | null;
 };
 type Calls = { items: Call[]; next_cursor: string | null };
-const usd = (value: string) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 12,
-  }).format(Number(value));
 const label = (options: Option[], id: string | null) =>
   id === null
     ? "Unassigned"
@@ -300,6 +296,22 @@ export function Usage({ query }: { query: string }) {
                 still running). Known spend excludes unknown charges.
               </AlertDescription>
             </Alert>
+          )}
+          {summary.budgets.length > 0 && (
+            <section
+              aria-label="Current employee allowances"
+              className="space-y-4"
+            >
+              <h2 className="font-semibold">Current employee allowances</h2>
+              {summary.budgets.map((budget) => (
+                <div
+                  key={budget.employee_id}
+                  className="border-b pb-4 last:border-b-0 last:pb-0"
+                >
+                  <BudgetStatus budget={budget} />
+                </div>
+              ))}
+            </section>
           )}
           <dl className="grid gap-6 border-y py-6 sm:grid-cols-4">
             <div>
