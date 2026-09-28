@@ -599,6 +599,25 @@ def test_usage_values_reject_invalid_numbers(value):
     assert usage_values({"cost": value, "prompt_tokens": value}) == {}
 
 
+@pytest.mark.parametrize(
+    "wire_cost,expected",
+    [("12345.000000000001", "12345.000000000001"), ("0.100000000000500001", "0.100000000001")],
+)
+def test_managed_cost_preserves_wire_decimal_precision(gateway, wire_cost, expected):
+    from decimal import Decimal
+
+    client, _, state = gateway
+    state.data = (
+        frame("Answer", "stop")
+        + 'data: {"choices":[],"usage":{"cost":'
+        + wire_cost
+        + "}}\n\ndata: [DONE]\n\n"
+    )
+    response = client.post("/v1/chat/completions", json=BODY, headers=HEADERS)
+    assert response.status_code == 200
+    assert state.reports[0]["cost"] == Decimal(expected)
+
+
 def test_failed_admission_never_contacts_provider(gateway):
     from fastapi import HTTPException
 
