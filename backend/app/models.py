@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -10,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -212,7 +214,15 @@ class Run(Base):
     incarnation_id: Mapped[UUID] = mapped_column(ForeignKey("workload_incarnations.id"))
     model_id: Mapped[str] = mapped_column(String(255), default="fixture")
     inference: Mapped[dict] = mapped_column(JSON, default=dict)
-    inference_calls: Mapped[list] = mapped_column(JSON, default=list)
+    legacy_inference_calls: Mapped[list] = mapped_column("inference_calls", JSON, default=list)
+    calls: Mapped[list["InferenceCall"]] = relationship(
+        lazy="selectin", order_by="(InferenceCall.admitted_at, InferenceCall.id)"
+    )
+
+    @property
+    def inference_calls(self) -> list[dict]:
+        return [*(self.legacy_inference_calls or []), *(call.report for call in self.calls)]
+
     message: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default="queued")
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -247,3 +257,56 @@ class InferenceConfig(Base):
     model_id: Mapped[str] = mapped_column(String(255), default="fixture")
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    tracking_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InferenceCall(Base):
+    __tablename__ = "inference_calls"
+    __table_args__ = (
+        CheckConstraint("cost_usd >= 0"),
+        Index("ix_inference_calls_employee_month", "employee_id", "admitted_at"),
+        Index("ix_inference_calls_agent_month", "agent_id", "admitted_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"))
+    incarnation_id: Mapped[UUID] = mapped_column(ForeignKey("workload_incarnations.id"))
+    employee_id: Mapped[UUID | None] = mapped_column(ForeignKey("employees.id"))
+    run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id"), index=True)
+    model: Mapped[str] = mapped_column(String(255))
+    generation_id: Mapped[str | None] = mapped_column(String(200))
+    admitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    outcome: Mapped[str] = mapped_column(String(40), default="unresolved")
+    finish_reason: Mapped[str | None] = mapped_column(String(40))
+    duration_ms: Mapped[int | None] = mapped_column(BigInteger)
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    total_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    reasoning_tokens: Mapped[int | None] = mapped_column(BigInteger)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(24, 12))
+
+    @property
+    def report(self) -> dict:
+        report = {
+            "model": self.model,
+            "outcome": self.outcome,
+            "duration_ms": self.duration_ms or 0,
+        }
+        for key in (
+            "generation_id",
+            "finish_reason",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "reasoning_tokens",
+        ):
+            if (value := getattr(self, key)) is not None:
+                report[key] = value
+        if self.cost_usd is not None:
+            report["cost"] = float(self.cost_usd)
+        return report

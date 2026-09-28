@@ -8,7 +8,13 @@ from fastapi.responses import StreamingResponse
 
 from backend.app.config import get_settings
 from gateway.fake_model import model_router
-from gateway.identity import native_selection, record_inference, selected_request, validate_token
+from gateway.identity import (
+    admit_inference,
+    native_selection,
+    record_inference,
+    selected_request,
+    validate_token,
+)
 from gateway.openrouter import provider_key, provider_key_source
 
 app = FastAPI(title="Talos gateway", docs_url=None, redoc_url=None)
@@ -18,6 +24,7 @@ app.include_router(
         selected_request,
         validate_run=lambda token, run_id: validate_token(token, require_run=True, run_id=run_id),
         record_usage=record_inference,
+        admit_usage=admit_inference,
     )
 )
 

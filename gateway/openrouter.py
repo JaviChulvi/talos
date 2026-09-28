@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import math
 import os
 import time
 import uuid
@@ -16,6 +15,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from backend.app.config import get_settings
+from gateway.identity import usage_values
 
 MAX_OUTPUT = get_settings().inference_max_output_chars
 REQUEST_TIMEOUT = get_settings().inference_timeout_seconds
@@ -160,25 +160,7 @@ async def upstream_chunks(
                 if isinstance(chunk.get("model"), str):
                     report["model"] = chunk["model"][:255]
                 if isinstance(chunk.get("usage"), dict):
-                    usage = chunk["usage"]
-                    for source, dest in (
-                        ("prompt_tokens", "input_tokens"),
-                        ("completion_tokens", "output_tokens"),
-                        ("total_tokens", "total_tokens"),
-                        ("cost", "cost"),
-                    ):
-                        number = usage.get(source)
-                        if (
-                            isinstance(number, (int, float))
-                            and math.isfinite(number)
-                            and number >= 0
-                        ):
-                            report[dest] = number
-                    details = usage.get("completion_tokens_details") or {}
-                    if isinstance(details, dict) and isinstance(
-                        details.get("reasoning_tokens"), int
-                    ):
-                        report["reasoning_tokens"] = details["reasoning_tokens"]
+                    report.update(usage_values(chunk["usage"]))
                 for choice in chunk.get("choices", []):
                     if choice.get("index", 0) != 0:
                         raise InferenceError("OpenRouter returned multiple choices")
@@ -288,12 +270,14 @@ async def completion(
     *,
     settings=None,
     record_usage=None,
+    admit_usage=None,
 ):
     messages = text_messages(body)
     streaming = body.get("stream", False)
     if not isinstance(streaming, bool):
         raise HTTPException(400, "stream must be a boolean")
     key = provider_key()
+    call_id = await asyncio.to_thread(admit_usage) if admit_usage else None
     base = {"id": "chatcmpl-" + uuid.uuid4().hex, "created": int(time.time()), "model": model}
 
     async def chunks():
@@ -321,7 +305,7 @@ async def completion(
             report["duration_ms"] = round((time.monotonic() - started) * 1000)
             if record_usage:
                 try:
-                    await asyncio.shield(asyncio.to_thread(record_usage, report))
+                    await asyncio.shield(asyncio.to_thread(record_usage, call_id, report))
                 except Exception:
                     logging.error(
                         "Could not persist inference usage; provider usage may be unavailable"

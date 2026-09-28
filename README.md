@@ -369,3 +369,13 @@ later native user turn appeared, recovery refuses to resume automatically and
 leaves history intact. Older pending records without a transcript checkpoint also
 require review in Hermes before starting a new native chat. Completed turns keep
 their native session identity.
+
+### Durable provider accounting
+
+New managed OpenRouter calls are admitted into a durable per-call ledger before
+provider dispatch. Finalization updates that record once; failed persistence leaves
+an unresolved record. Reported costs use fixed-precision USD values. Missing cost
+is unknown, including interrupted calls without final provider accounting.
+Employee attribution is captured at admission and remains unchanged after agent
+reassignment or deletion. Legacy run usage remains readable but is not backfilled
+into this ledger. Tracking begins when migration 0012 is applied.
