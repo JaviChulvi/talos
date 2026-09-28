@@ -396,3 +396,10 @@ is unknown, including interrupted calls without final provider accounting.
 Employee attribution is captured at admission and remains unchanged after agent
 reassignment or deletion. Legacy run usage remains readable but is not backfilled
 into this ledger. Tracking begins when migration 0012 is applied.
+
+Native OpenRouter requests through Talos use the same ledger, including native
+workspace and channel calls without a Talos chat run. Streaming accounting observes
+provider usage without changing tool calls or reasoning. Direct-provider traffic,
+external tool charges, and infrastructure costs are outside this accounting.
+Selecting OpenRouter does not prove that every request from a native runtime
+passes through Talos; “Handled by agent” usage is unavailable to Talos.

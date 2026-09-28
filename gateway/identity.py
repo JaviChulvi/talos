@@ -102,7 +102,7 @@ def usage_values(usage: dict) -> dict:
     return result
 
 
-def admit_inference(token: str, run_id: str | None = None) -> UUID:
+def admit_inference(token: str, run_id: str | None = None, native_model: str | None = None) -> UUID:
     digest = hashlib.sha256(token.encode()).hexdigest()
     try:
         with session_factory().begin() as session:
@@ -136,7 +136,7 @@ def admit_inference(token: str, run_id: str | None = None) -> UUID:
             else:
                 if agent.runtime_mode != "native" or not agent.inference_override:
                     raise HTTPException(401, "Native OpenRouter access is inactive")
-                model = agent.inference_override["model_id"]
+                model = native_model or agent.inference_override["model_id"]
             call = InferenceCall(
                 agent_id=agent.id,
                 incarnation_id=incarnation.id,

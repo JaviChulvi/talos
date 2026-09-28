@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import aclosing
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -404,3 +405,61 @@ async def completion(
             }
         ],
     }
+
+
+def observe_usage(report: dict, chunk: object) -> None:
+    """Observe accounting without changing native tool or reasoning payloads."""
+    if not isinstance(chunk, dict):
+        return
+    if isinstance(chunk.get("id"), str):
+        report["generation_id"] = chunk["id"][:200]
+    if isinstance(chunk.get("usage"), dict):
+        report.update(usage_values(chunk["usage"]))
+    if chunk.get("error"):
+        report["outcome"] = "provider_error"
+    choices = chunk.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str):
+                report["finish_reason"] = choice["finish_reason"][:40]
+
+
+class UsageObserver:
+    """Bounded SSE observer. Malformed/oversized frames never alter forwarded bytes."""
+
+    def __init__(self, report: dict):
+        self.report = report
+        self.line = b""
+        self.data = bytearray()
+        self.discard = False
+        self.done = False
+
+    def feed(self, chunk: bytes):
+        parts = chunk.split(b"\n")
+        for index, part in enumerate(parts):
+            if len(self.line) + len(self.data) + len(part) > 131072:
+                self.discard = True
+                self.line = b""
+                self.data.clear()
+            elif not self.discard:
+                self.line += part
+            if index == len(parts) - 1:
+                continue
+            line, self.line = self.line.rstrip(b"\r"), b""
+            # While discarding, only a real blank input line ends the frame.
+            if self.discard:
+                if not part.rstrip(b"\r"):
+                    self.discard = False
+                continue
+            if not line:
+                value = bytes(self.data).strip()
+                self.data.clear()
+                if value == b"[DONE]":
+                    self.done = True
+                elif value:
+                    try:
+                        observe_usage(self.report, json.loads(value, parse_float=Decimal))
+                    except (ValueError, UnicodeError):
+                        pass
+            elif line.startswith(b"data:"):
+                self.data.extend(line[5:].lstrip(b" ") + b"\n")

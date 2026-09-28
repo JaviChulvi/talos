@@ -757,3 +757,40 @@ def test_ledger_managed_calls_project_alongside_legacy(client, sessions, agent_i
     calls = client.get(f"/api/v1/runs/{run_id}").json()["inference_calls"]
     assert len(calls) == 3
     assert sum(call["cost"] for call in calls) == 0.75
+
+
+@pytest.mark.parametrize("runtime", ["openclaw", "hermes"])
+def test_native_gateway_accounts_without_chat_run(sessions, agent_id, monkeypatch, runtime):
+    import httpx
+
+    from backend.app.models import InferenceCall
+    from gateway import main
+
+    token, owner = ledger_identity(sessions, agent_id, monkeypatch)
+    with sessions.begin() as session:
+        session.get(Agent, agent_id).runtime_kind = runtime
+    monkeypatch.setattr(main, "provider_key", lambda: "synthetic")
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(
+                    200, json={"id": "native-generation", "choices": [], "usage": {"cost": 0.125}}
+                )
+            ),
+            **kw,
+        ),
+    )
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/native/v1/chat/completions",
+            json={"messages": []},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 200
+    with sessions() as session:
+        call = session.scalar(select(InferenceCall))
+        assert call.run_id is None and call.employee_id == owner
+        assert float(call.cost_usd) == 0.125 and call.outcome == "completed"
