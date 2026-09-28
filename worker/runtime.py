@@ -187,6 +187,18 @@ def native_config(runtime_kind="openclaw", password_hash=None) -> dict:
             "controlUi": {"enabled": True, "allowedOrigins": ["${TALOS_CONTROL_ORIGIN}"]},
         },
         "agents": {"defaults": {"workspace": STATE_PATH + "/workspace"}},
+        "browser": {
+            "headless": True,
+            "noSandbox": True,
+            "executablePath": "/usr/bin/chromium",
+            "extraArgs": [
+                "--proxy-server=http://talos-egress:3128",
+                "--proxy-bypass-list=<-loopback>",
+            ],
+            # Proxy DNS is authoritative; Squid rejects private destinations.
+            # OpenClaw's direct-DNS preflight cannot run on an internal network.
+            "ssrfPolicy": {"dangerouslyAllowPrivateNetwork": True},
+        },
         "tools": {
             "profile": "full",
             "web": {"search": {"provider": "parallel-free"}, "fetch": {"useTrustedEnvProxy": True}},
@@ -278,6 +290,8 @@ def launch_options(
 
     if native_image:
         options["image"] = native_image
+        # Chromium renderers plus the native CLI can exhaust 256 Linux tasks.
+        options["pids_limit"] = 512
         options["environment"].update(
             {
                 "OPENCLAW_CONFIG_PATH": STATE_PATH + "/openclaw.json",
@@ -316,6 +330,10 @@ def launch_options(
             "HERMES_DASHBOARD_PORT": "9119",
             "HERMES_DASHBOARD_BASIC_AUTH_SECRET": control_token,
             "HERMES_DASHBOARD_PUBLIC_URL": control_origin,
+            "AGENT_BROWSER_PROXY": "http://talos-egress:3128",
+            "AGENT_BROWSER_ARGS": (
+                "--no-sandbox,--disable-dev-shm-usage,--proxy-bypass-list=<-loopback>"
+            ),
         }
     return options
 

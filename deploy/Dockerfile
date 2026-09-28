@@ -31,8 +31,11 @@ CMD ["python", "-m", "tests.runtime_proof"]
 # Native runtime: the upstream image plus a pinned key-free search plugin.
 FROM ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15 AS native-runtime
 USER root
+RUN apt-get update && apt-get install -y --no-install-recommends chromium \
+    && rm -rf /var/lib/apt/lists/*
 COPY deploy/native/ /opt/talos-plugins/
-RUN cd /opt/talos-plugins && npm ci --omit=dev --ignore-scripts --legacy-peer-deps
+RUN cd /opt/talos-plugins && npm ci --omit=dev --ignore-scripts --legacy-peer-deps \
+    && node browser-proxy.mjs
 USER node
 
 # Standard forwarding proxy; agents retain their internal Docker networks.
@@ -42,5 +45,13 @@ COPY deploy/squid.conf /etc/squid/squid.conf
 USER proxy
 CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]
 
-# Official Hermes image; native dashboard and bundled tools are unchanged.
+# Official Hermes image plus dependencies for its native browser tools.
 FROM nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db AS hermes-runtime
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends chromium \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global agent-browser@0.26.0
+ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
+RUN UV_TOOL_DIR=/opt/browser-tools UV_TOOL_BIN_DIR=/usr/local/bin \
+    uv tool install 'browser-use[cli]==0.13.10' \
+    && chmod -R a+rX /opt/browser-tools
