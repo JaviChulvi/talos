@@ -109,6 +109,7 @@ def test_setup_reproduces_native_skills_and_mcp_and_preserves_unmanaged_state(ki
             b"---\nUse lookup for fixture data.\n"
         ),
         "connectors/fixture/server.py": SERVER,
+        "skills/fixture/scripts/run.sh": b"#!/bin/sh\nprintf executable-fixture\n",
         "skills/disabled/SKILL.md": (
             b"---\nname: talos-disabled-fixture\ndescription: Disabled.\n---\nDo not load.\n"
         ),
@@ -154,6 +155,7 @@ def test_setup_reproduces_native_skills_and_mcp_and_preserves_unmanaged_state(ki
             }
         ],
         "assets": {name: hashlib.sha256(content).hexdigest() for name, content in files.items()},
+        "executables": ["skills/fixture/scripts/run.sh"],
     }
     artifact_hash = hashlib.sha256(json.dumps(manifest).encode()).hexdigest()
     app = {
@@ -224,6 +226,22 @@ def test_setup_reproduces_native_skills_and_mcp_and_preserves_unmanaged_state(ki
                 "fingerprint"
             ]
             == receipt["fingerprint"]
+        )
+        script = f"{mount}/.talos/setups/{artifact_hash}/enabled-skills/fixture/scripts/run.sh"
+        assert client.containers.run(
+            image.id, entrypoint=[script], network_mode="none", user=f"{uid}:{uid}",
+            volumes={prefix: {"bind": mount, "mode": "ro"}}, remove=True,
+        ) == b"executable-fixture"
+        # Losing execute permission invalidates the receipt even when bytes match.
+        client.containers.run(
+            image.id, entrypoint=["chmod", "600", script], network_mode="none",
+            user=f"{uid}:{uid}", volumes={prefix: {"bind": mount, "mode": "rw"}}, remove=True,
+        )
+        with pytest.raises(RuntimeReadinessError, match="edited"):
+            verify_setup(client, prefix, incarnation, kind, app, labels, discover=False)
+        client.containers.run(
+            image.id, entrypoint=["chmod", "700", script], network_mode="none",
+            user=f"{uid}:{uid}", volumes={prefix: {"bind": mount, "mode": "rw"}}, remove=True,
         )
         # Crashes at each publication boundary must leave a resumable pending receipt.
         import worker.setup_runtime as adapter

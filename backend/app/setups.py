@@ -98,6 +98,7 @@ class Manifest(BundleModel):
     connectors: list[Connector] = Field(default_factory=list, max_length=100)
     connection_slots: list[ConnectionSlot] = Field(default_factory=list, max_length=100)
     assets: dict[str, Hash] = Field(default_factory=dict)
+    executables: list[str] = Field(default_factory=list, max_length=MAX_FILES)
     unresolved: list[dict] = Field(default_factory=list, max_length=500)
 
 
@@ -163,6 +164,13 @@ def validate_manifest(manifest: dict, files: dict[str, bytes], *, publication: b
         raise BundleError("Unsupported setup schema version")
     if manifest.get("assets", {}) != _asset_hashes(files):
         raise BundleError("Manifest asset hashes do not match the bundle files")
+    executables = manifest.get("executables", [])
+    if (
+        not isinstance(executables, list)
+        or any(not isinstance(path, str) or path not in files for path in executables)
+        or len(executables) != len(set(executables))
+    ):
+        raise BundleError("Executable assets must be unique declared file paths")
     if not publication:
         return manifest
     try:
@@ -295,7 +303,7 @@ def read_bundle(content: bytes, *, publication: bool = False) -> tuple[dict, dic
             entries = archive.infolist()
             if len(entries) > MAX_FILES + 1:
                 raise BundleError("Bundle exceeds its file count limit")
-            seen, total = set(), 0
+            seen, total, executables = set(), 0, []
             for entry in entries:
                 path = safe_path(
                     entry.filename.removesuffix("/") if entry.is_dir() else entry.filename
@@ -307,6 +315,8 @@ def read_bundle(content: bytes, *, publication: bool = False) -> tuple[dict, dic
                 expected = stat.S_IFDIR if entry.is_dir() else stat.S_IFREG
                 if stat.S_IFMT(mode) not in {0, expected}:
                     raise BundleError("Bundle links and special files are not supported")
+                if not entry.is_dir() and path != "manifest.json" and mode & 0o111:
+                    executables.append(path)
                 if entry.flag_bits & 1 or entry.compress_type not in {
                     zipfile.ZIP_STORED,
                     zipfile.ZIP_DEFLATED,
@@ -336,6 +346,17 @@ def read_bundle(content: bytes, *, publication: bool = False) -> tuple[dict, dic
         RecursionError,
     ):
         raise BundleError("Bundle is not a valid supported ZIP with a JSON manifest") from None
+    # ZIP permissions are imported as portable metadata, never applied to the host.
+    if isinstance(manifest, dict):
+        declared = manifest.get("executables", executables)
+        if (
+            not isinstance(declared, list)
+            or any(not isinstance(path, str) for path in declared)
+            or sorted(declared) != sorted(executables)
+        ):
+            raise BundleError("Manifest executable assets do not match ZIP permissions")
+        if executables:
+            manifest = {**manifest, "executables": sorted(executables)}
     return validate_manifest(manifest, files, publication=publication), files
 
 
@@ -350,7 +371,8 @@ def write_bundle(manifest: dict, files: dict[str, bytes]) -> bytes:
         ):
             entry = zipfile.ZipInfo(path, date_time=(1980, 1, 1, 0, 0, 0))
             entry.compress_type = zipfile.ZIP_DEFLATED
-            entry.external_attr = (stat.S_IFREG | 0o644) << 16
+            mode = 0o755 if path in normalized.get("executables", []) else 0o644
+            entry.external_attr = (stat.S_IFREG | mode) << 16
             archive.writestr(entry, content)
     content = output.getvalue()
     if len(content) > MAX_ARCHIVE_BYTES:
