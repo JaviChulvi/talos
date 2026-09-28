@@ -14,6 +14,65 @@ class OwnershipError(RuntimeError):
     pass
 
 
+class RuntimeReadinessError(RuntimeError):
+    """An operator-safe readiness diagnosis, never a raw native log line."""
+
+
+def runtime_error_message(detail) -> str | None:
+    """Classify bounded native diagnostics; no part of the input is returned."""
+    if not isinstance(detail, str):
+        return None
+    detail = detail[:8192].lower()
+    for markers, message in (
+        (
+            ("another gateway owner lease is still active",),
+            "The previous OpenClaw gateway still holds its startup lease. Stop the agent, "
+            "then retry Start after its owner has stopped or the lease expires.",
+        ),
+        (
+            (
+                "invalid api key",
+                "invalid_api_key",
+                "401 unauthorized",
+                "authentication failed",
+                "credentials or agent init failed",
+            ),
+            "The runtime could not authenticate or initialize its provider. Check the selected "
+            "provider and API key in Settings or the native workspace.",
+        ),
+        (
+            ("insufficient credits", "insufficient_quota", "credit balance", "payment required"),
+            "The provider reports insufficient credits. Check the provider account balance.",
+        ),
+        (
+            ("rate limit", "rate_limit", "too many requests"),
+            "The provider rate limit was reached. Wait before sending a new message.",
+        ),
+        (
+            ("model not found", "model_not_found", "no endpoints found"),
+            "The selected model is unavailable. Choose an available model in agent Settings.",
+        ),
+        (
+            ("eai_again", "enotfound", "err_name_not_resolved"),
+            "The runtime could not resolve a destination. Check the Talos egress service and "
+            "native browser proxy configuration.",
+        ),
+        (
+            ("chrome not found", "chromium not found", "no usable browser"),
+            "The browser executable is missing. "
+            "Rebuild the native runtime image and restart the agent.",
+        ),
+        (
+            ("requires approval", "approval required", "blocked by policy"),
+            "The tool needs approval or is blocked by its native policy. "
+            "Review it in the native workspace.",
+        ),
+    ):
+        if any(marker in detail for marker in markers):
+            return message
+    return None
+
+
 def require_labels(actual: dict, expected: dict):
     if any(actual.get(key) != value for key, value in expected.items()):
         raise OwnershipError("Docker resource does not belong to this agent installation")

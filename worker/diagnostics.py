@@ -13,6 +13,7 @@ from backend.app.config import get_settings
 from backend.app.diagnostics import append_event
 from backend.app.models import ACTIVE_RUN_STATUSES, Agent, Run
 from worker.openclaw import GatewayError
+from worker.runtime import runtime_error_message
 
 MAX_OUTPUT = get_settings().inference_max_output_chars
 
@@ -186,7 +187,16 @@ class DiagnosticManager:
                     state
                 ]
                 if state == "error":
-                    run.error = "Runtime reported a diagnostic error"
+                    agent = session.get(Agent, run.agent_id)
+                    if agent.desired_state != "running":
+                        run.status = "interrupted"
+                        run.error = "The agent was stopped. This message will not be retried."
+                    else:
+                        run.error = runtime_error_message(payload.get("errorMessage")) or (
+                            "The runtime could not finish this message. Open the native workspace "
+                            "to inspect its provider and tool diagnostics."
+                        )
+                    event["reason"] = run.error
             append_event(session, run, state, event)
             return state != "delta"
 
@@ -249,13 +259,19 @@ class DiagnosticManager:
             self._finish(
                 run_id, "unknown", "Output character limit exceeded; stop the agent before retrying"
             )
-        except GatewayError:
+        except GatewayError as error:
             # A negative send acknowledgment proves rejection. Failures of an
             # abort RPC cannot prove the already accepted run has ended.
             with self.sessions() as session:
                 accepted = session.get(Run, run_id).upstream_run_id is not None
             self._finish(
-                run_id, "unknown" if accepted else "failed", "Runtime rejected the request"
+                run_id,
+                "unknown" if accepted else "failed",
+                "Runtime rejected cancellation; stop the agent before retrying"
+                if accepted
+                else runtime_error_message(str(error))
+                or "The runtime rejected this request. "
+                "Check its model and permissions in the native workspace.",
             )
         except asyncio.CancelledError:
             self._finish(
