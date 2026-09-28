@@ -67,6 +67,7 @@ export type SetupManifest = {
   connectors: SetupConnector[];
   connection_slots: SetupSlot[];
   assets: Record<string, string>;
+  executables?: string[];
   unresolved: { kind?: string; message?: string; item_id?: string }[];
   [key: string]: unknown;
 };
@@ -89,6 +90,71 @@ export type Setup = {
   updated_at: string;
 };
 type Validation = { valid: boolean; errors: string[] };
+type ExclusionTarget = { kind: "skill" | "connector" | "plugin"; id: string };
+
+// Review entries identify an item by ID; their kind describes the failure,
+// not the entity. Never guess when IDs overlap or metadata is incomplete.
+function exclusionTarget(
+  draft: SetupManifest,
+  metadata: Setup["capture_metadata"],
+  id: string,
+): ExclusionTarget | null {
+  const skills = draft.skills.filter((item) => item.id === id);
+  const connectors = draft.connectors.filter((item) => item.id === id);
+  const kinds = new Set<ExclusionTarget["kind"]>();
+  if (skills.length) kinds.add("skill");
+  if (connectors.length) kinds.add("connector");
+  if (Array.isArray(metadata?.candidates)) {
+    for (const candidate of metadata.candidates) {
+      if (
+        candidate && typeof candidate === "object" && candidate.id === id &&
+        ["skill", "connector", "plugin"].includes(candidate.kind)
+      ) kinds.add(candidate.kind);
+    }
+  }
+  if (kinds.size !== 1) return null;
+  const kind = [...kinds][0];
+  if ((kind === "skill" && skills.length !== 1) ||
+      (kind === "connector" && connectors.length !== 1)) return null;
+  return { kind, id };
+}
+
+function referencedSlots(connectors: SetupConnector[]): Set<string> {
+  const slots = new Set<string>();
+  for (const connector of connectors)
+    for (const group of [connector.env, connector.headers]) {
+      if (group && typeof group === "object")
+        for (const value of Object.values(group))
+          if (value && typeof value === "object" && "slot" in value &&
+              typeof value.slot === "string") slots.add(value.slot);
+    }
+  return slots;
+}
+
+function excludeDraftItem(draft: SetupManifest, target: ExclusionTarget): SetupManifest {
+  const roots = target.kind === "skill"
+    ? draft.skills.filter((item) => item.id === target.id).map((item) => item.path)
+    : target.kind === "connector" ? [`connectors/${target.id}`] : [];
+  const removedConnectors = target.kind === "connector"
+    ? draft.connectors.filter((item) => item.id === target.id) : [];
+  const connectors = target.kind === "connector"
+    ? draft.connectors.filter((item) => item.id !== target.id) : draft.connectors;
+  const removedSlots = referencedSlots(removedConnectors);
+  const retainedSlots = referencedSlots(connectors);
+  return {
+    ...draft,
+    skills: target.kind === "skill"
+      ? draft.skills.filter((item) => item.id !== target.id) : draft.skills,
+    connectors,
+    connection_slots: draft.connection_slots.filter((slot) =>
+      !removedSlots.has(slot.id) || retainedSlots.has(slot.id)),
+    assets: Object.fromEntries(Object.entries(draft.assets).filter(([path]) =>
+      !roots.some((root) => path === root || path.startsWith(root + "/")))),
+    ...(draft.executables ? { executables: draft.executables.filter((path) =>
+      !roots.some((root) => path === root || path.startsWith(root + "/"))) } : {}),
+    unresolved: draft.unresolved.filter((item) => item.item_id !== target.id),
+  };
+}
 
 function parseDraft(text: string): SetupManifest {
   const parsed = JSON.parse(text) as SetupManifest;
@@ -112,6 +178,9 @@ function parseDraft(text: string): SetupManifest {
         ? Object.assign({ tools: [] }, connector)
         : connector,
     );
+  if (value.executables !== undefined &&
+      (!Array.isArray(value.executables) || value.executables.some((path) => typeof path !== "string")))
+    throw new Error("Executable paths must be a list of strings.");
   const arrays = [
     "targets",
     "skills",
@@ -269,39 +338,12 @@ export function Setups({ setupId }: { setupId?: string }) {
     setValidation(null);
   }
 
-  function excludeItem(id: string) {
+  function excludeItem(target: ExclusionTarget) {
     if (!draft) return;
-    const skill = draft.skills.find((item) => item.id === id);
-    const roots = skill ? [skill.path] : [`connectors/${id}`];
-    const connectors = draft.connectors.filter((item) => item.id !== id);
-    const usedSlots = new Set<string>();
-    for (const connector of connectors)
-      for (const group of [connector.env, connector.headers]) {
-        if (group && typeof group === "object")
-          for (const value of Object.values(group))
-            if (
-              value &&
-              typeof value === "object" &&
-              "slot" in value &&
-              typeof value.slot === "string"
-            )
-              usedSlots.add(value.slot);
-      }
-    change({
-      ...draft,
-      skills: draft.skills.filter((item) => item.id !== id),
-      connectors,
-      connection_slots: draft.connection_slots.filter((slot) =>
-        usedSlots.has(slot.id),
-      ),
-      assets: Object.fromEntries(
-        Object.entries(draft.assets).filter(
-          ([path]) =>
-            !roots.some((root) => path === root || path.startsWith(root + "/")),
-        ),
-      ),
-      unresolved: draft.unresolved.filter((item) => item.item_id !== id),
-    });
+    // Re-check the current draft before removing any content.
+    const current = exclusionTarget(draft, selected?.capture_metadata, target.id);
+    if (!current || current.kind !== target.kind) return;
+    change(excludeDraftItem(draft, target));
   }
 
   async function create() {
@@ -889,25 +931,33 @@ export function Setups({ setupId }: { setupId?: string }) {
                 <AlertDescription>
                   <p className="font-medium">Captured items need review</p>
                   <ul className="mt-2 list-disc space-y-1 pl-5">
-                    {draft.unresolved.map((item, index) => (
-                      <li key={index} className="break-words">
-                        {item.message ||
-                          item.kind ||
-                          "Captured item requires review"}
-                        {item.item_id && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="ml-2"
-                            disabled={saving}
-                            onClick={() => excludeItem(item.item_id!)}
-                          >
-                            <Trash2 />
-                            Exclude {item.item_id}
-                          </Button>
-                        )}
-                      </li>
-                    ))}
+                    {draft.unresolved.map((item, index) => {
+                      const target = item.item_id
+                        ? exclusionTarget(draft, selected.capture_metadata, item.item_id)
+                        : null;
+                      return (
+                        <li key={index} className="break-words">
+                          {item.message || item.kind || "Captured item requires review"}
+                          {target ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="ml-2"
+                              disabled={saving || !!advancedError}
+                              onClick={() => excludeItem(target)}
+                            >
+                              <Trash2 />
+                              Exclude {target.kind} {target.id}
+                            </Button>
+                          ) : item.item_id ? (
+                            <span className="mt-1 block text-xs">
+                              Item {item.item_id} cannot be identified uniquely.
+                              Resolve it in Edit manifest.
+                            </span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
                   </ul>
                   <p className="mt-2">
                     Exclude unsupported items here, or replace them with

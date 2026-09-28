@@ -473,7 +473,7 @@ Adding a target declares intended compatibility. Apply still checks the destinat
 
 ### Prepared bundle format
 
-A ZIP contains `manifest.json` and its declared files. The manifest uses `schema_version: 1` and includes `instructions`, `targets`, `skills`, `connectors`, `connection_slots`, `assets` (relative path to SHA-256), and `unresolved` (empty for publication). Each target declares `runtime_kind`, the exact Talos `runtime_release`, and `architecture` (`amd64` or `arm64`). Local Node/Python connectors also require the matching `node_major` or `python_version`.
+A ZIP contains `manifest.json` and its declared files. The manifest uses `schema_version: 1` and includes `instructions`, `targets`, `skills`, `connectors`, `connection_slots`, `assets` (relative path to SHA-256), and `unresolved` (empty for publication). The optional `executables` list identifies executable asset paths; when omitted on import, Talos derives it from ZIP permission bits. If supplied, it must match those bits. Export normalizes file permissions to 0755 for executable assets and 0644 for other files; application uses private 0700/0600 permissions and checks execution permission as well as content hashes. Capture preserves executable status without running the files. Each target declares `runtime_kind`, the exact Talos `runtime_release`, and `architecture` (`amd64` or `arm64`). Local Node/Python connectors also require the matching `node_major` or `python_version`.
 
 Skill entries declare `id`, `name`, `path` under `skills/`, and `enabled`. Include the complete directory, starting with `SKILL.md`. IDs use lowercase letters, digits, and hyphens and begin with a letter. Avoid skill names already provided by the selected runtime or the destination agent; shadowing blocks application rather than silently selecting different instructions.
 
@@ -485,7 +485,7 @@ Archive import validates paths, links, duplicate entries, sizes, and content has
 
 ### Account changes, verification, and backups
 
-Connection credentials are write-only. Rotation creates a new credential version and makes an update available; existing selections retain their previous version until Apply. Credential versions remain available while referenced by an agent or active operation. Detach bindings and apply the replacement before deleting a referenced connection. Provider-side revocation remains controlled by that provider.
+Connection credentials are write-only. Rotation creates a new credential version and makes an update available; existing selections retain their previous version until Apply. Credential versions remain available while referenced by an agent or active operation. Detach bindings and apply the replacement before deleting a referenced connection. Agent deletion releases its snapshot references only after the worker confirms deletion; retained audit snapshots do not keep secrets alive. Provider-side revocation remains controlled by that provider.
 
 The worker verifies skill discovery and the actual allowed MCP tool names without performing business actions. An installed setup is distinct from a currently verified ready agent. Hosted services can change outside Talos; reproducibility covers the declared artifacts, configuration, and permissions.
 
