@@ -11,12 +11,43 @@ from backend.app.config import get_settings
 # The supervisor owns the child for its entire lifetime. Cancellation and a lost
 # worker connection both reap it; the CLI never reads the control channel.
 BRIDGE = r"""
-import json, os, select, signal, subprocess, sys
+import json, os, select, signal, subprocess, sys, uuid
 from contextlib import suppress
 from pathlib import Path
 control = sys.stdin.buffer.raw
 request = json.loads(control.readline())
 path = Path('/opt/data/talos-chat-session')
+pending = path.with_suffix('.pending')
+from hermes_state import SessionDB
+with SessionDB() as db:
+    if pending.exists():
+        checkpoint = json.loads(pending.read_text())
+        session_id = checkpoint['session_id']
+        if session_id:
+            # Rewind is native, soft-archives the partial turn, and refuses a
+            # live turn lease. Never replay unfinished tool intent on resume.
+            if db.get_compression_tip(session_id) not in (None, session_id):
+                raise RuntimeError('Interrupted Hermes session compacted; review native history')
+            tail = db.get_messages(session_id, after_id=checkpoint['watermark'])
+            target = next((m for m in tail if m['role'] == 'user'), None)
+            if target:
+                db.rewind_to_message(session_id, target['id'],
+                                     expected_active_ids=db.get_active_message_ids(session_id))
+                db.append_message(session_id, 'assistant',
+                    'The previous turn was interrupted and withdrawn. Some tool effects may '
+                    'already exist; inspect state before making changes. Do not resume that task.')
+        pending.unlink()
+    session_id = path.read_text().strip() if path.exists() else None
+    checkpoint = {'session_id': session_id, 'watermark':
+                  db.get_active_message_watermark(session_id) if session_id else 0}
+
+def save_pending():
+    temporary = pending.with_suffix('.next')
+    temporary.write_text(json.dumps(checkpoint))
+    temporary.chmod(0o600)
+    temporary.replace(pending)
+
+save_pending()
 command = ['hermes', 'chat', '--oneshot', '--format', 'stream-json',
            '--query', request['message']]
 if not request.get('model_id') and Path('/opt/data/config.yaml').exists():
@@ -34,10 +65,13 @@ for key in ('NO_PROXY', 'no_proxy'):
 if path.exists():
     command += ['--resume', path.read_text().strip()]
 else:
-    command += ['--continue', request['session'], '--create-if-missing']
+    # If the first process died before publishing its ID, do not find that
+    # abandoned conversation again by title.
+    command += ['--continue', request['session'] + ':' + uuid.uuid4().hex, '--create-if-missing']
 child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, start_new_session=True)
 cancelled = False
+completed = False
 buffer = b''
 try:
     while True:
@@ -64,11 +98,16 @@ try:
                     continue
                 event = json.loads(line)
                 if event.get('session_id'):
+                    if checkpoint['session_id'] is None:
+                        checkpoint['session_id'] = event['session_id']
+                        save_pending()
                     # Keep the actual native identity even if its title changes.
                     temp = path.with_suffix('.next')
                     temp.write_text(event['session_id'])
                     temp.chmod(0o600)
                     temp.replace(path)
+                if event.get('type') == 'result':
+                    completed = event.get('exit_code') == 0
                 print(json.dumps(event), flush=True)
             if len(buffer) > request['max_frame']:
                 raise ValueError('Hermes frame too large')
@@ -83,6 +122,8 @@ finally:
         with suppress(ProcessLookupError):
             os.killpg(child.pid, signal.SIGKILL)
     child.wait()
+if completed and not cancelled and child.returncode == 0:
+    pending.unlink()
 print(json.dumps({'type': 'talos_exit', 'cancelled': cancelled,
                   'exit_code': child.returncode}), flush=True)
 """
