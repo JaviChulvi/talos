@@ -463,7 +463,7 @@ assert isinstance(config, dict)
 allowed = set().union(*(set(resolve_toolset(k)) for k in policy['enabled']))
 # Disable installed third-party toolsets too, retaining their credentials/config.
 disabled = sorted(set(policy['disabled']) | _get_plugin_toolset_keys() |
-                  {'mcp_' + str(k) for k in (config.get('mcp_servers') or {})})
+                  {'mcp-' + str(k) for k in (config.get('mcp_servers') or {})})
 config.setdefault('agent', {})['disabled_toolsets'] = disabled
 config['platform_toolsets'] = {k: policy['enabled'] + ['no_mcp'] for k in PLATFORMS}
 issues = validate_config_structure(config)

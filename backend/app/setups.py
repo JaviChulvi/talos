@@ -363,12 +363,14 @@ def store_bundle(content: bytes) -> str:
     read_bundle(content)
     digest = hashlib.sha256(content).hexdigest()
     directory = get_settings().setup_artifacts_dir
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o2770)
+    if directory.stat().st_uid == os.geteuid():
+        directory.chmod(0o2770)
     path = directory / f"{digest}.zip"
     fd, temp = tempfile.mkstemp(prefix=".bundle-", dir=directory)
     try:
-        # Shared API/worker volume: readable by API uid 10001 and root worker.
-        os.fchmod(fd, 0o644)
+        # API uid 10001 and the worker share gid 10001; captures are worker-owned.
+        os.fchmod(fd, 0o640)
         with os.fdopen(fd, "wb") as output:
             output.write(content)
             output.flush()

@@ -68,6 +68,8 @@ class Role(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    setup_revision_id: Mapped[UUID | None] = mapped_column(ForeignKey("setup_revisions.id"))
+    connector_grants: Mapped[list] = mapped_column(JSON, default=list)
     revision: Mapped[int] = mapped_column(Integer, default=1)
 
 
@@ -111,7 +113,12 @@ class Agent(Base):
             "name": role.name,
             "revision": role.revision,
             "capabilities": role.capabilities,
+            "setup_revision_id": str(role.setup_revision_id) if role.setup_revision_id else None,
+            "connector_grants": role.connector_grants,
         }
+
+    selected_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    applied_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
 
     applied_role: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
 
