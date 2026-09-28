@@ -17,6 +17,7 @@ from backend.app.db import get_engine
 from backend.app.diagnostics import router as diagnostics_router
 from backend.app.inference import router as inference_router
 from backend.app.setups import router as setups_router
+from backend.app.usage import router as usage_router
 
 
 def database_ready() -> bool:
@@ -90,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(diagnostics_router)
     app.include_router(inference_router)
     app.include_router(setups_router)
+    app.include_router(usage_router)
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     def missing_api(path: str):
