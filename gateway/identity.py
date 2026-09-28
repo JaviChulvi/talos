@@ -58,19 +58,24 @@ def validate_token(token: str, *, require_run: bool = False, run_id=None, accoun
 
 def selected_request(token: str) -> dict:
     digest = hashlib.sha256(token.encode()).hexdigest()
-    with session_factory()() as session:
-        run = session.scalar(
-            select(Run)
-            .join(WorkloadIncarnation, Run.incarnation_id == WorkloadIncarnation.id)
-            .where(
-                WorkloadIncarnation.gateway_token_hash == digest,
-                Run.status.in_(("dispatching", "running")),
-                Run.cancel_requested.is_(False),
+    try:
+        with session_factory()() as session:
+            run = session.scalar(
+                select(Run)
+                .join(WorkloadIncarnation, Run.incarnation_id == WorkloadIncarnation.id)
+                .where(
+                    WorkloadIncarnation.gateway_token_hash == digest,
+                    Run.status.in_(("dispatching", "running")),
+                    Run.cancel_requested.is_(False),
+                )
             )
-        )
-        if run is None:
-            raise ValueError("No admitted inference request")
-        return {"run_id": str(run.id), "model_id": run.model_id, **run.inference}
+            if run is None:
+                raise ValueError("No admitted inference request")
+            return {"run_id": str(run.id), "model_id": run.model_id, **run.inference}
+    except SQLAlchemyError:
+        raise AdmissionDenied(
+            503, "accounting_unavailable", "Inference accounting is unavailable"
+        ) from None
 
 
 def native_selection(token: str) -> dict | None:

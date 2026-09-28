@@ -378,3 +378,47 @@ def test_expiry_is_rechecked_after_employee_lock(sessions, agent_id, monkeypatch
     assert error.value.status_code == 401
     with sessions() as session:
         assert list(session.scalars(select(InferenceCall))) == []
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+def test_selection_outage_preserves_accounting_error(
+    client, sessions, agent_id, monkeypatch, native, stream
+):
+    from uuid import UUID
+
+    token, _ = ledger_identity(sessions, agent_id, monkeypatch)
+    if not native:
+        run_id = UUID(diagnostics.submit(client, agent_id).json()["id"])
+        with sessions.begin() as session:
+            session.get(Run, run_id).status = "running"
+            session.get(Agent, agent_id).runtime_mode = "managed"
+    lookups = 0
+
+    def fail_after_validation():
+        nonlocal lookups
+        lookups += 1
+        if lookups == 2:
+            raise OperationalError("lookup unavailable", None, None)
+        return sessions
+
+    monkeypatch.setattr(identity, "session_factory", fail_after_validation)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_: pytest.fail("Provider contacted"))
+    endpoint = "/native/v1/chat/completions" if native else "/v1/chat/completions"
+    with TestClient(main.app) as gateway:
+        response = gateway.post(
+            endpoint,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"model": "default", "messages": [], "stream": stream},
+        )
+    assert lookups == 2
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "accounting_unavailable",
+            "type": "admission_error",
+            "message": "Inference accounting is unavailable",
+        }
+    }
+    with sessions() as session:
+        assert list(session.scalars(select(InferenceCall))) == []
