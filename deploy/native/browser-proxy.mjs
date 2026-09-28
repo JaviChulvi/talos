@@ -1,19 +1,25 @@
 // The digest-pinned browser still performs local DNS after admitting an
 // explicit browser proxy. Internal Docker networks cannot resolve public DNS;
-// the configured proxy must resolve and enforce destination policy instead.
+// the configured proxy must resolve and enforce destination-address policy.
+// OpenClaw still enforces its configured hostname policies before that handoff.
 // Remove this patch when upgrading to an upstream release with this behavior.
 import { readFileSync, writeFileSync } from "node:fs";
 
 const path = "/app/dist/chrome-BfgKoTT4.mjs";
 const source = readFileSync(path, "utf8");
 const before = "\tawait resolvePinnedHostnameWithPolicy(parsed.hostname, {";
-if (source.split(before).length !== 2) {
+const policyImport = "import { _ as resolvePinnedHostnameWithPolicy,";
+if (source.split(before).length !== 2 || source.split(policyImport).length !== 2) {
   throw new Error("Pinned OpenClaw browser preflight changed; review proxy patch");
 }
 // This follows the native protocol and explicit-proxy/private-network policy
 // checks. Direct-browser profiles retain their original DNS/SSRF validation.
 writeFileSync(path, source.replace(before,
-  '\tif (opts.browserProxyMode === "explicit-browser-proxy") return;\n' + before));
+  '\tif (opts.browserProxyMode === "explicit-browser-proxy") {\n' +
+  '\t\tassertHostnameAllowedWithPolicy(parsed.hostname, opts.ssrfPolicy);\n' +
+  '\t\treturn;\n\t}\n' + before).replace(
+    policyImport,
+    'import { n as assertHostnameAllowedWithPolicy, _ as resolvePinnedHostnameWithPolicy,'));
 
 // Snapshot requests must carry the same navigation policy as open/navigate.
 const routesPath = "/app/dist/routes-WaJN11Jq.mjs";
