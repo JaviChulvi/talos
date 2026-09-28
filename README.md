@@ -70,11 +70,28 @@ For the existing diagnostic/conversation flow, choose **OpenClaw** and check **U
 
 The OpenClaw native image extends the pinned upstream image with `@openclaw/parallel-plugin@2026.9.6`, installed from its lockfile. The `parallel-free` search provider requires no API key; external service availability and limits still apply. Tool calls through a paid model can still cost money. `web_fetch` uses the outbound proxy, and shell/file tools run as the unprivileged container user against the private workspace.
 
-Hermes uses the pinned official image unchanged, with its bundled Parallel key-free search selected at first boot. Search still depends on the external service's availability and limits. Native shell and file tools run as UID 10000 in `/opt/data/workspace`; `/opt/data` persists across starts. No OpenRouter account is required to provision either runtime.
+Hermes extends the pinned official image with browser dependencies, with its bundled Parallel key-free search selected at first boot. Search still depends on the external service's availability and limits. Native shell and file tools run as UID 10000 in `/opt/data/workspace`; `/opt/data` persists across starts. No OpenRouter account is required to provision either runtime.
 
 Telegram, Slack, and other integrations use the selected runtime's own plugins and account setup. They are not preconnected. Install/configure the required native plugin and supply your own account credentials. HTTP(S) clients must honor the supplied proxy variables or their integration's explicit proxy setting; raw TCP/UDP, inbound webhooks, LAN services, and tools requiring host privileges are not enabled by this setup. Telegram polling and Slack Socket Mode avoid public inbound ports, but channel-specific proxy support and credentials must be checked during setup. No external messages are sent by Talos provisioning.
 
-The browser tool keeps upstream security defaults. The OpenClaw image does not install Chromium; its browser automation needs a compatible sandboxed browser configured separately. Hermes includes its upstream browser dependencies. Browser automation and authenticated channel delivery have not been verified by Talos provisioning checks. Host package installation and Docker-backed nested sandboxes are unavailable. Tools may install user-space dependencies into writable state where their installers support it.
+Both native images include Chromium. Hermes also bundles pinned `agent-browser`
+and `browser-use` CLIs so the first browser call does not install dependencies.
+Browsers use Talos's public-only Squid proxy, including loopback destinations;
+agents remain on internal Docker networks. The OpenClaw image carries a narrow
+patch to skip local DNS preflight for explicitly proxy-routed browser profiles.
+The proxy resolves names and denies private/metadata addresses and non-web ports.
+Direct browser profiles retain upstream DNS validation.
+
+Chromium runs without its nested process sandbox, as required by the existing
+Docker seccomp/no-new-privileges policy; the unprivileged container, dropped
+capabilities, read-only root filesystem, and restricted egress remain its boundary.
+OpenClaw's seeded `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork` is needed
+to admit an explicit browser proxy; it does **not** grant private-network access
+through Squid. Keep the proxy and `--proxy-bypass-list=<-loopback>` together.
+Rebuild both native images to install the browser dependencies. Existing OpenClaw
+configurations are user-owned and are not overwritten: copy the `browser` block
+from `worker/runtime.py:native_config` into their native settings when opting in.
+Host package installation and Docker-backed nested sandboxes remain unavailable.
 
 Native instances keep internal Docker bridges. A shared Squid proxy allows public HTTP on port 80 and HTTPS CONNECT on port 443, denying private, loopback, link-local, and reserved destinations after DNS resolution. A separate small TCP relay per instance forwards only to that instance's UI and publishes only on `127.0.0.1`. Neither the relay nor the proxy mounts agent state or credentials. These are container/network boundaries for a trusted local administrator, not enterprise tenant isolation or protection against all prompt injection. External content can influence an agent with full native tools and its configured credentials.
 
