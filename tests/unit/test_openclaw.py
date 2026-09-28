@@ -212,3 +212,52 @@ def test_history_accepts_valid_large_runtime_responses():
                 assert (await client.history("agent:main:diagnostic"))["messages"] == messages
 
     asyncio.run(scenario())
+
+
+def test_native_tool_events_are_normalized_without_arguments_or_results():
+    async def scenario():
+        async def handler(ws):
+            await ws.send(json.dumps({"event": "connect.challenge", "payload": {"nonce": "test"}}))
+            request = json.loads(await ws.recv())
+            assert request["params"]["caps"] == ["tool-events"]
+            await ws.send(
+                json.dumps(
+                    {"type": "res", "id": request["id"], "ok": True, "payload": {"protocol": 4}}
+                )
+            )
+            for data in (
+                None,
+                {"phase": []},
+                {"phase": "start", "name": "exec", "toolCallId": "call-1", "args": "secret"},
+                {"phase": "result", "name": "exec", "toolCallId": "call-1", "result": "secret"},
+                {"phase": "result", "name": "browser", "isError": True},
+            ):
+                await ws.send(
+                    json.dumps(
+                        {
+                            "type": "event",
+                            "event": "agent",
+                            "payload": {"runId": "one", "stream": "tool", "data": data},
+                        }
+                    )
+                )
+            await ws.wait_closed()
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            async with OpenClawClient(
+                f"ws://127.0.0.1:{port}", "test", DeviceIdentity(Ed25519PrivateKey.generate())
+            ) as client:
+                events = [await client.next_event() for _ in range(3)]
+                assert [e["payload"]["phase"] for e in events] == ["started", "completed", "failed"]
+                assert events[0]["payload"] == {
+                    "runId": "one",
+                    "state": "tool",
+                    "name": "exec",
+                    "callId": "call-1",
+                    "phase": "started",
+                }
+                assert all(e["event"] == "chat" for e in events)
+                assert "secret" not in json.dumps(events)
+
+    asyncio.run(scenario())

@@ -151,6 +151,17 @@ class HermesClient:
                         if len(self.output) > get_settings().inference_max_output_chars:
                             raise ValueError("Hermes output too large")
                         await self._event("delta", deltaText=event["text"])
+                    elif event["type"] in {"tool_use", "tool_result"}:
+                        await self._event(
+                            "tool",
+                            name=event.get("name"),
+                            callId=event.get("tool_call_id"),
+                            phase="started"
+                            if event["type"] == "tool_use"
+                            else "failed"
+                            if event.get("is_error")
+                            else "completed",
+                        )
                     elif event["type"] == "result":
                         result = event
                     elif event["type"] == "talos_exit":
