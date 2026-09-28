@@ -17,6 +17,16 @@ HEADERS = {"Authorization": "Bearer talos-agent"}
 BODY = {"model": "default", "messages": [{"role": "user", "content": "hello"}]}
 
 
+@pytest.fixture(autouse=True)
+def native_accounting(monkeypatch):
+    from gateway import main
+
+    reports = []
+    monkeypatch.setattr(main, "admit_inference", lambda *_: "native-call")
+    monkeypatch.setattr(main, "record_inference", lambda _, report: reports.append(dict(report)))
+    return reports
+
+
 def test_native_revocation_cancels_provider_before_headers(monkeypatch):
     from gateway import main
 
@@ -27,6 +37,11 @@ def test_native_revocation_cancels_provider_before_headers(monkeypatch):
     )
 
     monkeypatch.setattr(main, "validate_token", lambda _: state["allowed"])
+
+    def finalize(*_):
+        state["cancelled_before_finalization"] = state["cancelled"]
+
+    monkeypatch.setattr(main, "record_inference", finalize)
 
     async def upstream(request):
         state["allowed"] = False
@@ -45,6 +60,7 @@ def test_native_revocation_cancels_provider_before_headers(monkeypatch):
         result = client.post("/native/v1/chat/completions", json=BODY, headers=HEADERS)
     assert result.status_code == 401
     assert state["cancelled"]
+    assert state["cancelled_before_finalization"]
 
 
 @pytest.mark.parametrize("phase", ["headers", "body"])
@@ -589,6 +605,25 @@ def test_usage_values_reject_invalid_numbers(value):
     assert usage_values({"cost": value, "prompt_tokens": value}) == {}
 
 
+@pytest.mark.parametrize(
+    "wire_cost,expected",
+    [("12345.000000000001", "12345.000000000001"), ("0.100000000000500001", "0.100000000001")],
+)
+def test_managed_cost_preserves_wire_decimal_precision(gateway, wire_cost, expected):
+    from decimal import Decimal
+
+    client, _, state = gateway
+    state.data = (
+        frame("Answer", "stop")
+        + 'data: {"choices":[],"usage":{"cost":'
+        + wire_cost
+        + "}}\n\ndata: [DONE]\n\n"
+    )
+    response = client.post("/v1/chat/completions", json=BODY, headers=HEADERS)
+    assert response.status_code == 200
+    assert state.reports[0]["cost"] == Decimal(expected)
+
+
 def test_failed_admission_never_contacts_provider(gateway):
     from fastapi import HTTPException
 
@@ -609,3 +644,126 @@ def test_failed_admission_never_contacts_provider(gateway):
         response = other.post("/v1/chat/completions", json=BODY, headers=HEADERS)
     assert response.status_code == 503
     assert calls == [] and state.reports == []
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_native_records_usage_and_preserves_response(monkeypatch, native_accounting, streaming):
+    from decimal import Decimal
+
+    from gateway import main
+
+    monkeypatch.setattr(main, "native_selection", lambda _: {"model_id": "test/model"})
+    monkeypatch.setattr(main, "validate_token", lambda _: True)
+    monkeypatch.setattr(main, "provider_key", lambda: "synthetic")
+    reply = {
+        "id": "gen-native",
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {"tool_calls": [{"id": "tool-1"}], "reasoning": "reason"},
+            }
+        ],
+        "usage": {"cost": 0.123456789012, "prompt_tokens": 8, "completion_tokens": 3},
+    }
+    wire = (
+        "data: " + json.dumps(reply) + "\r\n\r\ndata: [DONE]\r\n\r\n"
+        if streaming
+        else json.dumps(reply)
+    ).encode()
+
+    class Fragmented(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for offset in range(0, len(wire), 3):
+                yield wire[offset : offset + 3]
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=Fragmented())), **kw
+        ),
+    )
+    with TestClient(main.app) as client:
+        result = client.post(
+            "/native/v1/chat/completions", json={**BODY, "stream": streaming}, headers=HEADERS
+        )
+    assert result.status_code == 200
+    assert result.content == wire if streaming else result.json() == reply
+    assert len(native_accounting) == 1
+    report = native_accounting[0]
+    assert report["cost"] == Decimal("0.123456789012")
+    assert report["generation_id"] == "gen-native"
+    assert report["finish_reason"] == "tool_calls"
+    assert report["outcome"] == "completed"
+
+
+def test_native_observer_bounded_and_keeps_usage_before_error():
+    from decimal import Decimal
+
+    from gateway.openrouter import UsageObserver
+
+    report = {}
+    observer = UsageObserver(report)
+    observer.feed(b'data: {"huge":"' + b"x" * 200000)
+    assert len(observer.line) + len(observer.data) <= 131072
+    observer.feed(b'"}\n\ndata: {"usage":{"cost":0.25}}\n\n')
+    observer.feed(b'data: {"error":{"message":"failed"}}\n\ndata: [DONE]\n\n')
+    assert report == {"cost": Decimal("0.250000000000"), "outcome": "provider_error"}
+    assert observer.done
+
+
+def test_native_admission_failure_never_contacts_provider(monkeypatch):
+    from fastapi import HTTPException
+
+    from gateway import main
+
+    monkeypatch.setattr(main, "native_selection", lambda _: {"model_id": "test/model"})
+    monkeypatch.setattr(main, "provider_key", lambda: "synthetic")
+
+    def reject(*_):
+        raise HTTPException(503, "Inference accounting is unavailable")
+
+    monkeypatch.setattr(main, "admit_inference", reject)
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **_: pytest.fail("Provider contacted"))
+    with TestClient(main.app) as client:
+        assert (
+            client.post("/native/v1/chat/completions", json=BODY, headers=HEADERS).status_code
+            == 503
+        )
+
+
+@pytest.mark.parametrize("complete_body", [True, False])
+@pytest.mark.parametrize("failure", [httpx.ReadError, httpx.ReadTimeout])
+def test_native_keeps_received_json_usage_after_read_failure(
+    monkeypatch, native_accounting, complete_body, failure
+):
+    from decimal import Decimal
+
+    from gateway import main
+
+    monkeypatch.setattr(main, "native_selection", lambda _: {"model_id": "test/model"})
+    monkeypatch.setattr(main, "validate_token", lambda _: True)
+    monkeypatch.setattr(main, "provider_key", lambda: "synthetic")
+    wire = b'{"id":"gen-failed","choices":[],"usage":{"cost":0.25}}'
+
+    class FailedReply(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield wire if complete_body else wire[:-1]
+            raise failure("connection failed after body")
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=FailedReply())),
+            **kw,
+        ),
+    )
+    with TestClient(main.app) as client, pytest.raises(failure):
+        client.post("/native/v1/chat/completions", json=BODY, headers=HEADERS)
+    assert len(native_accounting) == 1
+    report = native_accounting[0]
+    assert report["outcome"] == ("timed_out" if failure is httpx.ReadTimeout else "failed")
+    assert report.get("cost") == (Decimal("0.250000000000") if complete_body else None)

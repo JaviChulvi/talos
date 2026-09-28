@@ -2,7 +2,7 @@
 
 A self-hosted control plane for personal employee agents. The goal is to let companies manage agent integrations, permissions, credentials, spending, and offboarding.
 
-**Current status: local prototype.** Talos creates and manages native OpenClaw and Hermes instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. User authentication, employee access, business permissions, and budgets are future work.
+**Current status: local prototype.** Talos creates and manages native OpenClaw and Hermes instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. Employee roles, Talos-routed spend reporting, and employee monthly allowances are available. User authentication and employee sign-in are future work.
 
 ## What works
 
@@ -184,8 +184,8 @@ Role permissions, other provider credentials, workspace and history are preserve
 The shared OpenRouter key is read by the gateway, never copied into agents. Native agents receive an incarnation
 token for `/native/v1/chat/completions`; this route preserves tool calls and results,
 and accepts only active native agents with an OpenRouter selection. Native runtimes
-still own tool dispatch and generation settings. Native inference usage accounting is
-not added here. The managed text-only route retains its no-tools contract.
+still own tool dispatch and generation settings. Native inference usage is recorded in the durable call ledger, including calls
+without a Talos chat run. Employee monthly allowances apply at gateway admission. The managed text-only route retains its no-tools contract.
 
 `POST /api/v1/agents` accepts optional `model_id`. For a native agent,
 `POST /api/v1/inference/agents/{id}/native` with `{ "model_id": "lab/model" }` (or
@@ -274,7 +274,7 @@ Each provider call records reported input, output and reasoning tokens, cost in
 USD, duration and finish reason. Missing usage or cost stays unavailable rather
 than zero, including cancelled requests without final accounting. A provider
 `length` finish is shown as **Output limit reached**. Calls within the same run
-are recorded separately; these records are observability, not a billing ledger.
+are recorded separately; new calls are stored in the durable ledger; missing costs remain unknown.
 
 Operational safeguards are separate from generation settings. Compose exposes
 `TALOS_INFERENCE_TIMEOUT_SECONDS` (1800),
@@ -396,3 +396,56 @@ is unknown, including interrupted calls without final provider accounting.
 Employee attribution is captured at admission and remains unchanged after agent
 reassignment or deletion. Legacy run usage remains readable but is not backfilled
 into this ledger. Tracking begins when migration 0012 is applied.
+
+Native OpenRouter requests through Talos use the same ledger, including native
+workspace and channel calls without a Talos chat run. Streaming accounting observes
+provider usage without changing tool calls or reasoning. Direct-provider traffic,
+external tool charges, and infrastructure costs are outside this accounting.
+Selecting OpenRouter does not prove that every request from a native runtime
+passes through Talos; “Handled by agent” usage is unavailable to Talos.
+
+### Usage reporting
+
+Open **Usage** to inspect UTC calendar months by employee and agent, including
+retained history for deleted agents. Known spending is the sum of reported charges;
+missing-cost and unresolved calls are shown separately. Reassigning an agent never
+moves existing employee charges. Months before tracking are unavailable, and the
+first tracking month is explicitly partial. Legacy run JSON is not counted here.
+
+`GET /api/v1/usage` returns totals, employee/agent breakdowns, coverage and filter
+options. `GET /api/v1/usage/calls` returns paginated call details. Both accept
+`month=YYYY-MM`, `employee_id` and `agent_id`; filters intersect. Call pages accept
+`limit` (1–100, default 50) and the opaque `next_cursor` from the previous response.
+New reporting APIs serialize USD values as decimal strings; unknown costs are null.
+
+### Employee monthly allowances
+
+Edit an employee and use **Monthly allowance (USD)** to set a shared allowance for
+all their agents. Empty means unlimited (the default); zero blocks real-provider
+requests through Talos. Alerts appear inside Talos at 80% and 100% of the allowance.
+The Usage page, employee editor, agent settings and chat show current budget status.
+Historical usage pages do not compare past spending against today's allowance.
+
+Each managed or native OpenRouter call requires an employee assignment and checks
+known spending immediately before provider dispatch. Allowances use UTC calendar
+months; the entire call belongs to its admission month, including late completion.
+Budget edits apply to subsequent admissions. Already-admitted calls can finish,
+and concurrent calls can exceed the allowance. There are no reservations, rollover
+credits, or mid-request cancellation when an allowance changes. Unknown costs warn
+but do not block admission; this is not a guaranteed maximum provider bill.
+
+`GET /api/v1/employees/{id}/budget` reports the current allowance, known spend,
+UTC period, and status. `PUT` accepts `{ "monthly_allowance_usd": "25.00" }` or
+JSON null for that field to remove the limit. Ordinary employee updates do not
+change the allowance. Provider admission failures return OpenAI-compatible errors:
+402 `employee_budget_exceeded`, 403 `employee_assignment_required`, or 503
+`accounting_unavailable`. Denied requests do not contact OpenRouter. The offline
+simulator remains available without an employee assignment.
+
+**Upgrade order:** deploy ledger accounting, native accounting, and usage visibility
+before this enforcement release. Before upgrading to the employee-budget release,
+assign employees to existing agents that use Talos-routed inference (stop an agent,
+assign it in Settings, then start it). Unassigned provider requests will be rejected
+after the upgrade, even though every employee's initial allowance is unlimited.
+Native providers configured outside Talos remain outside both accounting and
+allowance enforcement. This feature does not add employee login accounts.

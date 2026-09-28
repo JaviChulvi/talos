@@ -43,7 +43,7 @@ def test_upgrade_preserves_applied_and_pending_role_snapshots(status, action):
         config.set_main_option("script_location", str(ROOT / "backend/migrations"))
         with engine.begin() as connection:
             config.attributes["connection"] = connection
-            command.upgrade(config, "0013")
+            command.upgrade(config, "0014")
         metadata = MetaData()
         metadata.reflect(bind=engine)
         roles, employees, agents, operations = (

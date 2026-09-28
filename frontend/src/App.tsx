@@ -18,6 +18,7 @@ import {
   OpenRouterSettings,
 } from "@/components/inference-settings";
 import { Administration } from "@/components/administration";
+import { Usage } from "@/components/usage";
 import { AgentWorkspace } from "@/components/agent-workspace";
 
 type Status = {
@@ -96,6 +97,7 @@ function saveIds(key: string, ids: Record<string, string>) {
 }
 
 function pageFromHash(hash: string) {
+  if (hash === "#usage" || hash.startsWith("#usage?")) return hash.slice(1);
   if (/^#agents\/[^/]+\/settings$/.test(hash)) return hash.slice(1);
   if (["#platform", "#settings", "#roles", "#employees"].includes(hash))
     return hash.slice(1);
@@ -207,6 +209,7 @@ export default function App() {
             onOperation={recordOperation}
           />
         </div>
+        {page.startsWith("usage") && <Usage key={page} query={page.split("?")[1] ?? ""} />}
         {page === "settings" && (
           <section
             aria-labelledby="settings-heading"
