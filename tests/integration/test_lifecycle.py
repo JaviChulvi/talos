@@ -59,7 +59,7 @@ class Resources:
             "Internal": options.get("internal", False),
             "Driver": options.get("driver", "bridge"),
             "Containers": {},
-            "Config": {"Image": options.get("image", IMAGE)},
+            "Config": {"Image": options.get("image", IMAGE), "Hostname": resource.id[:12]},
         }
         resource.reload = lambda: None
         resource.remove = lambda **_: self.items.pop(name)
@@ -120,6 +120,7 @@ def worker(session_maker, monkeypatch, tmp_path):
                 client.volumes.create(name=name, labels=labels)
 
     monkeypatch.setattr("worker.lifecycle.prepare_volumes", prepare)
+    monkeypatch.setattr("worker.lifecycle.release_stopped_gateway_lease", Mock())
     monkeypatch.setattr(Worker, "wait_ready", AsyncMock())
     monkeypatch.setattr("gateway.identity.session_factory", lambda: session_maker)
     return worker
@@ -844,3 +845,25 @@ def test_role_stop_failure_is_durable_and_does_not_block_other_agents(
     other = create(client, key="after-stop-failure").json()
     assert worker.process_one()
     assert client.get("/api/v1/operations/" + other["id"]).json()["status"] == "succeeded"
+
+
+def test_gateway_lease_cleanup_requires_confirmed_stop(client, worker, session_maker, monkeypatch):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    with session_maker() as session:
+        incarnation = session.scalar(select(WorkloadIncarnation))
+    container = worker.owned_container(incarnation)
+    cleanup = Mock()
+    monkeypatch.setattr("worker.lifecycle.release_stopped_gateway_lease", cleanup)
+    monkeypatch.setattr(container, "stop", lambda **_: None)
+    with pytest.raises(RuntimeError, match="Runtime did not stop"):
+        worker.stop_incarnation(incarnation, remove=True)
+    cleanup.assert_not_called()
+    container.status = "exited"
+    worker.stop_incarnation(incarnation, remove=True)
+    cleanup.assert_called_once_with(
+        worker.client,
+        worker.names(UUID(agent_id))[0],
+        container.attrs["Config"]["Hostname"],
+        worker.labels(UUID(agent_id)),
+    )

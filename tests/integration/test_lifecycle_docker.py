@@ -1,6 +1,7 @@
 """Focused real-Docker provisioning/cleanup check; no browser or application journey."""
 
 import os
+import time
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -11,6 +12,78 @@ from docker.errors import NotFound
 
 from worker.lifecycle import Worker
 from worker.runtime import IMAGE
+
+
+def test_openclaw_lease_recovery_after_forced_stop():
+    from worker.runtime import (
+        launch_options,
+        prepare_volumes,
+        release_stopped_gateway_lease,
+        runtime_config,
+    )
+
+    client = docker.from_env(timeout=60)
+    prefix = "talos-lease-test-" + uuid4().hex
+    state, config = prefix + "-state", prefix + "-config"
+    labels = {"io.talos.test": prefix}
+    containers = []
+
+    def ready(container):
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            container.reload()
+            if container.status != "running":
+                return False
+            result = container.exec_run(
+                [
+                    "node",
+                    "-e",
+                    "fetch('http://127.0.0.1:18789/health').then(r=>process.exit(r.ok?0:1))"
+                    ".catch(()=>process.exit(1))",
+                ]
+            )
+            if result.exit_code == 0:
+                return True
+            time.sleep(0.5)
+        return False
+
+    try:
+        prepare_volumes(
+            client,
+            state,
+            config,
+            runtime_config("test-control", "test-agent", "http://unused"),
+            labels,
+        )
+        options = launch_options(prefix, state, "none", config, labels)
+        first = client.containers.run(**options)
+        containers.append(first)
+        assert ready(first)
+        first.kill()
+        first.wait(timeout=10)
+        first.reload()
+        # A mismatched host must not clear someone else's lease.
+        release_stopped_gateway_lease(client, state, "unrelated-host", labels)
+        options["name"] = prefix + "-blocked"
+        blocked = client.containers.run(**options)
+        containers.append(blocked)
+        assert not ready(blocked)
+        assert b"Another Gateway owner lease is still active" in blocked.logs()
+        release_stopped_gateway_lease(client, state, first.attrs["Config"]["Hostname"], labels)
+        options["name"] = prefix + "-recovered"
+        recovered = client.containers.run(**options)
+        containers.append(recovered)
+        assert ready(recovered)
+    finally:
+        for container in containers:
+            container.remove(force=True)
+        for name in (state, config):
+            try:
+                client.volumes.get(name).remove()
+            except NotFound:
+                pass
+        client.close()
+
 
 database_engine = test_agents.database_engine
 session_maker = test_agents.session_maker
