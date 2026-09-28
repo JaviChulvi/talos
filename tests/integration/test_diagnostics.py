@@ -796,6 +796,49 @@ def test_native_gateway_accounts_without_chat_run(sessions, agent_id, monkeypatc
         assert float(call.cost_usd) == 0.125 and call.outcome == "completed"
 
 
+def test_usage_reporting_filters_history_and_pagination(client, sessions, agent_id, monkeypatch):
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from backend.app.models import InferenceCall
+    from gateway.identity import admit_inference, record_inference
+
+    token, owner = ledger_identity(sessions, agent_id, monkeypatch)
+    ids = [admit_inference(token) for _ in range(4)]
+    record_inference(ids[0], {"cost": Decimal("0.100000000001"), "input_tokens": 4})
+    record_inference(ids[1], {"cost": Decimal("0.200000000002"), "output_tokens": 8})
+    record_inference(ids[2], {"outcome": "cancelled"})
+    with sessions.begin() as session:
+        for call in session.scalars(select(InferenceCall)):
+            call.admitted_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
+        session.get(Agent, agent_id).employee_id = None
+        session.get(Agent, agent_id).observed_state = "deleted"
+    filters = f"month=2026-08&employee_id={owner}&agent_id={agent_id}"
+    data = client.get(f"/api/v1/usage?{filters}").json()
+    assert data["total"]["known_spend_usd"] == "0.300000000003"
+    assert data["total"]["calls"] == 4 and data["total"]["reported_cost_calls"] == 2
+    assert data["total"]["unresolved_calls"] == 1 and data["total"]["missing_cost_calls"] == 1
+    assert data["total"]["input_tokens"] == 4 and data["total"]["output_tokens"] == 8
+    assert data["employees"][0]["id"] == str(owner)
+    assert data["options"]["agents"][0]["deleted"]
+    assert data["history_status"] == "before_tracking"
+    assert client.get(f"/api/v1/usage?{filters}&month=2026-09").json()["total"]["calls"] == 0
+    assert (
+        client.get(f"/api/v1/usage?month=2026-08&employee_id={uuid4()}").json()["total"]["calls"]
+        == 0
+    )
+    seen, cursor = [], ""
+    for _ in range(4):
+        page = client.get(f"/api/v1/usage/calls?{filters}&limit=1&cursor={cursor}").json()
+        seen.extend(row["id"] for row in page["items"])
+        cursor = page["next_cursor"]
+    assert set(seen) == {str(value) for value in ids} and len(seen) == 4 and cursor is None
+    assert client.get("/api/v1/usage/calls?cursor=bad").status_code == 400
+    assert client.get("/api/v1/usage?month=0000-01").status_code == 422
+    assert client.get("/api/v1/usage?month=9999-12").status_code == 422
+    assert client.get("/api/v1/usage/calls?limit=0").status_code == 422
+
+
 @pytest.mark.parametrize("expires_during_wait", [False, True])
 def test_ledger_admission_uses_time_after_run_lock(
     client, sessions, agent_id, monkeypatch, expires_during_wait
@@ -850,3 +893,18 @@ def test_ledger_admission_uses_time_after_run_lock(
                     assert session.get(InferenceCall, call_id).admitted_at == after
     finally:
         event.remove(engine, "before_cursor_execute", before_execute)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [["2026-09-01T00:00:00+00:00", value] for value in (123, {}, [], True, None)]
+    + [[], {}, "ab", ["2026-09-01T00:00:00+00:00"], [123, str(uuid4())]],
+)
+def test_usage_rejects_malformed_cursor_fields(client, fields):
+    import base64
+    import json
+
+    cursor = base64.urlsafe_b64encode(json.dumps(fields).encode()).decode()
+    response = client.get("/api/v1/usage/calls", params={"cursor": cursor})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid usage cursor"}

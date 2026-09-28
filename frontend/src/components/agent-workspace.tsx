@@ -25,6 +25,7 @@ import {
   Activity,
   MessageSquare,
   PanelLeftClose,
+  DollarSign,
 } from "lucide-react";
 import {
   Sidebar,
@@ -607,7 +608,9 @@ export function AgentWorkspace({
     window.location.assign(`#agents/${id}/settings`);
   };
   const pageTitle =
-    page === "employees"
+    page.startsWith("usage")
+      ? "Usage"
+      : page === "employees"
       ? "Employees"
       : page === "roles"
         ? "Roles"
@@ -796,6 +799,7 @@ export function AgentWorkspace({
         <SidebarFooter className="gap-3 p-3">
           <SidebarMenu>
             {[
+              { id: "usage", label: "Usage", icon: DollarSign },
               { id: "employees", label: "Employees", icon: Users },
               { id: "roles", label: "Roles", icon: ShieldCheck },
               { id: "settings", label: "Settings", icon: Settings },
@@ -804,13 +808,13 @@ export function AgentWorkspace({
               <SidebarMenuItem key={id}>
                 <SidebarMenuButton
                   asChild
-                  isActive={page === id}
+                  isActive={page.split("?")[0] === id}
                   className="h-10"
                 >
                   <a
                     href={`#${id}`}
                     onClick={navigate}
-                    aria-current={page === id ? "page" : undefined}
+                    aria-current={page.split("?")[0] === id ? "page" : undefined}
                   >
                     <Icon />
                     <span>{label}</span>
@@ -1289,6 +1293,7 @@ export function AgentWorkspace({
                       </TabsTrigger>
                     </TabsList>
                     <TabsContent value="settings">
+                      <a href={`#usage?agent_id=${selected.id}`} className="mb-5 block text-sm text-primary underline">View agent usage</a>
                       {selected.runtime_mode === "native" ? (
                         <div className="space-y-5">
                           <NativeModelSettings

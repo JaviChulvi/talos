@@ -680,6 +680,7 @@ export function Administration({
                 )}
               </div>
             </form>
+            {!isRole && selectedId && <a className="mt-5 block text-sm text-primary underline" href={`#usage?employee_id=${selectedId}`} onClick={() => setEditorOpen(false)}>View employee usage</a>}
             {selectedId && (
               <div className="mt-8 border-t pt-6">
                 <h3 className="font-semibold">Assigned agents</h3>
