@@ -73,6 +73,9 @@ class Role(Base):
 
 class Employee(Base):
     __tablename__ = "employees"
+    __table_args__ = (CheckConstraint("monthly_allowance_usd >= 0"),)
+
+    monthly_allowance_usd: Mapped[Decimal | None] = mapped_column(Numeric(24, 12))
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(160))

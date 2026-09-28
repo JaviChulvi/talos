@@ -13,7 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.capabilities import compile_permissions
-from backend.app.db import Database, get_db as get_db
+from backend.app.db import Database
+from backend.app.db import get_db as get_db
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     RUNTIME_RELEASES,

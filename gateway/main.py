@@ -1,32 +1,44 @@
 import asyncio
 import json
+import logging
+import time
 from contextlib import aclosing
+from decimal import Decimal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.app.config import get_settings
 from gateway.fake_model import model_router
 from gateway.identity import (
+    AdmissionDenied,
     admit_inference,
     native_selection,
     record_inference,
     selected_request,
     validate_token,
 )
-from gateway.openrouter import provider_key, provider_key_source
+from gateway.openrouter import UsageObserver, observe_usage, provider_key, provider_key_source
 
 app = FastAPI(title="Talos gateway", docs_url=None, redoc_url=None)
 app.include_router(
     model_router(
-        lambda token: validate_token(token, require_run=True),
+        lambda token: validate_token(token, require_run=True, accounting=True),
         selected_request,
         validate_run=lambda token, run_id: validate_token(token, require_run=True, run_id=run_id),
         record_usage=record_inference,
         admit_usage=admit_inference,
     )
 )
+
+
+@app.exception_handler(AdmissionDenied)
+async def admission_error(request: Request, error: AdmissionDenied):
+    return JSONResponse(
+        status_code=error.status_code,
+        content={"error": {"message": error.detail, "type": "admission_error", "code": error.code}},
+    )
 
 
 @app.get("/health/live")
@@ -86,6 +98,19 @@ async def native_completion(request: Request):
     payload["model"] = selection["model_id"]
     if not isinstance(payload.get("stream", False), bool):
         raise HTTPException(400, "stream must be a boolean")
+    key = provider_key()
+    call_id = await asyncio.to_thread(admit_inference, token, None, payload["model"])
+    report = {"outcome": "failed"}
+    observer = UsageObserver(report)
+    started = time.monotonic()
+
+    async def finish():
+        report["duration_ms"] = round((time.monotonic() - started) * 1000)
+        try:
+            await asyncio.shield(asyncio.to_thread(record_inference, call_id, report))
+        except Exception:
+            logging.error("Could not finalize native inference accounting; call remains unresolved")
+
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(get_settings().inference_idle_timeout_seconds, connect=10),
         trust_env=False,
@@ -97,7 +122,7 @@ async def native_completion(request: Request):
                 client.build_request(
                     "POST",
                     "https://openrouter.ai/api/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {provider_key()}"},
+                    headers={"Authorization": f"Bearer {key}"},
                     json=payload,
                 ),
                 stream=True,
@@ -118,10 +143,12 @@ async def native_completion(request: Request):
             pending_headers.cancel()
             await asyncio.gather(pending_headers, return_exceptions=True)
         await client.aclose()
+        await finish()
         raise
     if upstream.status_code != 200:
         await upstream.aclose()
         await client.aclose()
+        await finish()
         raise HTTPException(
             502,
             "OpenRouter rejected the request; check credentials, credits and model availability",
@@ -135,8 +162,10 @@ async def native_completion(request: Request):
             async with asyncio.timeout(get_settings().inference_timeout_seconds):
                 while True:
                     if not await asyncio.to_thread(validate_token, token):
+                        report["outcome"] = "revoked"
                         return
                     if not payload.get("stream") and await request.is_disconnected():
+                        report["outcome"] = "cancelled"
                         return
                     if pending is None:
                         pending = asyncio.create_task(anext(iterator))
@@ -150,20 +179,49 @@ async def native_completion(request: Request):
                     pending = None
                     size += len(chunk)
                     if size > get_settings().inference_max_output_chars * 6:
+                        report["outcome"] = "output_limit"
                         return
+                    if payload.get("stream"):
+                        observer.feed(chunk)
                     yield chunk
+                if (
+                    payload.get("stream")
+                    and observer.done
+                    and report["outcome"] != "provider_error"
+                ):
+                    report["outcome"] = "completed"
+        except (asyncio.CancelledError, GeneratorExit):
+            report["outcome"] = "cancelled"
+            raise
+        except (TimeoutError, httpx.TimeoutException):
+            report["outcome"] = "timed_out"
+            raise
         finally:
             if pending is not None:
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
             await upstream.aclose()
             await client.aclose()
+            if payload.get("stream"):
+                await finish()
 
     if payload.get("stream"):
         return StreamingResponse(chunks(), media_type="text/event-stream")
-    async with aclosing(chunks()) as stream:
-        result = b"".join([part async for part in stream])
+    result = bytearray()
     try:
-        return json.loads(result)
+        async with aclosing(chunks()) as stream:
+            async for part in stream:
+                result.extend(part)
+        parsed = json.loads(result)
+        if report["outcome"] == "failed" and not (isinstance(parsed, dict) and parsed.get("error")):
+            report["outcome"] = "completed"
+        return parsed
     except ValueError:
         raise HTTPException(502, "OpenRouter returned an incomplete response") from None
+    finally:
+        # A complete body may arrive before a read failure. Keep its reported charge.
+        try:
+            observe_usage(report, json.loads(result, parse_float=Decimal))
+        except ValueError:
+            pass
+        await finish()
