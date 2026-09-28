@@ -232,13 +232,14 @@ def test_setup_reproduces_native_skills_and_mcp_and_preserves_unmanaged_state(ki
             image.id, entrypoint=[script], network_mode="none", user=f"{uid}:{uid}",
             volumes={prefix: {"bind": mount, "mode": "ro"}}, remove=True,
         ) == b"executable-fixture"
-        # Losing execute permission invalidates the receipt even when bytes match.
-        client.containers.run(
-            image.id, entrypoint=["chmod", "600", script], network_mode="none",
-            user=f"{uid}:{uid}", volumes={prefix: {"bind": mount, "mode": "rw"}}, remove=True,
-        )
-        with pytest.raises(RuntimeReadinessError, match="edited"):
-            verify_setup(client, prefix, incarnation, kind, app, labels, discover=False)
+        # Missing owner execute permission must fail even if group execution remains.
+        for permissions in ("600", "610"):
+            client.containers.run(
+                image.id, entrypoint=["chmod", permissions, script], network_mode="none",
+                user=f"{uid}:{uid}", volumes={prefix: {"bind": mount, "mode": "rw"}}, remove=True,
+            )
+            with pytest.raises(RuntimeReadinessError, match="edited"):
+                verify_setup(client, prefix, incarnation, kind, app, labels, discover=False)
         client.containers.run(
             image.id, entrypoint=["chmod", "700", script], network_mode="none",
             user=f"{uid}:{uid}", volumes={prefix: {"bind": mount, "mode": "rw"}}, remove=True,
