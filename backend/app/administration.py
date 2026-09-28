@@ -1,5 +1,6 @@
 """Local administrator records; employee identities are not login accounts."""
 
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Response
@@ -10,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.app.agents import Database
 from backend.app.capabilities import CAPABILITIES
 from backend.app.models import Employee, Role, SetupRevision
+from backend.app.usage import employee_budget
 
 router = APIRouter(prefix="/api/v1")
 
@@ -162,3 +164,29 @@ def delete_employee(employee_id: UUID, session: Database):
             409, "Employee is assigned to agents, including retained history"
         ) from None
     return Response(status_code=204)
+
+
+class BudgetInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    monthly_allowance_usd: Decimal | None = Field(
+        ..., ge=0, max_digits=24, decimal_places=12, allow_inf_nan=False
+    )
+
+
+@router.get("/employees/{employee_id}/budget")
+def get_budget(employee_id: UUID, session: Database):
+    employee = session.get(Employee, employee_id)
+    if employee is None:
+        raise HTTPException(404, "Employee not found")
+    return employee_budget(session, employee)
+
+
+@router.put("/employees/{employee_id}/budget")
+def put_budget(employee_id: UUID, body: BudgetInput, session: Database):
+    with session.begin():
+        employee = session.get(Employee, employee_id, with_for_update=True)
+        if employee is None:
+            raise HTTPException(404, "Employee not found")
+        employee.monthly_allowance_usd = body.monthly_allowance_usd
+        session.flush()
+        return employee_budget(session, employee)
