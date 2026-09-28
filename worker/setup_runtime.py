@@ -481,7 +481,8 @@ def check_assets(previous):
         if (
             not path.is_file()
             or digest(path.read_bytes()) != expected
-            or bool(path.stat().st_mode & 0o111) != (name in previous.get("executables", []))
+            or path.stat().st_mode & 0o111
+            != (0o100 if name in previous.get("executables", []) else 0)
         ):
             fail("edited")
 
