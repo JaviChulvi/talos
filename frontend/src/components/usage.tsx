@@ -304,7 +304,10 @@ export function Usage({ query }: { query: string }) {
             >
               <h2 className="font-semibold">Current employee allowances</h2>
               {summary.budgets.map((budget) => (
-                <div key={budget.employee_id} className="border-b pb-4">
+                <div
+                  key={budget.employee_id}
+                  className="border-b pb-4 last:border-b-0 last:pb-0"
+                >
                   <BudgetStatus budget={budget} />
                 </div>
               ))}

@@ -66,6 +66,10 @@ export function EmployeeBudget({
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
+  const allowance =
+    budget?.monthly_allowance_usd
+      ?.replace(/(\.\d*?[1-9])0+$|\.0+$/, "$1")
+      .replace(/^0E[+-]?\d+$/i, "0") ?? "";
   useEffect(() => {
     if (saving) return;
     const controller = new AbortController();
@@ -101,7 +105,7 @@ export function EmployeeBudget({
     setError("");
     setNotice("");
     try {
-      const value = (draft ?? budget?.monthly_allowance_usd ?? "").trim();
+      const value = (draft ?? allowance).trim();
       const data = await api<Budget>(`/employees/${employeeId}/budget`, {
         method: "PUT",
         body: JSON.stringify({ monthly_allowance_usd: value || null }),
@@ -140,7 +144,7 @@ export function EmployeeBudget({
             min="0"
             step="any"
             placeholder="Unlimited"
-            value={draft ?? budget?.monthly_allowance_usd ?? ""}
+            value={draft ?? allowance}
             onChange={(event) => {
               setDraft(event.target.value);
               setNotice("");
