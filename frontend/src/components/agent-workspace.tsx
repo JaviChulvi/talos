@@ -984,13 +984,22 @@ export function AgentWorkspace({
                               />
                               {selected.display_name}
                             </p>
-                            <p className="whitespace-pre-wrap break-words text-sm leading-7">
-                              {item.output ||
-                                item.error ||
-                                (activeRuns.has(item.status)
-                                  ? "Waiting for a response…"
-                                  : `Message ${item.status.replaceAll("_", " ")}.`)}
-                            </p>
+                            {(item.output || !item.error) && (
+                              <p className="whitespace-pre-wrap break-words text-sm leading-7">
+                                {item.output ||
+                                  (activeRuns.has(item.status)
+                                    ? "Waiting for a response…"
+                                    : `Message ${item.status.replaceAll("_", " ")}.`)}
+                              </p>
+                            )}
+                            {item.error && (
+                              <p
+                                role="status"
+                                className="mt-2 whitespace-pre-wrap break-words text-sm text-destructive"
+                              >
+                                {item.error}
+                              </p>
+                            )}
                           </div>
                         </article>
                       ))

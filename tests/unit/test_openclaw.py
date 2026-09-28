@@ -212,3 +212,32 @@ def test_history_accepts_valid_large_runtime_responses():
                 assert (await client.history("agent:main:diagnostic"))["messages"] == messages
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "detail, expected",
+    [
+        (
+            "Another Gateway owner lease is still active for this state directory token=SECRET",
+            "lease",
+        ),
+        ("401 Unauthorized api_key=SECRET", "API key"),
+        ("insufficient credits SECRET", "balance"),
+        ("429 rate limit exceeded SECRET", "Wait"),
+        ("No endpoints found for SECRET", "model"),
+        ("getaddrinfo EAI_AGAIN private.SECRET", "egress"),
+        ("Chrome not found at /SECRET", "Rebuild"),
+        ("tool requires approval for SECRET", "approval"),
+        ("unknown failure containing SECRET", None),
+        ({"token": "SECRET"}, None),
+    ],
+)
+def test_native_error_classification_never_echoes_details(detail, expected):
+    from worker.runtime import runtime_error_message
+
+    message = runtime_error_message(detail)
+    if expected is None:
+        assert message is None
+    else:
+        assert expected in message
+        assert "SECRET" not in message

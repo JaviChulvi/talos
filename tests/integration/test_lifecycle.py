@@ -382,7 +382,10 @@ def test_exited_runtime_reports_disk_full_without_exposing_logs(
         assert operation.status == ("failed" if disk_full else "retry_wait")
         assert operation.attempts == 1
         assert operation.error == (
-            StorageFullError.message if disk_full else "RuntimeError: lifecycle operation failed"
+            StorageFullError.message
+            if disk_full
+            else "The runtime exited during startup. "
+            "Inspect its native configuration and Docker logs."
         )
         assert agent.last_error == operation.error
         assert "private-token" not in operation.error
