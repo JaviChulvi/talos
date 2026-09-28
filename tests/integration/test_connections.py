@@ -330,3 +330,50 @@ def test_agent_restart_preserves_credential_version_until_explicit_apply(client,
         assert operation.role_application["connections"] == latest["connections"]
         assert load_bound_secrets(latest["connections"]) == {"crm": {"token": "sensitive-rotated"}}
         assert session.get(Agent, agent_id).applied_application == selected
+
+
+def test_deleted_agent_audit_snapshots_do_not_retain_connection_secrets(client, session_maker):
+    from worker.lifecycle import Worker
+
+    connection = create(client)
+    path = f"/api/v1/connections/{connection['id']}"
+    with session_maker.begin() as session:
+        application = {
+            "connections": resolve_bindings(session, MANIFEST, {"crm": connection["id"]}, {})
+        }
+        agent = Agent(
+            display_name="Retired helper",
+            employee_label="Alex",
+            observed_state="stopped",
+            selected_application=application,
+            applied_application=application,
+        )
+        session.add(agent)
+        session.flush()
+        agent_id = agent.id
+    assert client.delete(path).status_code == 409
+    deletion = client.delete(
+        f"/api/v1/agents/{agent_id}", headers={"Idempotency-Key": "retire-agent"}
+    )
+    assert deletion.status_code == 202
+    with session_maker() as session:
+        assert session.get(Agent, agent_id).desired_state == "deleted"
+        assert session.get(Agent, agent_id).observed_state == "stopped"
+    # Admission alone cannot release the selected credential files.
+    assert client.delete(path).status_code == 409
+    with session_maker.begin() as session:
+        session.get(Agent, agent_id).observed_state = "deleting"
+        operation = session.get(Operation, UUID(deletion.json()["id"]))
+        operation.status = "running"
+    assert client.delete(path).status_code == 409
+    # Use the real completion path, which preserves snapshots as audit history.
+    Worker(sessions=session_maker, client=object()).complete(operation, "deleted")
+    with session_maker() as session:
+        retired = session.get(Agent, agent_id)
+        assert retired.observed_state == "deleted"
+        assert retired.selected_application == retired.applied_application == application
+        assert session.get(Operation, operation.id).status == "succeeded"
+    assert client.delete(path).status_code == 204
+    assert client.get(path).status_code == 404
+    with session_maker() as session:
+        assert session.scalars(select(ConnectionVersion)).all() == []

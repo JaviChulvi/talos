@@ -243,9 +243,14 @@ def connection_is_referenced(session: Session, connection_id: UUID) -> bool:
         (Agent, "applied_application"),
     ):
         column = getattr(model, field, None)
-        if column is not None and any(
-            _references(value, identifier) for value in session.scalars(select(column))
-        ):
+        if column is None:
+            continue
+        references = select(column)
+        if model is Agent:
+            # Tombstones retain audit snapshots after their native state has been removed.
+            # A requested deletion still holds credentials until the worker completes it.
+            references = references.where(Agent.observed_state != "deleted")
+        if any(_references(value, identifier) for value in session.scalars(references)):
             return True
     return any(
         _references(value, identifier)
