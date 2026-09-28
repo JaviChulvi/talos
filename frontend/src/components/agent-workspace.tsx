@@ -1300,6 +1300,11 @@ export function AgentWorkspace({
                             disabled={writesDisabled || operationActive}
                             onOperation={onOperation}
                           />
+                          <p className="text-xs text-muted-foreground">
+                            {selected.inference_override
+                              ? "Requests through Talos are tracked. Additional direct-provider traffic is outside Talos accounting."
+                              : "Provider handled by agent: usage unavailable. Direct-provider traffic is outside Talos accounting."}
+                          </p>
                           <div>
                             <h3 className="flex items-center gap-3 font-semibold">
                               <RuntimeIcon
