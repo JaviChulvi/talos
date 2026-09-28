@@ -34,6 +34,7 @@ class Setup(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
+    capture_metadata: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     draft_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
     draft_artifact_hash: Mapped[str | None] = mapped_column(String(64))
     revisions: Mapped[list["SetupRevision"]] = relationship(
@@ -198,7 +199,7 @@ class Operation(Base):
         Index("ix_operations_pending", "status", "next_retry_at", "created_at"),
         CheckConstraint(
             "action IN ('create', 'start', 'stop', 'delete', 'dashboard', "
-            "'apply_role', 'configure_model')"
+            "'apply_role', 'configure_model', 'capture_setup')"
         ),
         CheckConstraint("status IN ('queued', 'running', 'retry_wait', 'succeeded', 'failed')"),
         CheckConstraint("target_revision > 0"),
@@ -209,6 +210,7 @@ class Operation(Base):
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
     role_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     model_selection: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    result: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     dashboard_url: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(String(20))
     target_revision: Mapped[int] = mapped_column(BigInteger)

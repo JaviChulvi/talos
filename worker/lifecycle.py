@@ -52,6 +52,7 @@ from worker.runtime import (
     runtime_config,
     runtime_error_message,
 )
+from worker.setup_capture import SetupCaptureError, capture_setup
 from worker.setup_runtime import apply_setup, prepare_setup, verify_setup
 
 MAX_ATTEMPTS = 5
@@ -690,6 +691,36 @@ class Worker:
                 or agent.revision != operation.target_revision
             ):
                 raise OwnershipError("Operation does not match the approved agent revision")
+        if operation.action == "capture_setup":
+            from backend.app.models import Setup
+            from backend.app.setups import save_draft
+
+            if agent.desired_state != "stopped" or agent.observed_state != "stopped":
+                raise SetupCaptureError("Stop the agent before capturing a setup")
+            with self.sessions() as session:
+                incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+            if incarnation is None:
+                raise SetupCaptureError("Capture requires an initialized native runtime")
+            state, _ = self.names(agent.id)
+            captured = capture_setup(
+                self.client, state, incarnation, agent.runtime_kind, self.labels(agent.id)
+            )
+            with self.sessions.begin() as session:
+                setup = session.get(Setup, operation.id)
+                if setup is None:
+                    setup = Setup(
+                        id=operation.id,
+                        name=(agent.display_name + " setup")[:120],
+                        description="Captured from a stopped agent. Review before publishing.",
+                        capture_metadata=captured["metadata"],
+                    )
+                    save_draft(setup, captured["manifest"], captured["files"])
+                    session.add(setup)
+                current = session.get(Operation, operation.id)
+                current.result = {"setup_id": str(setup.id)}
+                current.status, current.step, current.error = "succeeded", "complete", None
+                current.heartbeat_at = datetime.now(UTC)
+            return
         if operation.action == "configure_model":
             if agent.current_incarnation_id:
                 with self.sessions() as session:
@@ -1061,7 +1092,7 @@ class Worker:
                         stop_error = cause
             message = (
                 str(error)
-                if isinstance(error, (NativeModelError, RuntimeReadinessError))
+                if isinstance(error, (NativeModelError, RuntimeReadinessError, SetupCaptureError))
                 else StorageFullError.message
                 if isinstance(error, StorageFullError)
                 else (
@@ -1094,7 +1125,10 @@ class Worker:
                 terminal = (
                     preflight_failed
                     or current.attempts >= MAX_ATTEMPTS
-                    or isinstance(error, (OwnershipError, StorageFullError, NativeModelError))
+                    or isinstance(
+                        error,
+                        (OwnershipError, StorageFullError, NativeModelError, SetupCaptureError),
+                    )
                     or isinstance(stop_error, OwnershipError)
                 )
                 current.status = "failed" if terminal else "retry_wait"
@@ -1106,7 +1140,7 @@ class Worker:
                 )
                 current.heartbeat_at = datetime.now(UTC)
                 agent = session.get(Agent, operation.agent_id)
-                if operation.action not in {"dashboard", "configure_model"}:
+                if operation.action not in {"dashboard", "configure_model", "capture_setup"}:
                     agent.observed_state, agent.last_error = (
                         previous_observed_state
                         if preflight_failed
@@ -1124,7 +1158,7 @@ class Worker:
                     agent.current_incarnation_id
                     and terminal
                     and not preflight_failed
-                    and operation.action not in {"dashboard", "configure_model"}
+                    and operation.action not in {"dashboard", "configure_model", "capture_setup"}
                 ):
                     session.get(
                         WorkloadIncarnation, agent.current_incarnation_id

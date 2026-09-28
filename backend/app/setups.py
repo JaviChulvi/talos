@@ -433,6 +433,7 @@ class RevisionResponse(BaseModel):
 class SetupResponse(SetupInput):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    capture_metadata: dict | None = None
     draft_manifest: dict
     draft_artifact_hash: str | None
     revisions: list[RevisionResponse]
@@ -489,6 +490,14 @@ async def import_setup(
     session.add(setup)
     session.commit()
     return setup
+
+
+@router.get("/runtime-targets")
+def runtime_targets():
+    return [
+        {"runtime_kind": kind, "runtime_release": release}
+        for kind, release in RUNTIME_RELEASES.items()
+    ]
 
 
 @router.get("/{setup_id}", response_model=SetupResponse)

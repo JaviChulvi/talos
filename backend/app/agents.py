@@ -16,10 +16,12 @@ from backend.app.db import Database
 from backend.app.db import get_db as get_db
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
+    ACTIVE_RUN_STATUSES,
     RUNTIME_RELEASES,
     Agent,
     Employee,
     Operation,
+    Run,
     WorkloadIncarnation,
 )
 
@@ -95,6 +97,7 @@ class OperationResponse(BaseModel):
     id: UUID
     agent_id: UUID
     dashboard_url: str | None
+    result: dict | None = None
     action: str
     target_revision: int
     status: str
@@ -416,3 +419,44 @@ def setup_preview(agent_id: UUID, session: Database):
     if agent is None or agent.desired_state == "deleted":
         raise HTTPException(404, "Agent not found")
     return application_preview(session, agent)
+
+
+@router.post("/agents/{agent_id}/capture-setup", status_code=202, response_model=OperationResponse)
+def capture_agent_setup(agent_id: UUID, idempotency_key: IdempotencyKey, session: Database):
+    scope = f"agent:{agent_id}:capture_setup"
+    digest = request_hash({"agent_id": str(agent_id), "action": "capture_setup"})
+    try:
+        with session.begin():
+            replay = find_replay(session, scope, idempotency_key, digest)
+            if replay:
+                return replay
+            agent = session.get(Agent, agent_id, with_for_update=True)
+            replay = find_replay(session, scope, idempotency_key, digest)
+            if replay:
+                return replay
+            if agent is None or agent.desired_state == "deleted":
+                raise HTTPException(404, "Agent not found")
+            if (
+                agent.runtime_mode != "native"
+                or agent.desired_state != "stopped"
+                or agent.observed_state != "stopped"
+                or not agent.current_incarnation_id
+            ):
+                raise HTTPException(
+                    409, "Start and then stop a native agent before capturing its setup"
+                )
+            if session.scalar(
+                select(Operation.id).where(
+                    Operation.agent_id == agent_id, Operation.status.in_(ACTIVE_OPERATION_STATUSES)
+                )
+            ):
+                raise HTTPException(409, "Wait for the agent's current operation before capture")
+            if session.scalar(
+                select(Run.id).where(Run.agent_id == agent_id, Run.status.in_(ACTIVE_RUN_STATUSES))
+            ):
+                raise HTTPException(409, "Resolve the agent's active work before capture")
+            return enqueue_operation(
+                session, agent, "capture_setup", scope, idempotency_key, digest
+            )
+    except IntegrityError as error:
+        return recover_duplicate(session, scope, idempotency_key, digest, error)
