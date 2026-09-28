@@ -403,3 +403,17 @@ provider usage without changing tool calls or reasoning. Direct-provider traffic
 external tool charges, and infrastructure costs are outside this accounting.
 Selecting OpenRouter does not prove that every request from a native runtime
 passes through Talos; “Handled by agent” usage is unavailable to Talos.
+
+### Usage reporting
+
+Open **Usage** to inspect UTC calendar months by employee and agent, including
+retained history for deleted agents. Known spending is the sum of reported charges;
+missing-cost and unresolved calls are shown separately. Reassigning an agent never
+moves existing employee charges. Months before tracking are unavailable, and the
+first tracking month is explicitly partial. Legacy run JSON is not counted here.
+
+`GET /api/v1/usage` returns totals, employee/agent breakdowns, coverage and filter
+options. `GET /api/v1/usage/calls` returns paginated call details. Both accept
+`month=YYYY-MM`, `employee_id` and `agent_id`; filters intersect. Call pages accept
+`limit` (1–100, default 50) and the opaque `next_cursor` from the previous response.
+New reporting APIs serialize USD values as decimal strings; unknown costs are null.
