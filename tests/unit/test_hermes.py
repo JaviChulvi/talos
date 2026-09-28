@@ -16,7 +16,8 @@ def test_hermes_bridge_preserves_session_and_reaps_child(tmp_path, end):
         "class SessionDB:\n"
         " def __enter__(self): return self\n"
         " def __exit__(self, *args): pass\n"
-        " def get_active_message_watermark(self, session_id): return 0\n"
+        " def get_active_message_ids(self, session_id): return []\n"
+        " def get_messages(self, session_id, **kwargs): return []\n"
     )
     executable = tmp_path / "hermes"
     executable.write_text(
@@ -102,4 +103,4 @@ def test_pinned_hermes_recovers_interrupted_native_history():
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert result.stdout.count("PASS") == 3
+    assert result.stdout.count("PASS") == 7

@@ -26,20 +26,35 @@ with SessionDB() as db:
         if session_id:
             # Rewind is native, soft-archives the partial turn, and refuses a
             # live turn lease. Never replay unfinished tool intent on resume.
-            if db.get_compression_tip(session_id) not in (None, session_id):
-                raise RuntimeError('Interrupted Hermes session compacted; review native history')
-            tail = db.get_messages(session_id, after_id=checkpoint['watermark'])
-            target = next((m for m in tail if m['role'] == 'user'), None)
-            if target:
+            active_ids = db.get_active_message_ids(session_id)
+            prior_ids = checkpoint.get('active_ids')
+            # Compaction can keep the session ID but replace message IDs. Check
+            # both the prior prefix and archived tail, including on a first turn.
+            tail = db.get_messages(session_id, after_id=checkpoint['watermark'],
+                                   include_inactive=True)
+            if (db.get_compression_tip(session_id) not in (None, session_id)
+                    or prior_ids is None
+                    or [i for i in active_ids if i <= checkpoint['watermark']] != prior_ids
+                    or any(not m['active'] for m in tail)):
+                raise RuntimeError('Interrupted Hermes history rewritten; review native history')
+            users = [m for m in tail if m['role'] == 'user']
+            if tail and (len(users) != 1 or users[0]['content'] != checkpoint.get('message')):
+                raise RuntimeError('Interrupted Hermes history advanced; review native history')
+            if users:
+                target = users[0]
                 db.rewind_to_message(session_id, target['id'],
-                                     expected_active_ids=db.get_active_message_ids(session_id))
+                                     expected_active_ids=active_ids,
+                                     expected_target_content=target['content'])
                 db.append_message(session_id, 'assistant',
                     'The previous turn was interrupted and withdrawn. Some tool effects may '
                     'already exist; inspect state before making changes. Do not resume that task.')
         pending.unlink()
     session_id = path.read_text().strip() if path.exists() else None
-    checkpoint = {'session_id': session_id, 'watermark':
-                  db.get_active_message_watermark(session_id) if session_id else 0}
+    last = (db.get_messages(session_id, include_inactive=True, latest=True, limit=1)
+            if session_id else [])
+    checkpoint = {'session_id': session_id, 'watermark': last[-1]['id'] if last else 0,
+                  'active_ids': db.get_active_message_ids(session_id) if session_id else [],
+                  'message': request['message']}
 
 def save_pending():
     temporary = pending.with_suffix('.next')
