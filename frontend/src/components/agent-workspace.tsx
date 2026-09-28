@@ -1001,7 +1001,7 @@ export function AgentWorkspace({
                                 {item.error}
                               </p>
                             )}
-                            {item.id === runId && runActive && lastTool && (
+                            {item.id === runId && runActive && item.status !== "unknown" && lastTool && (
                               <p role="status" className="mt-2 text-sm text-muted-foreground">
                                 {String(lastTool.payload.name)}: {String(lastTool.payload.phase)}
                                 {lastTool.payload.phase === "started"
