@@ -70,7 +70,7 @@ services:
   api:
     <<: *platform
     networks: [control, ingress]
-    volumes: ["provider-secrets:/var/lib/talos-provider", "setup-artifacts:/var/lib/talos-setups"]
+    volumes: ["provider-secrets:/var/lib/talos-provider", "setup-artifacts:/var/lib/talos-setups", "connection-secrets:/var/lib/talos-connections"]
     ports: ["127.0.0.1:${TALOS_PORT:-8000}:8000"]
     depends_on:
       migrate: {condition: service_completed_successfully}
@@ -86,7 +86,7 @@ services:
       io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
     user: "0:10001"
     command: ["python", "-m", "worker.main"]
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "worker-state:/var/lib/talos", "setup-artifacts:/var/lib/talos-setups"]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "worker-state:/var/lib/talos", "setup-artifacts:/var/lib/talos-setups", "connection-secrets:/var/lib/talos-connections:ro"]
     depends_on:
       migrate: {condition: service_completed_successfully}
   gateway:
@@ -106,6 +106,7 @@ networks:
     internal: true
 volumes:
   setup-artifacts:
+  connection-secrets:
   provider-secrets:
   postgres-data:
   worker-state:

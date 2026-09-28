@@ -1,7 +1,7 @@
 from alembic import context
 from sqlalchemy import create_engine, pool
 
-from backend.app import models  # noqa: F401
+from backend.app import connections, models  # noqa: F401
 from backend.app.config import get_settings
 from backend.app.db import Base
 

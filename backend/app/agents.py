@@ -310,6 +310,12 @@ def request_lifecycle(
                     application = normalize_application(
                         agent.selected_application, agent.runtime_kind
                     )
+                    from backend.app.connections import ConnectionBindingError, load_bound_secrets
+
+                    try:
+                        load_bound_secrets(application.get("connections", {}))
+                    except ConnectionBindingError as error:
+                        raise HTTPException(409, str(error)) from None
                     if application.get("employee_id") != str(agent.employee_id):
                         raise HTTPException(409, "Employee changed; apply the role before starting")
                 else:

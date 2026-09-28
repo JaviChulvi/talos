@@ -807,6 +807,11 @@ class Worker:
             # Empty applications must also remove any partially installed setup.
             has_setup = bool(application)
             prepared_setup = None
+            bound_secrets = {}
+            if has_setup:
+                from backend.app.connections import load_bound_secrets
+
+                bound_secrets = load_bound_secrets(application.get("connections", {}))
             if has_setup and agent.current_incarnation_id:
                 with self.sessions() as session:
                     previous = session.get(WorkloadIncarnation, agent.current_incarnation_id)
@@ -824,6 +829,7 @@ class Worker:
                         agent.runtime_kind,
                         application,
                         self.labels(agent.id),
+                        secrets=bound_secrets,
                     )
             if application:
                 # Persist the stop boundary before mutating Docker. A preflight
@@ -880,6 +886,7 @@ class Worker:
                         application,
                         self.labels(agent.id),
                         prepared=prepared_setup,
+                        secrets=bound_secrets,
                     )
                     verify_setup(
                         self.client,

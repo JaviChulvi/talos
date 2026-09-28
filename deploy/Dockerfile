@@ -19,7 +19,8 @@ COPY alembic.ini ./
 COPY --from=frontend /build/frontend/dist frontend/dist/
 RUN useradd --uid 10001 --create-home talos \
     && install -d -m 0700 -o talos -g talos /var/lib/talos-provider \
-    && install -d -m 2770 -o talos -g talos /var/lib/talos-setups
+    && install -d -m 2770 -o talos -g talos /var/lib/talos-setups \
+    && install -d -m 0750 -o talos -g talos /var/lib/talos-connections
 USER talos
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
 

@@ -70,6 +70,7 @@ class Role(Base):
     capabilities: Mapped[list] = mapped_column(JSON, default=list)
     setup_revision_id: Mapped[UUID | None] = mapped_column(ForeignKey("setup_revisions.id"))
     connector_grants: Mapped[list] = mapped_column(JSON, default=list)
+    connection_bindings: Mapped[dict] = mapped_column(JSON, default=dict)
     revision: Mapped[int] = mapped_column(Integer, default=1)
 
 
@@ -79,6 +80,7 @@ class Employee(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(160))
     email: Mapped[str | None] = mapped_column(String(254))
+    connection_overrides: Mapped[dict] = mapped_column(JSON, default=dict)
     role_id: Mapped[UUID] = mapped_column(ForeignKey("roles.id"), index=True)
     role: Mapped["Role"] = relationship(lazy="selectin")
 
