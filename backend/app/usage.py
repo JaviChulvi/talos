@@ -136,7 +136,14 @@ def calls(
         try:
             if len(cursor) > 512:
                 raise ValueError
-            stamp, call_id = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+            fields = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+            if (
+                not isinstance(fields, list)
+                or len(fields) != 2
+                or not all(isinstance(field, str) for field in fields)
+            ):
+                raise ValueError
+            stamp, call_id = fields
             stamp = datetime.fromisoformat(stamp)
             if stamp.tzinfo is None:
                 raise ValueError

@@ -893,3 +893,18 @@ def test_ledger_admission_uses_time_after_run_lock(
                     assert session.get(InferenceCall, call_id).admitted_at == after
     finally:
         event.remove(engine, "before_cursor_execute", before_execute)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [["2026-09-01T00:00:00+00:00", value] for value in (123, {}, [], True, None)]
+    + [[], {}, "ab", ["2026-09-01T00:00:00+00:00"], [123, str(uuid4())]],
+)
+def test_usage_rejects_malformed_cursor_fields(client, fields):
+    import base64
+    import json
+
+    cursor = base64.urlsafe_b64encode(json.dumps(fields).encode()).decode()
+    response = client.get("/api/v1/usage/calls", params={"cursor": cursor})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid usage cursor"}
