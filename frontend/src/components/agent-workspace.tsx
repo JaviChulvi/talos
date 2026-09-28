@@ -297,6 +297,7 @@ export function AgentWorkspace({
     agents.some((agent) => transitionalStates.has(agent.observed_state));
   const writesDisabled = submitting || !!retryRequest || !!pollError || loading;
   const runEvents = events.runId === runId ? events.items : [];
+  const lastTool = runEvents.filter((event) => event.type === "tool").at(-1);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1000,6 +1001,14 @@ export function AgentWorkspace({
                                 {item.error}
                               </p>
                             )}
+                            {item.id === runId && runActive && item.status !== "unknown" && lastTool && (
+                              <p role="status" className="mt-2 text-sm text-muted-foreground">
+                                {String(lastTool.payload.name)}: {String(lastTool.payload.phase)}
+                                {lastTool.payload.phase === "started"
+                                  ? "…"
+                                  : "; waiting for response…"}
+                              </p>
+                            )}
                           </div>
                         </article>
                       ))
@@ -1053,7 +1062,9 @@ export function AgentWorkspace({
                               {runEvents.map((event) => (
                                 <li key={event.sequence}>
                                   {event.sequence}.{" "}
-                                  {event.type.replaceAll("_", " ")}
+                                  {event.type === "tool"
+                                    ? `${event.payload.name}: ${event.payload.phase}`
+                                    : event.type.replaceAll("_", " ")}
                                 </li>
                               ))}
                             </ol>

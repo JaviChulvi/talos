@@ -99,7 +99,7 @@ class DeviceIdentity:
             },
             "role": "operator",
             "scopes": SCOPES,
-            "caps": [],
+            "caps": ["tool-events"],
             "auth": {"token": token},
             "device": {
                 "id": self.device_id,
@@ -168,6 +168,32 @@ class OpenClawClient:
                         else:
                             future.set_exception(GatewayError(frame.get("error", {})))
                 elif frame.get("type") == "event":
+                    payload = frame.get("payload", {})
+                    if (
+                        frame.get("event") == "agent"
+                        and isinstance(payload, dict)
+                        and payload.get("stream") == "tool"
+                    ):
+                        data = payload.get("data", {})
+                        if not isinstance(data, dict) or data.get("phase") not in (
+                            "start",
+                            "result",
+                        ):
+                            continue
+                        frame = {
+                            "event": "chat",
+                            "payload": {
+                                "runId": payload.get("runId"),
+                                "state": "tool",
+                                "name": data.get("name"),
+                                "callId": data.get("toolCallId"),
+                                "phase": "started"
+                                if data["phase"] == "start"
+                                else "failed"
+                                if data.get("isError")
+                                else "completed",
+                            },
+                        }
                     # Never silently discard diagnostic events on overflow.
                     self.events.put_nowait(frame)
         except Exception as exc:

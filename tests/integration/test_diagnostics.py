@@ -620,3 +620,66 @@ def test_native_error_is_actionable_with_partial_output(client, sessions, agent_
     assert "private-secret" not in str(result) + str(events)
     assert "https://private" not in str(result) + str(events)
     assert events[-1]["payload"]["reason"] == result["error"]
+
+
+@pytest.mark.parametrize("terminal", ["final", "error", "aborted"])
+def test_tool_progress_is_durable_bounded_and_run_scoped(client, sessions, agent_id, terminal):
+    run_id = submit(client, agent_id).json()["id"]
+
+    class ToolDriver(FakeDriver):
+        async def send(self, *args):
+            result = await super().send(*args)
+            self.event({"state": "tool", "name": "foreign", "phase": "started", "runId": "other"})
+            for name, phase in (
+                (None, "started"),
+                ("secret\ntext", "started"),
+                ("x" * 129, "started"),
+                ("exec", []),
+            ):
+                self.event({"state": "tool", "name": name, "phase": phase})
+            for name, phase, call in (
+                ("exec", "started", "a"),
+                ("browser", "started", "b"),
+                ("browser", "failed", "b"),
+                ("exec", "completed", "a"),
+            ):
+                self.event(
+                    {
+                        "state": "tool",
+                        "name": name,
+                        "phase": phase,
+                        "callId": call,
+                        "args": "synthetic-secret",
+                        "result": "synthetic-secret",
+                    }
+                )
+            self.event({"state": "delta", "deltaText": "Preserved text"})
+            self.event({"state": terminal})
+            return result
+
+    driver = ToolDriver(streaming=True)
+    manager = manager_for(sessions, driver)
+    asyncio.run(drain(manager))
+    path = f"/api/v1/runs/{run_id}"
+    result = client.get(path).json()
+    assert (
+        result["status"]
+        == {"final": "completed", "error": "failed", "aborted": "cancelled"}[terminal]
+    )
+    assert result["output"] == "Preserved text"
+    events = client.get(path + "/events").json()
+    assert [e["sequence"] for e in events] == list(range(1, len(events) + 1))
+    tools = [e["payload"] for e in events if e["type"] == "tool"]
+    assert tools == [
+        {"name": name, "phase": phase, "callId": call}
+        for name, phase, call in (
+            ("exec", "started", "a"),
+            ("browser", "started", "b"),
+            ("browser", "failed", "b"),
+            ("exec", "completed", "a"),
+        )
+    ]
+    manager._event(UUID(run_id), {"state": "tool", "name": "late", "phase": "started"})
+    assert client.get(path + "/events").json() == events
+    assert client.get(path + "/events?after=3").json() == events[3:]
+    assert "synthetic-secret" not in str(events)

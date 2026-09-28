@@ -1,6 +1,7 @@
 """One asynchronous task per admitted diagnostic, with durable send intent."""
 
 import asyncio
+import re
 from contextlib import suppress
 from time import monotonic
 from uuid import UUID
@@ -148,6 +149,20 @@ class DiagnosticManager:
             if run.status not in ACTIVE_RUN_STATUSES:
                 return True
             state = payload.get("state")
+            if state == "tool":
+                name, phase = payload.get("name"), payload.get("phase")
+                if (
+                    not isinstance(name, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", name)
+                    or phase not in ("started", "completed", "failed")
+                ):
+                    return False
+                event = {"name": name, "phase": phase}
+                call_id = payload.get("callId")
+                if isinstance(call_id, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", call_id):
+                    event["callId"] = call_id
+                append_event(session, run, "tool", event)
+                return False
             if state not in {"delta", "final", "error", "aborted"}:
                 return False
             if state == "delta":
