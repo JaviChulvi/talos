@@ -39,6 +39,7 @@ from worker.runtime import (
     IMAGE,
     NATIVE_IMAGES,
     OwnershipError,
+    RuntimeReadinessError,
     apply_native_model,
     apply_native_permissions,
     approve_device,
@@ -49,6 +50,7 @@ from worker.runtime import (
     release_stopped_gateway_lease,
     require_labels,
     runtime_config,
+    runtime_error_message,
 )
 
 MAX_ATTEMPTS = 5
@@ -282,7 +284,7 @@ class Worker:
                 }
             )
             if len(egress) != 1:
-                raise RuntimeError("Start the Talos egress service before native agents")
+                raise RuntimeReadinessError("Start the Talos egress service before native agents")
             require_labels(egress[0].labels, self.service_labels("egress"))
             services.append((egress[0], "talos-egress"))
         for container, alias in services:
@@ -540,7 +542,11 @@ class Worker:
                 output = await asyncio.to_thread(container.logs, tail=40)
                 if b"ENOSPC" in output:
                     raise StorageFullError()
-                raise RuntimeError("Runtime exited before readiness")
+                raise RuntimeReadinessError(
+                    runtime_error_message(output.decode(errors="replace"))
+                    or "The runtime exited during startup. "
+                    "Inspect its native configuration and Docker logs."
+                )
             try:
                 if runtime_kind == "hermes":
                     async with httpx.AsyncClient(
@@ -569,7 +575,10 @@ class Worker:
                 if not retry:
                     raise
             await asyncio.sleep(1)
-        raise TimeoutError("Runtime readiness deadline exceeded")
+        raise RuntimeReadinessError(
+            "The runtime did not become ready in time. "
+            "Check Docker resources and native startup logs."
+        )
 
     def mark_stopped(self, session, agent: Agent):
         agent.observed_state = "stopped"
@@ -951,7 +960,7 @@ class Worker:
                         stop_error = cause
             message = (
                 str(error)
-                if isinstance(error, NativeModelError)
+                if isinstance(error, (NativeModelError, RuntimeReadinessError))
                 else StorageFullError.message
                 if isinstance(error, StorageFullError)
                 else (

@@ -594,3 +594,29 @@ def test_agent_overrides_inherit_reset_and_snapshot_independently(
     with sessions.begin() as session:
         config = session.get(InferenceConfig, 1)
         config.model_id, config.settings, config.capabilities = "fixture", {}, {}
+
+
+@pytest.mark.parametrize("stopping", [False, True])
+def test_native_error_is_actionable_with_partial_output(client, sessions, agent_id, stopping):
+    run_id = UUID(submit(client, agent_id).json()["id"])
+    manager = DiagnosticManager(sessions, AsyncMock())
+    manager._claim(run_id)
+    manager._event(run_id, {"state": "delta", "deltaText": "Partial response"})
+    if stopping:
+        with sessions.begin() as session:
+            session.get(Agent, agent_id).desired_state = "stopped"
+    assert manager._event(
+        run_id,
+        {
+            "state": "error",
+            "errorMessage": "401 Unauthorized token=private-secret https://private",
+        },
+    )
+    result = client.get(f"/api/v1/runs/{run_id}").json()
+    assert result["output"] == "Partial response"
+    assert result["status"] == ("interrupted" if stopping else "failed")
+    assert ("agent was stopped" if stopping else "Check the selected provider") in result["error"]
+    events = client.get(f"/api/v1/runs/{run_id}/events").json()
+    assert "private-secret" not in str(result) + str(events)
+    assert "https://private" not in str(result) + str(events)
+    assert events[-1]["payload"]["reason"] == result["error"]

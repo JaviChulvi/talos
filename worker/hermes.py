@@ -216,6 +216,7 @@ class HermesClient:
                             await self._event(
                                 "error" if result["exit_code"] else "final",
                                 message={"content": result["text"]},
+                                errorMessage=result.get("error"),
                             )
                         else:
                             # A process exit without a result cannot prove delivery.
