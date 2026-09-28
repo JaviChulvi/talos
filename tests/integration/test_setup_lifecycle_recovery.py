@@ -6,6 +6,7 @@ from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
+from docker.errors import NotFound
 from sqlalchemy import func, select
 
 from backend.app.applications import application_fingerprint
@@ -61,6 +62,25 @@ def apply_role(client, running, key):
     return UUID(response.json()["id"])
 
 
+
+def require_prepared_volume(monkeypatch, writer):
+    """Match the adapter's preparation timing and dependency on both volumes."""
+    def prepare(client, state, incarnation, *args, **kwargs):
+        client.volumes.get(state)
+        client.volumes.get(incarnation.config_volume)
+        return {"config_volume": incarnation.config_volume}
+
+    preparation = Mock(side_effect=prepare)
+
+    def apply(*args, prepared=None, **kwargs):
+        if prepared is None:
+            preparation(*args, **kwargs)
+
+    monkeypatch.setattr("worker.lifecycle.prepare_setup", preparation)
+    writer.side_effect = apply
+    return preparation
+
+
 def test_preflight_failure_preserves_running_identity_and_applied_snapshot(
     client, worker, session_maker, running_role_agent, monkeypatch
 ):
@@ -114,11 +134,11 @@ def test_application_error_after_stop_boundary_stays_stopped_across_retry(
         if "io.talos.incarnation" in c.labels and c.status == "running"
     ]
     # A subsequent preparation error must not erase the persisted stop boundary.
-    monkeypatch.setattr(
-        "worker.lifecycle.prepare_setup",
-        Mock(side_effect=RuntimeReadinessError("Partial installation needs recovery")),
-    )
+    preparation = require_prepared_volume(monkeypatch, running.writer)
+    preparation.side_effect = RuntimeReadinessError("Partial installation needs recovery")
     restarted = Worker(sessions=session_maker, client=worker.client)
+    monkeypatch.setattr(restarted, "ensure_network", worker.ensure_network)
+    monkeypatch.setattr(restarted, "ui_proxy", worker.ui_proxy)
     assert restarted.process_one()
     with session_maker() as session:
         operation = session.get(Operation, operation_id)
@@ -126,7 +146,8 @@ def test_application_error_after_stop_boundary_stays_stopped_across_retry(
         agent = session.get(Agent, running.id)
         assert agent.observed_state == "stopped"
         assert agent.applied_application == running.application
-    assert running.writer.call_count == 1
+    preparation.assert_called_once()
+    assert running.writer.call_count == 2
 
 
 def test_persisted_stop_boundary_survives_crash_before_first_docker_mutation(
@@ -142,11 +163,11 @@ def test_persisted_stop_boundary_survives_crash_before_first_docker_mutation(
         operation = session.get(Operation, operation_id)
         assert operation.status == "running" and operation.step == "applying_setup"
     assert running.container.status == "running"
-    monkeypatch.setattr(
-        "worker.lifecycle.prepare_setup",
-        Mock(side_effect=RuntimeReadinessError("Setup recovery failed")),
-    )
+    preparation = require_prepared_volume(monkeypatch, running.writer)
+    preparation.side_effect = RuntimeReadinessError("Setup recovery failed")
     restarted = Worker(sessions=session_maker, client=worker.client)
+    monkeypatch.setattr(restarted, "ensure_network", worker.ensure_network)
+    monkeypatch.setattr(restarted, "ui_proxy", worker.ui_proxy)
     assert restarted.process_one()
     with session_maker() as session:
         operation = session.get(Operation, operation_id)
@@ -155,7 +176,136 @@ def test_persisted_stop_boundary_survives_crash_before_first_docker_mutation(
         assert agent.observed_state == "stopped"
         assert agent.applied_application == running.application
     assert running.container.status == "exited" and not validate_token(running.token)
-    running.writer.assert_not_called()
+    preparation.assert_called_once()
+    running.writer.assert_called_once()
+
+
+@pytest.mark.parametrize("crash_point", ["retired_config", "first_allocation", "next_allocation"])
+def test_retry_prepares_only_after_successor_config_volume_exists(
+    client, worker, session_maker, role_agent, monkeypatch, crash_point
+):
+    agent_id, _, writer = role_agent
+    path = f"/api/v1/agents/{agent_id}"
+    previous = None
+    if crash_point != "first_allocation":
+        started = client.post(path + "/start", headers={"Idempotency-Key": "before-crash"})
+        assert started.status_code == 202
+        assert worker.process_one()
+        with session_maker() as session:
+            agent = session.get(Agent, UUID(agent_id))
+            previous = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        writer.reset_mock()
+    preparation = require_prepared_volume(monkeypatch, writer)
+    response = client.post(path + "/apply-role", headers={"Idempotency-Key": "volume-crash"})
+    assert response.status_code == 202
+    operation_id = UUID(response.json()["id"])
+    with monkeypatch.context() as patch:
+        if crash_point == "retired_config":
+            stop = worker.stop_incarnation
+
+            def stop_then_crash(incarnation, remove=False):
+                stop(incarnation, remove=remove)
+                if remove and incarnation.id == previous.id:
+                    raise ProcessDied()
+
+            patch.setattr(worker, "stop_incarnation", stop_then_crash)
+        else:
+            # ensure_incarnation has committed, but prepare_volumes has not run.
+            patch.setattr(worker, "ensure_credentials", Mock(side_effect=ProcessDied()))
+        with pytest.raises(ProcessDied):
+            worker.process_one()
+    with session_maker() as session:
+        operation = session.get(Operation, operation_id)
+        agent = session.get(Agent, UUID(agent_id))
+        interrupted = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        selected = deepcopy(agent.selected_application)
+        assert operation.status == "running" and operation.step == "applying_setup"
+        if previous:
+            assert session.get(WorkloadIncarnation, previous.id).revoked_at is not None
+        if crash_point == "retired_config":
+            assert interrupted.id == previous.id
+        else:
+            assert interrupted.generation == operation.target_revision
+    with pytest.raises(NotFound):
+        worker.client.volumes.get(interrupted.config_volume)
+    writer.assert_not_called()
+
+    restarted = Worker(sessions=session_maker, client=worker.client)
+    monkeypatch.setattr(restarted, "ensure_network", worker.ensure_network)
+    monkeypatch.setattr(restarted, "ui_proxy", worker.ui_proxy)
+    assert restarted.process_one()
+    with session_maker() as session:
+        operation = session.get(Operation, operation_id)
+        agent = session.get(Agent, UUID(agent_id))
+        successor = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        assert operation.status == "succeeded"
+        assert successor.generation == operation.target_revision
+        assert successor.revoked_at is None
+        assert agent.applied_application == agent.selected_application == selected
+        assert agent.observed_state == ("ready" if previous else "stopped")
+        assert session.scalar(select(func.count()).select_from(WorkloadIncarnation)) == (
+            2 if previous else 1
+        )
+        if crash_point != "retired_config":
+            assert successor.id == interrupted.id
+        if previous:
+            assert successor.id != previous.id
+    writer.assert_called_once()
+    assert writer.call_args.kwargs["prepared"] is None
+    assert preparation.call_count == (2 if previous else 1)
+    assert preparation.call_args.args[2].config_volume == successor.config_volume
+
+
+
+def test_new_apply_recovers_revoked_incarnation_without_a_config_volume(
+    client, worker, session_maker, role_agent, monkeypatch
+):
+    agent_id, _, writer = role_agent
+    path = f"/api/v1/agents/{agent_id}"
+    preparation = require_prepared_volume(monkeypatch, writer)
+    response = client.post(path + "/apply-role", headers={"Idempotency-Key": "exhaust-identity"})
+    assert response.status_code == 202
+    operation_id = UUID(response.json()["id"])
+    with session_maker.begin() as session:
+        # Exercise the final bounded attempt without waiting through backoff.
+        session.get(Operation, operation_id).attempts = 4
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            worker,
+            "ensure_credentials",
+            Mock(side_effect=RuntimeReadinessError("Identity publication failed")),
+        )
+        assert worker.process_one()
+    with session_maker() as session:
+        agent = session.get(Agent, UUID(agent_id))
+        revoked = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        selected = deepcopy(agent.selected_application)
+        assert session.get(Operation, operation_id).status == "failed"
+        assert revoked.revoked_at is not None
+        assert agent.observed_state == agent.desired_state == "stopped"
+        assert agent.applied_application is None
+    with pytest.raises(NotFound):
+        worker.client.volumes.get(revoked.config_volume)
+    preparation.assert_not_called()
+    writer.assert_not_called()
+
+    response = client.post(path + "/apply-role", headers={"Idempotency-Key": "new-apply"})
+    assert response.status_code == 202
+    assert worker.process_one()
+    with session_maker() as session:
+        operation = session.get(Operation, UUID(response.json()["id"]))
+        agent = session.get(Agent, UUID(agent_id))
+        successor = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        assert operation.status == "succeeded"
+        assert successor.id != revoked.id and successor.revoked_at is None
+        assert successor.generation == operation.target_revision
+        assert agent.applied_application == agent.selected_application == selected
+        assert agent.observed_state == agent.desired_state == "stopped"
+        assert session.scalar(select(func.count()).select_from(WorkloadIncarnation)) == 2
+    writer.assert_called_once()
+    preparation.assert_called_once()
+    assert writer.call_args.kwargs["prepared"] is None
+    assert preparation.call_args.args[2].config_volume == successor.config_volume
 
 
 def test_failed_first_install_can_be_removed_with_an_empty_application(
