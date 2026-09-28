@@ -596,7 +596,7 @@ export function Setups({ setupId }: { setupId?: string }) {
             )}
             <fieldset
               disabled={saving || !!advancedError}
-              className="space-y-8"
+              className="min-w-0 space-y-8"
             >
               <div className="grid gap-5 sm:grid-cols-2">
                 <div>
