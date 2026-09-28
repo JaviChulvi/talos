@@ -137,12 +137,16 @@ def admit_inference(token: str, run_id: str | None = None, native_model: str | N
                 if agent.runtime_mode != "native" or not agent.inference_override:
                     raise HTTPException(401, "Native OpenRouter access is inactive")
                 model = native_model or agent.inference_override["model_id"]
+            admitted_at = datetime.now(UTC)
+            if incarnation.expires_at <= admitted_at:
+                raise HTTPException(401, "Agent identity expired while awaiting admission")
             call = InferenceCall(
                 agent_id=agent.id,
                 incarnation_id=incarnation.id,
                 employee_id=agent.employee_id,
                 run_id=UUID(run_id) if run_id else None,
                 model=model,
+                admitted_at=admitted_at,
             )
             session.add(call)
             session.flush()

@@ -837,3 +837,59 @@ def test_usage_reporting_filters_history_and_pagination(client, sessions, agent_
     assert client.get("/api/v1/usage?month=0000-01").status_code == 422
     assert client.get("/api/v1/usage?month=9999-12").status_code == 422
     assert client.get("/api/v1/usage/calls?limit=0").status_code == 422
+
+
+@pytest.mark.parametrize("expires_during_wait", [False, True])
+def test_ledger_admission_uses_time_after_run_lock(
+    client, sessions, agent_id, monkeypatch, expires_during_wait
+):
+    from datetime import UTC, datetime, timedelta
+    from threading import Event
+
+    from fastapi import HTTPException
+    from sqlalchemy import event
+
+    from backend.app.models import InferenceCall
+    from gateway import identity
+
+    token, _ = ledger_identity(sessions, agent_id, monkeypatch)
+    run_id = UUID(submit(client, agent_id).json()["id"])
+    before = datetime(2030, 9, 30, 23, 59, 59, tzinfo=UTC)
+    after = datetime(2030, 10, 1, tzinfo=UTC)
+    current = [before]
+
+    class Clock:
+        @staticmethod
+        def now(_):
+            return current[0]
+
+    with sessions.begin() as session:
+        run = session.get(Run, run_id)
+        run.status = "running"
+        incarnation = session.get(WorkloadIncarnation, run.incarnation_id)
+        incarnation.expires_at = after if expires_during_wait else after + timedelta(days=1)
+    monkeypatch.setattr(identity, "datetime", Clock)
+    waiting = Event()
+
+    def before_execute(conn, cursor, statement, parameters, context, executemany):
+        if "runs" in statement and "FOR UPDATE" in statement:
+            waiting.set()
+
+    engine = sessions.kw["bind"]
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with sessions.begin() as blocker:
+                blocker.get(Run, run_id, with_for_update=True)
+                event.listen(engine, "before_cursor_execute", before_execute)
+                admitted = pool.submit(identity.admit_inference, token, str(run_id))
+                assert waiting.wait(timeout=5)
+                current[0] = after
+            if expires_during_wait:
+                with pytest.raises(HTTPException, match="expired"):
+                    admitted.result(timeout=5)
+            else:
+                call_id = admitted.result(timeout=5)
+                with sessions() as session:
+                    assert session.get(InferenceCall, call_id).admitted_at == after
+    finally:
+        event.remove(engine, "before_cursor_execute", before_execute)
