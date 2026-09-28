@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import aclosing
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -160,7 +161,8 @@ async def upstream_chunks(
                 if isinstance(chunk.get("model"), str):
                     report["model"] = chunk["model"][:255]
                 if isinstance(chunk.get("usage"), dict):
-                    report.update(usage_values(chunk["usage"]))
+                    # Preserve wire precision for accounting without changing response values.
+                    report.update(usage_values(json.loads(value, parse_float=Decimal)["usage"]))
                 for choice in chunk.get("choices", []):
                     if choice.get("index", 0) != 0:
                         raise InferenceError("OpenRouter returned multiple choices")
