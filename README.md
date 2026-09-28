@@ -461,7 +461,7 @@ Published setup versions are immutable. Publishing a new version does not change
 
 Capture requires a stopped native agent with no unresolved work. The worker reads its private state with a read-only mount and networking disabled. It reads raw configuration without loading plugins or expanding credentials. The captured draft contains candidate skill folders, supported MCP definitions, and review information. Account values become named connection requirements. Personal credential files, sessions, memory, and unrelated workspace files are excluded; review selected skill source files as you would any code before publishing.
 
-A manually installed tool is portable only when its complete runnable payload is available. Commands that depend on global installations, package downloads, outside paths, or native plugins appear as unresolved requirements. Supply a prepared bundle or remove the candidate before publication. Capture does not clone the agent's identity or automatically install anything on the source agent.
+A manually installed tool is portable only when its complete runnable payload is available. Commands that depend on global installations, package downloads, outside paths, or native plugins appear as unresolved requirements. Supply a prepared bundle or remove the candidate before publication. Capture does not clone the agent's identity or automatically install anything on the source agent. Hermes may copy its bundled skills into the state directory during startup, so capture can list them alongside custom skills. Exclude skills already supplied by the pinned runtime when reviewing the draft; their native copies remain available and duplicate names would block application.
 
 ### Prepared bundle format
 
