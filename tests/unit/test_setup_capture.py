@@ -381,11 +381,13 @@ def test_managed_capture_checks_original_and_enabled_copy_executable_modes(
     assert result["manifest"].get("executables", []) == ([original_path] if executable else [])
 
     target = root / f".talos/setups/{artifact_hash}/{drift_path}"
-    target.chmod(0o600 if executable else 0o700)
-    result = inspect(root, runtime_kind)
-    assert "managed-drift" in {item["kind"] for item in result["manifest"]["unresolved"]}
-    assert original_path not in result["files"]
-    assert not result["manifest"].get("executables")
+    for permissions in ((0o600, 0o610) if executable else (0o700, 0o610)):
+        target.chmod(permissions)
+        result = inspect(root, runtime_kind)
+        assert "managed-drift" in {item["kind"] for item in result["manifest"]["unresolved"]}
+        assert original_path not in result["files"]
+        assert not result["manifest"].get("executables")
+
 
 
 def test_setup_free_receipt_does_not_block_first_capture(tmp_path):

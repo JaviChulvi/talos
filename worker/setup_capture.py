@@ -253,7 +253,8 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
                     content = read_file(source)
                     if (
                         hashlib.sha256(content).hexdigest() != digest
-                        or bool(source.stat().st_mode & 0o111) != (relative in original_executables)
+                        or source.stat().st_mode & 0o111
+                        != (0o100 if relative in original_executables else 0)
                     ):
                         raise ValueError("Managed assets were changed")
                     asset_data[relative] = content
@@ -265,8 +266,8 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
                     content = read_file(source)
                     if (
                         hashlib.sha256(content).hexdigest() != digest
-                        or bool(source.stat().st_mode & 0o111)
-                        != (relative in receipt.get("executables", []))
+                        or source.stat().st_mode & 0o111
+                        != (0o100 if relative in receipt.get("executables", []) else 0)
                     ):
                         raise ValueError("Managed runtime assets were changed")
                 managed_skill_roots.add(artifact_root / "enabled-skills")
