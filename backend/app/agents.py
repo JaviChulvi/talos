@@ -2,19 +2,18 @@ import base64
 import hashlib
 import json
 import secrets
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.capabilities import compile_permissions
-from backend.app.db import session_factory
+from backend.app.db import Database, get_db as get_db
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     RUNTIME_RELEASES,
@@ -27,13 +26,6 @@ from backend.app.models import (
 
 router = APIRouter(prefix="/api/v1")
 
-
-def get_db() -> Iterator[Session]:
-    with session_factory()() as session:
-        yield session
-
-
-Database = Annotated[Session, Depends(get_db)]
 IdempotencyKey = Annotated[
     str, Header(alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^[!-~]+$")
 ]

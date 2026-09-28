@@ -28,6 +28,38 @@ HERMES_RELEASE = "hermes-0.21.5"
 RUNTIME_RELEASES = {"openclaw": RUNTIME_RELEASE, "hermes": HERMES_RELEASE}
 
 
+class Setup(Base):
+    __tablename__ = "setups"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")
+    draft_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    draft_artifact_hash: Mapped[str | None] = mapped_column(String(64))
+    revisions: Mapped[list["SetupRevision"]] = relationship(
+        lazy="selectin", order_by="SetupRevision.version", passive_deletes="all"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SetupRevision(Base):
+    __tablename__ = "setup_revisions"
+    __table_args__ = (
+        UniqueConstraint("setup_id", "version", name="uq_setup_revision_version"),
+        CheckConstraint("version > 0"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    setup_id: Mapped[UUID] = mapped_column(ForeignKey("setups.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    manifest: Mapped[dict] = mapped_column(JSON)
+    artifact_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Role(Base):
     __tablename__ = "roles"
     __table_args__ = (CheckConstraint("revision > 0"),)
