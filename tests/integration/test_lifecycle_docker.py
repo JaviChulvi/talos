@@ -270,7 +270,10 @@ def test_role_config_validates_in_pinned_native_image_and_preserves_state(runtim
         )
         current = json.loads(raw)
         for key, value in payload.items():
-            if key not in {"tools", "agents"}:
+            if key == "browser" and runtime_kind == "openclaw":
+                # Role capabilities still disable browsers, retaining their launch settings.
+                assert current[key] == {**value, "enabled": False}
+            elif key not in {"tools", "agents"}:
                 assert current[key] == value
         selection = {
             "model_id": "test/model",
