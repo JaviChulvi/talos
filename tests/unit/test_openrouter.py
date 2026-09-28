@@ -38,6 +38,11 @@ def test_native_revocation_cancels_provider_before_headers(monkeypatch):
 
     monkeypatch.setattr(main, "validate_token", lambda _: state["allowed"])
 
+    def finalize(*_):
+        state["cancelled_before_finalization"] = state["cancelled"]
+
+    monkeypatch.setattr(main, "record_inference", finalize)
+
     async def upstream(request):
         state["allowed"] = False
         try:
@@ -55,6 +60,7 @@ def test_native_revocation_cancels_provider_before_headers(monkeypatch):
         result = client.post("/native/v1/chat/completions", json=BODY, headers=HEADERS)
     assert result.status_code == 401
     assert state["cancelled"]
+    assert state["cancelled_before_finalization"]
 
 
 @pytest.mark.parametrize("phase", ["headers", "body"])
@@ -725,3 +731,39 @@ def test_native_admission_failure_never_contacts_provider(monkeypatch):
             client.post("/native/v1/chat/completions", json=BODY, headers=HEADERS).status_code
             == 503
         )
+
+
+@pytest.mark.parametrize("complete_body", [True, False])
+@pytest.mark.parametrize("failure", [httpx.ReadError, httpx.ReadTimeout])
+def test_native_keeps_received_json_usage_after_read_failure(
+    monkeypatch, native_accounting, complete_body, failure
+):
+    from decimal import Decimal
+
+    from gateway import main
+
+    monkeypatch.setattr(main, "native_selection", lambda _: {"model_id": "test/model"})
+    monkeypatch.setattr(main, "validate_token", lambda _: True)
+    monkeypatch.setattr(main, "provider_key", lambda: "synthetic")
+    wire = b'{"id":"gen-failed","choices":[],"usage":{"cost":0.25}}'
+
+    class FailedReply(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield wire if complete_body else wire[:-1]
+            raise failure("connection failed after body")
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=FailedReply())),
+            **kw,
+        ),
+    )
+    with TestClient(main.app) as client, pytest.raises(failure):
+        client.post("/native/v1/chat/completions", json=BODY, headers=HEADERS)
+    assert len(native_accounting) == 1
+    report = native_accounting[0]
+    assert report["outcome"] == ("timed_out" if failure is httpx.ReadTimeout else "failed")
+    assert report.get("cost") == (Decimal("0.250000000000") if complete_body else None)

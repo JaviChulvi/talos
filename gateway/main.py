@@ -130,16 +130,16 @@ async def native_completion(request: Request):
                     upstream = pending_headers.result()
                     break
     except BaseException:
-        await finish()
         if pending_headers is not None:
             pending_headers.cancel()
             await asyncio.gather(pending_headers, return_exceptions=True)
         await client.aclose()
+        await finish()
         raise
     if upstream.status_code != 200:
-        await finish()
         await upstream.aclose()
         await client.aclose()
+        await finish()
         raise HTTPException(
             502,
             "OpenRouter rejected the request; check credentials, credits and model availability",
@@ -198,15 +198,21 @@ async def native_completion(request: Request):
 
     if payload.get("stream"):
         return StreamingResponse(chunks(), media_type="text/event-stream")
+    result = bytearray()
     try:
         async with aclosing(chunks()) as stream:
-            result = b"".join([part async for part in stream])
+            async for part in stream:
+                result.extend(part)
         parsed = json.loads(result)
-        observe_usage(report, json.loads(result, parse_float=Decimal))
         if report["outcome"] == "failed" and not (isinstance(parsed, dict) and parsed.get("error")):
             report["outcome"] = "completed"
         return parsed
     except ValueError:
         raise HTTPException(502, "OpenRouter returned an incomplete response") from None
     finally:
+        # A complete body may arrive before a read failure. Keep its reported charge.
+        try:
+            observe_usage(report, json.loads(result, parse_float=Decimal))
+        except ValueError:
+            pass
         await finish()
