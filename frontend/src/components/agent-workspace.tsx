@@ -1,3 +1,4 @@
+import { AgentBudget } from "@/components/employee-budget";
 import {
   useEffect,
   useRef,
@@ -26,6 +27,7 @@ import {
   MessageSquare,
   PanelLeftClose,
   Package,
+  DollarSign,
 } from "lucide-react";
 import {
   Sidebar,
@@ -636,9 +638,14 @@ export function AgentWorkspace({
     setOpenMobile(false);
     window.location.assign(`#agents/${id}/settings`);
   };
+  const budgetCoverage = selected?.runtime_mode === "native"
+    ? selected.inference_override ? "gateway" : "external"
+    : effectiveModel === "fixture" ? "simulator" : "gateway";
   const pageTitle = page.startsWith("setups")
     ? "Setups"
-    : page === "employees"
+    : page.startsWith("usage")
+      ? "Usage"
+      : page === "employees"
       ? "Employees"
       : page === "roles"
         ? "Roles"
@@ -830,6 +837,7 @@ export function AgentWorkspace({
         <SidebarFooter className="gap-3 p-3">
           <SidebarMenu>
             {[
+              { id: "usage", label: "Usage", icon: DollarSign },
               { id: "employees", label: "Employees", icon: Users },
               { id: "roles", label: "Roles", icon: ShieldCheck },
               { id: "setups", label: "Setups", icon: Package },
@@ -840,7 +848,7 @@ export function AgentWorkspace({
                 <SidebarMenuButton
                   asChild
                   isActive={
-                    page === id ||
+                    page.split("?")[0] === id ||
                     (id === "setups" && page.startsWith("setups/"))
                   }
                   className="h-10"
@@ -849,7 +857,7 @@ export function AgentWorkspace({
                     href={`#${id}`}
                     onClick={navigate}
                     aria-current={
-                      page === id ||
+                      page.split("?")[0] === id ||
                       (id === "setups" && page.startsWith("setups/"))
                         ? "page"
                         : undefined
@@ -1156,6 +1164,11 @@ export function AgentWorkspace({
                         : ""}
                     </p>
                   )}
+                  {active && !settingsActive && (
+                    <div className="mb-4">
+                      <AgentBudget employeeId={selected.employee_id} agentId={selected.id} coverage={budgetCoverage} />
+                    </div>
+                  )}
                   <form onSubmit={sendDiagnostic}>
                     <Label htmlFor="diagnostic-message" className="sr-only">
                       Message
@@ -1337,6 +1350,12 @@ export function AgentWorkspace({
                       <TabsTrigger value="permissions">Permissions</TabsTrigger>
                     </TabsList>
                     <TabsContent value="settings">
+                      {settingsActive && (
+                        <div className="mb-5">
+                          <AgentBudget employeeId={selected.employee_id} agentId={selected.id} coverage={budgetCoverage} />
+                        </div>
+                      )}
+                      <a href={`#usage?agent_id=${selected.id}`} className="mb-5 block text-sm text-primary underline">View agent usage</a>
                       {selected.runtime_mode === "native" ? (
                         <div className="space-y-5">
                           <CaptureSetup
@@ -1357,6 +1376,11 @@ export function AgentWorkspace({
                             disabled={writesDisabled || operationActive}
                             onOperation={onOperation}
                           />
+                          <p className="text-xs text-muted-foreground">
+                            {selected.inference_override
+                              ? "Requests through Talos are tracked. Additional direct-provider traffic is outside Talos accounting."
+                              : "Provider handled by agent: usage unavailable. Direct-provider traffic is outside Talos accounting."}
+                          </p>
                           <div>
                             <h3 className="flex items-center gap-3 font-semibold">
                               <RuntimeIcon

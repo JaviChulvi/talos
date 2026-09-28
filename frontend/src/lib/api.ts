@@ -94,3 +94,14 @@ export type AgentPermissions = {
   setup_blockers?: string[];
   setup_pending?: boolean;
 };
+
+export type Budget = {
+  employee_id: string;
+  employee_name: string;
+  monthly_allowance_usd: string | null;
+  known_spend_usd: string;
+  unresolved_calls: number;
+  missing_cost_calls: number;
+  status: "unlimited" | "available" | "warning" | "exhausted";
+  period: { start: string; end: string; timezone: string };
+};

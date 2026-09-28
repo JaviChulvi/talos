@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from backend.app.config import get_settings
+from gateway.identity import AdmissionDenied
 from gateway.openrouter import completion as openrouter_completion
 
 
@@ -52,6 +53,8 @@ def model_router(
                 raise HTTPException(503, "Model selection is unavailable")
             try:
                 selection = await asyncio.to_thread(selected_model, token)
+            except AdmissionDenied:
+                raise
             except Exception:
                 raise HTTPException(503, "No admitted model request is available") from None
             model = selection["model_id"]
