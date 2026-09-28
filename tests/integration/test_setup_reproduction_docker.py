@@ -115,6 +115,7 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
                 b"---\nUse lookup to qualify leads and consult the rubric.\n"
             ),
             "skills/sales/references/rubric.md": b"Ask about the account's needs.\n",
+            "skills/sales/scripts/check.sh": b"#!/bin/sh\nprintf 'portable fixture\\n'\n",
             "connectors/crm/server.py": SERVER,
         }
         manifest = {
@@ -151,6 +152,7 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
             ],
             "connection_slots": [{"id": "crm", "label": "CRM account", "fields": ["token"]}],
             "assets": {path: hashlib.sha256(data).hexdigest() for path, data in files.items()},
+            "executables": ["skills/sales/scripts/check.sh"],
             "unresolved": [],
         }
         manifest = validate_manifest(manifest, files)
@@ -216,6 +218,26 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
             verified = verify_setup(client, state, incarnation, kind, application, labels)
             assert verified["fingerprint"] == installed["fingerprint"]
             assert verified["manifest"]["assets"] == manifest["assets"]
+            assert verified["manifest"]["executables"] == manifest["executables"]
+            assert set(verified["executables"]) == {
+                "skills/sales/scripts/check.sh",
+                "enabled-skills/sales/scripts/check.sh",
+            }
+            # Execute the benign fixture directly, so a missing executable bit
+            # cannot be masked by invoking a shell interpreter explicitly.
+            output = client.containers.run(
+                image.id,
+                entrypoint=[
+                    mount + "/.talos/setups/" + digest + "/enabled-skills/sales/scripts/check.sh"
+                ],
+                user="10000:10000" if kind == "hermes" else "1000:1000",
+                labels=labels,
+                network_mode="none",
+                read_only=True,
+                volumes={state: {"bind": mount, "mode": "ro"}},
+                remove=True,
+            )
+            assert output == b"portable fixture\n"
             env = read_state_file(client, image.id, state, mount, ".env")
             assert secrets["crm"]["token"].encode() in env
             return application, env
@@ -227,6 +249,7 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
         captured = capture_setup(client, source, source_incarnation, kind, labels)
         assert captured["manifest"]["unresolved"] == []
         assert captured["manifest"]["assets"] == manifest["assets"]
+        assert captured["manifest"]["executables"] == manifest["executables"]
         assert captured["files"] == files
         assert captured["manifest"]["instructions"] == manifest["instructions"]
         assert captured["manifest"]["connection_slots"] == manifest["connection_slots"]
@@ -244,6 +267,7 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
         assert b"synthetic-reproduction-source" not in second_env
         # Export contains only the recipe, never account identities or credentials.
         imported_manifest, imported_files = read_bundle(exported, publication=True)
+        assert imported_manifest["executables"] == manifest["executables"]
         portable_bytes = json.dumps(imported_manifest).encode() + b"".join(imported_files.values())
         for app in (source_app, second_app):
             for binding in app["connections"].values():
@@ -273,6 +297,7 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
         assert b"synthetic-reproduction-second" not in fresh_env
         recaptured = capture_setup(client, fresh, fresh_incarnation, kind, labels)
         assert recaptured["manifest"]["assets"] == manifest["assets"]
+        assert recaptured["manifest"]["executables"] == manifest["executables"]
         assert recaptured["files"] == files
         assert recaptured["manifest"]["unresolved"] == []
         # Agent accounts traveled through upload/stdin, never Docker command args.

@@ -2,8 +2,11 @@
 
 import base64
 import hashlib
+import io
 import json
+import stat
 import subprocess
+import zipfile
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -50,7 +53,9 @@ def pinned_node(monkeypatch):
 def test_capture_preserves_complete_skills_and_source_without_private_state(tmp_path, runtime_kind):
     root = state(tmp_path, runtime_kind)
     put(root, "skills/sales/SKILL.md", b"---\nname: sales\n---\nQualify incoming leads.")
-    put(root, "skills/sales/scripts/qualify.py", b"raise RuntimeError('must never run')\n")
+    put(
+        root, "skills/sales/scripts/qualify.py", b"raise RuntimeError('must never run')\n"
+    ).chmod(0o751)
     put(root, "skills/sales/references/process.md", b"Our qualification rubric\n")
     for path in (
         ".env",
@@ -61,7 +66,11 @@ def test_capture_preserves_complete_skills_and_source_without_private_state(tmp_
     ):
         put(root, path, b"PRIVATE-SENTINEL")
     put(root, "workspace/AGENTS.md", b"Employee private identity PRIVATE-SENTINEL")
-    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    before = {
+        p.relative_to(root): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode))
+        for p in root.rglob("*")
+        if p.is_file()
+    }
 
     result = inspect(root, runtime_kind)
 
@@ -73,12 +82,22 @@ def test_capture_preserves_complete_skills_and_source_without_private_state(tmp_
         "skills/sales/references/process.md",
     }
     assert b"PRIVATE-SENTINEL" not in write_bundle(result["manifest"], result["files"])
-    assert before == {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert before == {
+        p.relative_to(root): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode))
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    assert result["manifest"]["executables"] == ["skills/sales/scripts/qualify.py"]
     manifest = validate_manifest(result["manifest"], result["files"])
     exported = write_bundle(manifest, result["files"])
     imported, files = read_bundle(exported, publication=True)
     assert files == result["files"]
     assert imported["assets"] == manifest["assets"]
+    assert imported["executables"] == manifest["executables"]
+    with zipfile.ZipFile(io.BytesIO(exported)) as archive:
+        script_mode = archive.getinfo("skills/sales/scripts/qualify.py").external_attr >> 16
+        assert stat.S_IMODE(script_mode) == 0o755
+        assert stat.S_IMODE(archive.getinfo("skills/sales/SKILL.md").external_attr >> 16) == 0o644
 
 
 @pytest.mark.parametrize("runtime_kind", ["openclaw", "hermes"])
@@ -181,7 +200,8 @@ def test_untrusted_hermes_project_skill_is_captured_unselected(tmp_path):
     assert result["metadata"]["candidates"][0]["trusted"] is False
 
 
-def test_verified_managed_receipt_retains_connector_payload_and_hashes(tmp_path):
+@pytest.mark.parametrize("executable", [False, True])
+def test_verified_managed_receipt_retains_connector_payload_and_hashes(tmp_path, executable):
     native_server = {"command": "python3", "args": ["/not-executed"], "env": {"TOKEN": "${ENV}"}}
     root = state(tmp_path, mcp={"servers": {"talos-crm": native_server}})
     content = b"# a reproducible inert connector\n"
@@ -209,7 +229,10 @@ def test_verified_managed_receipt_retains_connector_payload_and_hashes(tmp_path)
         "connection_slots": [{"id": "crm", "label": "CRM", "fields": ["token"]}],
         "assets": {path: digest},
     }
-    put(root, f".talos/setups/{artifact_hash}/{path}", content)
+    payload = put(root, f".talos/setups/{artifact_hash}/{path}", content)
+    if executable:
+        original["executables"] = [path]
+        payload.chmod(0o700)
     receipt = {
         "artifact_hash": artifact_hash,
         "manifest": original,
@@ -219,6 +242,7 @@ def test_verified_managed_receipt_retains_connector_payload_and_hashes(tmp_path)
     result = inspect(root)
     assert result["files"] == {path: content}
     assert result["manifest"]["assets"][path] == digest
+    assert result["manifest"].get("executables", []) == ([path] if executable else [])
     assert result["manifest"]["unresolved"] == []
     assert result["manifest"]["instructions"] == "Sales policy"
     validate_manifest(result["manifest"], result["files"])
@@ -317,6 +341,51 @@ def test_managed_enabled_skill_directory_is_not_reported_as_external(tmp_path):
     exposed.write_bytes(b"changed native content")
     result = inspect(root)
     assert "managed-drift" in {b["kind"] for b in result["manifest"]["unresolved"]}
+
+
+
+@pytest.mark.parametrize("runtime_kind", ["openclaw", "hermes"])
+@pytest.mark.parametrize("drift_path", ["skills/sales/run.sh", "enabled-skills/sales/run.sh"])
+@pytest.mark.parametrize("executable", [False, True])
+def test_managed_capture_checks_original_and_enabled_copy_executable_modes(
+    tmp_path, runtime_kind, drift_path, executable
+):
+    root = state(tmp_path, runtime_kind)
+    artifact_hash = "a" * 64
+    original_path = "skills/sales/run.sh"
+    enabled_path = "enabled-skills/sales/run.sh"
+    content = b"#!/bin/sh\nprintf 'portable fixture\\n'\n"
+    skill = b"---\nname: sales\n---\nRead the sales guide.\n"
+    files = {"skills/sales/SKILL.md": skill, original_path: content}
+    hashes = {path: hashlib.sha256(data).hexdigest() for path, data in files.items()}
+    receipt = {
+        "artifact_hash": artifact_hash,
+        "manifest": {
+            "assets": hashes,
+            "executables": [original_path] if executable else [],
+            "skills": [{"id": "sales", "name": "sales", "path": "skills/sales"}],
+        },
+        "file_hashes": hashes | {enabled_path: hashes[original_path]},
+        "executables": [original_path, enabled_path] if executable else [],
+    }
+    put(root, ".talos/setup-receipt.json", json.dumps(receipt).encode())
+    for path, data in files.items():
+        target = put(root, f".talos/setups/{artifact_hash}/{path}", data)
+        target.chmod(0o700 if executable and path == original_path else 0o600)
+    target = put(root, f".talos/setups/{artifact_hash}/{enabled_path}", content)
+    target.chmod(0o700 if executable else 0o600)
+    result = inspect(root, runtime_kind)
+    assert result["manifest"]["unresolved"] == []
+    assert result["files"] == files
+    # Only portable source paths belong in the draft, never derived runtime paths.
+    assert result["manifest"].get("executables", []) == ([original_path] if executable else [])
+
+    target = root / f".talos/setups/{artifact_hash}/{drift_path}"
+    target.chmod(0o600 if executable else 0o700)
+    result = inspect(root, runtime_kind)
+    assert "managed-drift" in {item["kind"] for item in result["manifest"]["unresolved"]}
+    assert original_path not in result["files"]
+    assert not result["manifest"].get("executables")
 
 
 def test_setup_free_receipt_does_not_block_first_capture(tmp_path):
