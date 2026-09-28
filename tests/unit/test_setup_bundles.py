@@ -177,3 +177,40 @@ def test_enabled_skills_match_native_frontmatter_names():
         validate_manifest(manifest, files)
     manifest["skills"][0]["enabled"] = False
     validate_manifest(manifest, files)
+
+
+def test_executable_assets_survive_import_export_without_execution(tmp_path):
+    manifest, files = bundle_fixture()
+    path = "skills/qualify/scripts/qualify.sh"
+    sentinel = tmp_path / "executed"
+    files[path] = f"#!/bin/sh\ntouch {sentinel}\n".encode()
+    manifest["assets"] = {p: hashlib.sha256(v).hexdigest() for p, v in files.items()}
+    executable = zipfile.ZipInfo(path)
+    executable.external_attr = (stat.S_IFREG | 0o755) << 16
+    original = archive_with([
+        ("manifest.json", json.dumps(manifest)),
+        *[(p, v) for p, v in files.items() if p != path],
+        (executable, files[path]),
+    ])
+    imported, restored = read_bundle(original, publication=True)
+    assert imported["executables"] == [path]
+    exported = write_bundle(imported, restored)
+    assert read_bundle(exported, publication=True) == (imported, files)
+    with zipfile.ZipFile(io.BytesIO(exported)) as archive:
+        assert archive.getinfo(path).external_attr >> 16 == stat.S_IFREG | 0o755
+        skill_mode = archive.getinfo("skills/qualify/SKILL.md").external_attr >> 16
+        assert skill_mode == stat.S_IFREG | 0o644
+    assert not sentinel.exists()
+    imported["executables"] = []
+    with pytest.raises(BundleError, match="ZIP permissions"):
+        read_bundle(archive_with([
+            ("manifest.json", json.dumps(imported)), (executable, files[path]),
+        ]))
+
+
+@pytest.mark.parametrize("executables", [["../escape"], ["missing"], [None], "path"])
+def test_rejects_invalid_executable_metadata(executables):
+    manifest, files = bundle_fixture()
+    manifest["executables"] = executables
+    with pytest.raises(BundleError, match="Executable assets"):
+        write_bundle(manifest, files)
