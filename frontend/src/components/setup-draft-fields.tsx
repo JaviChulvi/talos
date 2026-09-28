@@ -6,6 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -126,28 +132,44 @@ export function TargetFields({
     <section>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="font-semibold">Compatibility</h2>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={disabled}
-          onClick={() =>
-            onChange([
-              ...targets,
-              {
-                runtime_kind: available[0]?.runtime_kind ?? "hermes",
-                runtime_release: available[0]?.runtime_release ?? "",
-                architecture: "arm64",
-              },
-            ])
-          }
-        >
-          <Plus />
-          Add runtime target
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={disabled || !available.length}
+            >
+              <Plus />
+              Add runtime target
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {available.flatMap((runtime) =>
+              ["arm64", "amd64"].map((architecture) => (
+                <DropdownMenuItem
+                  key={`${runtime.runtime_kind}-${architecture}`}
+                  disabled={targets.some(
+                    (target) =>
+                      target.runtime_kind === runtime.runtime_kind &&
+                      target.architecture === architecture,
+                  )}
+                  onSelect={() =>
+                    onChange([...targets, { ...runtime, architecture }])
+                  }
+                >
+                  {runtime.runtime_kind === "hermes" ? "Hermes" : "OpenClaw"}
+                  {" · "}{architecture.toUpperCase()}
+                </DropdownMenuItem>
+              )),
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        Pin each runtime release and architecture this setup supports. Capture
-        supplies the source agent’s versions automatically.
+        Choose where this setup can run: Hermes, OpenClaw, or both. Capture starts
+        with the source runtime. Add the other runtime to reuse the same
+        instructions, skills, and connectors there. Talos translates the native
+        configuration and checks compatibility when you apply.
       </p>
       {error && (
         <p role="alert" className="mt-3 text-sm text-danger">
@@ -171,6 +193,8 @@ export function TargetFields({
                     runtime_release:
                       available.find((item) => item.runtime_kind === value)
                         ?.runtime_release ?? "",
+                    node_major: undefined,
+                    python_version: undefined,
                   })
                 }
               >
@@ -258,6 +282,50 @@ export function TargetFields({
             >
               <Trash2 />
             </Button>
+            <details className="sm:col-span-4">
+              <summary className="cursor-pointer text-xs text-muted-foreground">
+                Interpreter requirements for local connectors
+              </summary>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Pin the interpreter used by each local connector payload for this
+                runtime. Hosted connectors and skills alone do not need these
+                fields. Changing runtimes clears the previous interpreter pins;
+                Talos does not install a different interpreter.
+              </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor={`target-node-${index}`}>Node major</Label>
+                  <Input
+                    id={`target-node-${index}`}
+                    className="mt-2"
+                    type="number"
+                    min={18}
+                    max={100}
+                    step={1}
+                    value={typeof target.node_major === "number" ? target.node_major : ""}
+                    disabled={disabled}
+                    onChange={(event) =>
+                      update(index, {
+                        node_major: event.target.value ? Number(event.target.value) : undefined,
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label htmlFor={`target-python-${index}`}>Python version</Label>
+                  <Input
+                    id={`target-python-${index}`}
+                    className="mt-2"
+                    placeholder="3.x"
+                    value={typeof target.python_version === "string" ? target.python_version : ""}
+                    disabled={disabled}
+                    onChange={(event) =>
+                      update(index, { python_version: event.target.value || undefined })
+                    }
+                  />
+                </div>
+              </div>
+            </details>
           </div>
         ))}
       </div>

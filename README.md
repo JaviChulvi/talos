@@ -463,6 +463,14 @@ Capture requires a stopped native agent with no unresolved work. The worker read
 
 A manually installed tool is portable only when its complete runnable payload is available. Commands that depend on global installations, package downloads, outside paths, or native plugins appear as unresolved requirements. Supply a prepared bundle or remove the candidate before publication. Capture does not clone the agent's identity or automatically install anything on the source agent. Hermes may copy its bundled skills into the state directory during startup, so capture can list them alongside custom skills. Exclude skills already supplied by the pinned runtime when reviewing the draft; their native copies remain available and duplicate names would block application.
 
+### Using a captured setup on another runtime
+
+A setup captured from Hermes can also be applied to OpenClaw, and vice versa. In the draft's **Compatibility** section, choose **Add runtime target** and select the other runtime and Linux architecture. Keep both targets to share one setup version and role across Hermes and OpenClaw agents, or remove the original target to publish a setup for the destination runtime only. Publish the reviewed version, select it on the role, then explicitly apply it to the destination agents. Exported ZIPs retain these target declarations.
+
+The same instructions, skill files, and connector payloads are shared across targets; Talos translates their native directories, MCP configuration, and tool permissions for each runtime. Review instructions and skill scripts that rely on runtime-specific commands or paths. This does not convert native plugins or make incompatible dependencies portable. For local connectors, expand **Interpreter requirements for local connectors** and pin each target's actual Node major or Python version. Changing a target's runtime clears its previous interpreter pins. Prepared payloads must work with every declared architecture and interpreter; use separate setups when they need different files.
+
+Adding a target declares intended compatibility. Apply still checks the destination runtime, release, architecture, interpreter, skill-name conflicts, and available connector tools before reporting readiness. No compatibility check is bypassed, and the source agent is unchanged.
+
 ### Prepared bundle format
 
 A ZIP contains `manifest.json` and its declared files. The manifest uses `schema_version: 1` and includes `instructions`, `targets`, `skills`, `connectors`, `connection_slots`, `assets` (relative path to SHA-256), and `unresolved` (empty for publication). Each target declares `runtime_kind`, the exact Talos `runtime_release`, and `architecture` (`amd64` or `arm64`). Local Node/Python connectors also require the matching `node_major` or `python_version`.
