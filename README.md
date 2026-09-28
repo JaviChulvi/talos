@@ -359,3 +359,13 @@ Terminal execution can access files and the network even when dedicated tools ar
 disabled. Native configuration is a trusted-administrator surface: direct changes
 outside Talos are outside this contract. Provider setup, credentials, workspace,
 and conversation history remain in the existing native settings and state volume.
+
+Hermes chat records a pending native turn before dispatch. After cancellation or
+an unconfirmed process exit, the next turn uses Hermes' native rewind to archive
+the unfinished request and tool calls, preserving earlier completed context and
+the archived audit history. Files and other tool effects are not rolled back.
+If compression rewrote the history (including within the same session), or a
+later native user turn appeared, recovery refuses to resume automatically and
+leaves history intact. Older pending records without a transcript checkpoint also
+require review in Hermes before starting a new native chat. Completed turns keep
+their native session identity.

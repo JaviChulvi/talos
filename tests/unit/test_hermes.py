@@ -3,6 +3,7 @@ import os
 import select
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,13 @@ from worker.hermes import BRIDGE
 
 @pytest.mark.parametrize("end", ["result", "cancel", "disconnect"])
 def test_hermes_bridge_preserves_session_and_reaps_child(tmp_path, end):
+    (tmp_path / "hermes_state.py").write_text(
+        "class SessionDB:\n"
+        " def __enter__(self): return self\n"
+        " def __exit__(self, *args): pass\n"
+        " def get_active_message_ids(self, session_id): return []\n"
+        " def get_messages(self, session_id, **kwargs): return []\n"
+    )
     executable = tmp_path / "hermes"
     executable.write_text(
         f"#!{sys.executable}\n"
@@ -31,7 +39,11 @@ def test_hermes_bridge_preserves_session_and_reaps_child(tmp_path, end):
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+        env={
+            **os.environ,
+            "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+            "PYTHONPATH": str(tmp_path),
+        },
         text=True,
     )
     try:
@@ -58,9 +70,37 @@ def test_hermes_bridge_preserves_session_and_reaps_child(tmp_path, end):
         assert finished["type"] == "talos_exit"
         assert finished["cancelled"] == (end != "result")
         assert child.wait(timeout=5) == 0
+        assert path.with_suffix(".pending").exists() == (end != "result")
         with pytest.raises(ProcessLookupError):
             os.kill(init["pid"], 0)
     finally:
         if child.poll() is None:
             child.kill()
         child.wait()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(os.environ.get("TALOS_TEST_DOCKER") != "1", reason="Set TALOS_TEST_DOCKER=1")
+def test_pinned_hermes_recovers_interrupted_native_history():
+    proof = Path(__file__).parents[1] / "hermes_recovery_proof.py"
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-i",
+            "--network",
+            "none",
+            "--entrypoint",
+            "python",
+            "talos-hermes-native:local",
+            "-c",
+            proof.read_text(),
+        ],
+        input=BRIDGE,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.count("PASS") == 7
