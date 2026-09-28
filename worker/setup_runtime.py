@@ -324,12 +324,12 @@ def read_json(path, default):
     return json.loads(path.read_text()) if path.exists() else default
 
 
-def atomic(path, data):
+def atomic(path, data, permissions=0o600):
     path = guarded(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     nxt = guarded(str(path) + ".talos-next")
     fd = os.open(nxt, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    os.fchmod(fd, 0o600)
+    os.fchmod(fd, permissions)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
         f.flush()
@@ -478,7 +478,11 @@ def check_assets(previous):
         "file_hashes", previous.get("manifest", {}).get("assets", {})
     ).items():
         path = guarded(base / name)
-        if not path.is_file() or digest(path.read_bytes()) != expected:
+        if (
+            not path.is_file()
+            or digest(path.read_bytes()) != expected
+            or bool(path.stat().st_mode & 0o111) != (name in previous.get("executables", []))
+        ):
             fail("edited")
 
 
@@ -848,11 +852,15 @@ def main():
     enabled_skills = [s for s in manifest.get("skills", []) if s.get("enabled", True)]
     skill_dirs = [str(artifact / "enabled-skills")] if enabled_skills else []
     file_hashes = dict(manifest.get("assets", {}))
+    executables = set(manifest.get("executables", []))
     for skill in enabled_skills:
         for name, expected in manifest.get("assets", {}).items():
             if name.startswith(skill["path"] + "/"):
                 relative = name[len(skill["path"]) + 1 :]
-                file_hashes["enabled-skills/" + skill["id"] + "/" + relative] = expected
+                destination = "enabled-skills/" + skill["id"] + "/" + relative
+                file_hashes[destination] = expected
+                if name in executables:
+                    executables.add(destination)
     target = {
         "fingerprint": r["fingerprint"],
         "artifact_hash": r["artifact_hash"],
@@ -862,6 +870,7 @@ def main():
         "instructions": manifest.get("instructions", ""),
         "connections": r.get("connections", {}),
         "file_hashes": file_hashes,
+        "executables": sorted(executables),
     }
     check_assets(previous)
     doc = guarded(workspace / "AGENTS.md")
@@ -896,7 +905,7 @@ def main():
         data = (P("/input/assets") / name).read_bytes()
         if digest(data) != expected:
             fail("edited")
-        atomic(artifact / name, data)
+        atomic(artifact / name, data, 0o700 if name in executables else 0o600)
     for skill in enabled_skills:
         for name in manifest.get("assets", {}):
             if name.startswith(skill["path"] + "/"):
@@ -904,6 +913,7 @@ def main():
                 atomic(
                     artifact / "enabled-skills" / skill["id"] / relative,
                     (artifact / name).read_bytes(),
+                    0o700 if name in executables else 0o600,
                 )
     atomic(root / ".env", env)
     save_config(path, updated)

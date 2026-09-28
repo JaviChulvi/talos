@@ -37,6 +37,7 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
     max_total = 64 * 1024 * 1024
     max_files = 5000
     files = {}
+    executables = set()
     total = 0
     candidates = []
     blockers = []
@@ -114,7 +115,7 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
             raise ValueError("File exceeds capture limit")
         return data
 
-    def add_file(path, data):
+    def add_file(path, data, *, executable=False):
         nonlocal total
         if path in files:
             return
@@ -122,6 +123,8 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
         if total > max_total or len(files) >= max_files:
             raise ValueError("Capture exceeds size limit")
         files[path] = data
+        if executable:
+            executables.add(path)
 
     def map_path(raw):
         if not isinstance(raw, str) or not raw or "$" in raw or "\x00" in raw:
@@ -241,20 +244,30 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
                 original = receipt["manifest"]
                 artifact_root = root / ".talos/setups" / artifact_hash
                 asset_data = {}
+                original_executables = set(original.get("executables", []))
                 for relative, digest in original["assets"].items():
                     path = PurePosixPath(relative)
                     if path.is_absolute() or ".." in path.parts or private(path):
                         raise ValueError("Invalid managed asset path")
-                    content = read_file(artifact_root.joinpath(*path.parts))
-                    if hashlib.sha256(content).hexdigest() != digest:
+                    source = artifact_root.joinpath(*path.parts)
+                    content = read_file(source)
+                    if (
+                        hashlib.sha256(content).hexdigest() != digest
+                        or bool(source.stat().st_mode & 0o111) != (relative in original_executables)
+                    ):
                         raise ValueError("Managed assets were changed")
                     asset_data[relative] = content
                 for relative, digest in mapping(receipt.get("file_hashes")).items():
                     path = PurePosixPath(relative)
                     if path.is_absolute() or ".." in path.parts or private(path):
                         raise ValueError("Invalid managed runtime asset path")
-                    content = read_file(artifact_root.joinpath(*path.parts))
-                    if hashlib.sha256(content).hexdigest() != digest:
+                    source = artifact_root.joinpath(*path.parts)
+                    content = read_file(source)
+                    if (
+                        hashlib.sha256(content).hexdigest() != digest
+                        or bool(source.stat().st_mode & 0o111)
+                        != (relative in receipt.get("executables", []))
+                    ):
                         raise ValueError("Managed runtime assets were changed")
                 managed_skill_roots.add(artifact_root / "enabled-skills")
                 # Secrets are absent from the portable manifest; the native server map
@@ -286,7 +299,7 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
                     prefix = f"connectors/{copied['id']}/"
                     for path, content in asset_data.items():
                         if path.startswith(prefix):
-                            add_file(path, content)
+                            add_file(path, content, executable=path in original_executables)
                 for skill in original.get("skills", []):
                     if not skill.get("enabled", True):
                         continue
@@ -309,7 +322,7 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
                     prefix = copied["path"].rstrip("/") + "/"
                     for path, content in asset_data.items():
                         if path.startswith(prefix):
-                            add_file(path, content)
+                            add_file(path, content, executable=path in original_executables)
                 manifest["connection_slots"] = json.loads(
                     json.dumps(original.get("connection_slots", []))
                 )
@@ -516,7 +529,11 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
                             identifier,
                         )
                         continue
-                    add_file(f"{destination}/{relative.as_posix()}", data)
+                    add_file(
+                        f"{destination}/{relative.as_posix()}",
+                        data,
+                        executable=bool(path.stat().st_mode & 0o111),
+                    )
 
     for candidate in candidates:
         if candidate["kind"] == "skill" and candidate["source"] == "talos-managed":
@@ -746,6 +763,8 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
             "deny": strings(tools.get("deny")),
         }
     manifest["assets"] = {path: hashlib.sha256(data).hexdigest() for path, data in files.items()}
+    if executables:
+        manifest["executables"] = sorted(executables)
     return {
         "manifest": manifest,
         "files": {path: base64.b64encode(data).decode("ascii") for path, data in files.items()},

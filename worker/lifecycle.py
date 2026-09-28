@@ -843,10 +843,17 @@ class Worker:
                 from backend.app.connections import load_bound_secrets
 
                 bound_secrets = load_bound_secrets(application.get("connections", {}))
-            if has_setup and agent.current_incarnation_id:
+            # Once the stop boundary is durable, an interrupted predecessor may
+            # have lost its config volume, or its successor may not have one yet.
+            # Let apply_setup prepare after prepare_volumes on those retries.
+            if (
+                has_setup
+                and agent.current_incarnation_id
+                and operation.step != "applying_setup"
+            ):
                 with self.sessions() as session:
                     previous = session.get(WorkloadIncarnation, agent.current_incarnation_id)
-                if previous and previous.config_volume:
+                if previous and previous.revoked_at is None and previous.config_volume:
                     state, _ = self.names(agent.id)
                     prepared_setup = prepare_setup(
                         self.client,
