@@ -46,6 +46,7 @@ from worker.runtime import (
     model_profile,
     native_config,
     prepare_volumes,
+    release_stopped_gateway_lease,
     require_labels,
     runtime_config,
 )
@@ -404,6 +405,15 @@ class Worker:
                 container.reload()
             if container.status in {"running", "restarting", "paused"}:
                 raise RuntimeError("Runtime did not stop")
+            if incarnation.runtime_release != HERMES_RELEASE:
+                # The successor has a different hostname/PID namespace, so
+                # OpenClaw cannot prove this predecessor dead by itself.
+                release_stopped_gateway_lease(
+                    self.client,
+                    self.names(incarnation.agent_id)[0],
+                    container.attrs["Config"]["Hostname"],
+                    self.labels(incarnation.agent_id),
+                )
             if remove:
                 container.remove()
         if remove and incarnation.config_volume:

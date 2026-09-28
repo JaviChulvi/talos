@@ -29,6 +29,39 @@ STATE_PATH = "/home/node/.openclaw"
 CONFIG_PATH = "/etc/talos/openclaw.json"
 
 
+def release_stopped_gateway_lease(client, volume: str, hostname: str, labels: dict):
+    """Release only the pinned OpenClaw lease belonging to a confirmed stopped container."""
+    if not hostname:
+        raise OwnershipError("Stopped gateway hostname is missing")
+    require_labels(client.volumes.get(volume).attrs.get("Labels") or {}, labels)
+    client.containers.run(
+        IMAGE,
+        entrypoint=["node", "-e"],
+        command=[
+            "const fs=require('node:fs');const p='/state/state/openclaw.sqlite';"
+            "if(fs.existsSync(p)){const {DatabaseSync}=require('node:sqlite');"
+            "const db=new DatabaseSync(p);db.exec('PRAGMA busy_timeout=5000');"
+            "if(db.prepare(\"SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='state_leases'\").get())"
+            "db.prepare(\"DELETE FROM state_leases WHERE scope='gateway-owner' "
+            "AND lease_key='global' "
+            "AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,"
+            "'$.owner.host')=?\").run(process.argv[1]);db.close();}",
+            hostname,
+        ],
+        user="1000:1000",
+        network_mode="none",
+        read_only=True,
+        cap_drop=["ALL"],
+        security_opt=["no-new-privileges:true"],
+        volumes={volume: {"bind": "/state", "mode": "rw"}},
+        labels=labels,
+        mem_limit="128m",
+        pids_limit=32,
+        remove=True,
+    )
+
+
 def runtime_config(
     control_token: str, agent_token: str, gateway_url: str, model_route: str = "fixture"
 ) -> dict:
