@@ -19,6 +19,7 @@ def model_router(
     *,
     validate_run: Callable | None = None,
     record_usage: Callable | None = None,
+    admit_usage: Callable | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -68,8 +69,9 @@ def model_router(
                     bound_validate,
                     token,
                     settings=selection.get("settings", {}),
-                    record_usage=(lambda report: record_usage(selection["run_id"], report))
-                    if record_usage
+                    record_usage=record_usage,
+                    admit_usage=(lambda: admit_usage(token, selection["run_id"]))
+                    if admit_usage
                     else None,
                 )
         messages = body.get("messages", [])

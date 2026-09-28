@@ -424,7 +424,7 @@ def test_explicit_settings_reasoning_usage_and_length_finish(gateway, stream):
     report = state.reports[0]
     assert report["outcome"] == "length" and report["finish_reason"] == "length"
     assert report["input_tokens"] == 20 and report["reasoning_tokens"] == 8000
-    assert report["cost"] == 0.002 and report["duration_ms"] >= 0
+    assert str(report["cost"]) == "0.002000000000" and report["duration_ms"] >= 0
     assert "Thinking" in response.text
     if not stream:
         assert response.json()["usage"]["total_tokens"] == 8020
@@ -580,3 +580,32 @@ def test_key_mutations_reject_external_browser_and_are_absent_from_gateway(provi
         assert gateway_client.put(endpoint, json={"key": "synthetic-secret"}).status_code == 404
         assert gateway_client.delete(endpoint).status_code == 404
     assert not path.exists() and not state.calls
+
+
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), True, "0.1", None])
+def test_usage_values_reject_invalid_numbers(value):
+    from gateway.identity import usage_values
+
+    assert usage_values({"cost": value, "prompt_tokens": value}) == {}
+
+
+def test_failed_admission_never_contacts_provider(gateway):
+    from fastapi import HTTPException
+
+    client, calls, state = gateway
+
+    def reject(*_):
+        raise HTTPException(503, "Inference accounting is unavailable")
+
+    app = FastAPI()
+    app.include_router(
+        model_router(
+            lambda _: True,
+            lambda _: {"model_id": MODEL, "run_id": "run"},
+            admit_usage=reject,
+        )
+    )
+    with TestClient(app) as other:
+        response = other.post("/v1/chat/completions", json=BODY, headers=HEADERS)
+    assert response.status_code == 503
+    assert calls == [] and state.reports == []

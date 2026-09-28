@@ -497,7 +497,7 @@ def test_gateway_requires_admission_and_revokes_on_cancel(sessions, agent_id, mo
     import hashlib
     from datetime import UTC, datetime, timedelta
 
-    from gateway.identity import record_inference, selected_request, validate_token
+    from gateway.identity import admit_inference, record_inference, selected_request, validate_token
 
     token = "test-workload-token-at-least-twenty-chars"
     monkeypatch.setattr("gateway.identity.session_factory", lambda: sessions)
@@ -527,9 +527,9 @@ def test_gateway_requires_admission_and_revokes_on_cancel(sessions, agent_id, mo
     assert validate_token(token, require_run=True, run_id=str(run_id))
     assert not validate_token(token, require_run=True, run_id=str(uuid4()))
     report = {"outcome": "length", "reasoning_tokens": 1500, "cost": 0.01}
-    record_inference(str(run_id), report)
+    record_inference(admit_inference(token, str(run_id)), report)
     with sessions() as session:
-        assert session.get(Run, run_id).inference_calls == [report]
+        assert session.get(Run, run_id).inference_calls[0].items() >= report.items()
     with sessions.begin() as session:
         session.get(Run, run_id).cancel_requested = True
     assert not validate_token(token, require_run=True)
@@ -683,3 +683,77 @@ def test_tool_progress_is_durable_bounded_and_run_scoped(client, sessions, agent
     assert client.get(path + "/events").json() == events
     assert client.get(path + "/events?after=3").json() == events[3:]
     assert "synthetic-secret" not in str(events)
+
+
+def ledger_identity(sessions, agent_id, monkeypatch):
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    from backend.app.models import Employee, Role
+
+    monkeypatch.setattr("gateway.identity.session_factory", lambda: sessions)
+    token = "ledger-test-token-at-least-twenty-chars"
+    with sessions.begin() as session:
+        role = Role(name=f"role-{uuid4()}")
+        session.add(role)
+        session.flush()
+        employee = Employee(name="Ledger owner", role_id=role.id)
+        session.add(employee)
+        session.flush()
+        agent = session.get(Agent, agent_id)
+        agent.employee_id = employee.id
+        agent.runtime_mode = "native"
+        agent.inference_override = {"model_id": "test/model"}
+        incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        incarnation.gateway_token_hash = hashlib.sha256(token.encode()).hexdigest()
+        incarnation.expires_at = datetime.now(UTC) + timedelta(days=1)
+        return token, employee.id
+
+
+def test_ledger_durable_idempotent_and_assignment_snapshot(sessions, agent_id, monkeypatch):
+    from decimal import Decimal
+
+    from sqlalchemy.exc import IntegrityError
+
+    from backend.app.models import Employee, InferenceCall
+    from gateway.identity import admit_inference, record_inference
+
+    token, owner = ledger_identity(sessions, agent_id, monkeypatch)
+    first = admit_inference(token)
+    second = admit_inference(token)
+    unresolved = admit_inference(token)
+    record_inference(first, {"cost": Decimal("0.100000000001"), "outcome": "cancelled"})
+    record_inference(first, {"cost": 99, "outcome": "completed"})
+    record_inference(second, {"outcome": "failed"})
+    with sessions.begin() as session:
+        session.get(Agent, agent_id).employee_id = None
+        session.get(Agent, agent_id).observed_state = "deleted"
+    with sessions() as session:
+        rows = {c.id: c for c in session.scalars(select(InferenceCall))}
+        assert len(rows) == 3
+        assert rows[first].employee_id == owner
+        assert rows[first].cost_usd == Decimal("0.100000000001")
+        assert rows[first].outcome == "cancelled"
+        assert rows[second].cost_usd is None and rows[second].completed_at is not None
+        assert rows[unresolved].cost_usd is None and rows[unresolved].completed_at is None
+    with pytest.raises(IntegrityError), sessions.begin() as session:
+        session.delete(session.get(Employee, owner))
+
+
+def test_ledger_managed_calls_project_alongside_legacy(client, sessions, agent_id, monkeypatch):
+    from gateway.identity import admit_inference, record_inference
+
+    token, _ = ledger_identity(sessions, agent_id, monkeypatch)
+    response = submit(client, agent_id)
+    run_id = UUID(response.json()["id"])
+    with sessions.begin() as session:
+        run = session.get(Run, run_id)
+        run.status = "running"
+        run.legacy_inference_calls = [{"cost": 0.5, "outcome": "completed"}]
+    first = admit_inference(token, str(run_id))
+    second = admit_inference(token, str(run_id))
+    record_inference(first, {"cost": 0, "outcome": "completed"})
+    record_inference(second, {"cost": 0.25, "outcome": "completed"})
+    calls = client.get(f"/api/v1/runs/{run_id}").json()["inference_calls"]
+    assert len(calls) == 3
+    assert sum(call["cost"] for call in calls) == 0.75
