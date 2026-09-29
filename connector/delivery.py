@@ -6,13 +6,16 @@ from uuid import UUID
 from fastapi import HTTPException
 from sqlalchemy import select, update
 
+from backend.app.availability import availability
 from backend.app.channels import authorized_access, claim_invitation
 from backend.app.diagnostics import admit_employee_run, authorized_run
+from backend.app.handoff import claim_challenge, current_challenge, record_acceptance
 from backend.app.models import (
     ACTIVE_RUN_STATUSES,
     Agent,
     ChannelInbox,
     ChannelOutbox,
+    DeliveryChallenge,
     EmployeeAccess,
     EmployeeChannel,
     Run,
@@ -77,7 +80,14 @@ def ingest(
         return inbox
     response = None
     command, _, argument = message.strip().partition(" ")
-    if command in ("/start", "/register") and argument:
+    if command == "/verify" and argument:
+        access = claim_challenge(session, inbox, argument.strip())
+        if access is None:
+            inbox.code = "challenge_invalid"
+            return inbox
+        inbox.code = "transport_challenge"
+        response = "Canal comprobado. Envía ahora un mensaje de texto para probar tu agente."
+    elif command in ("/start", "/register") and argument:
         try:
             access = claim_invitation(session, channel_id, argument.strip(), user, scope)
             inbox.code = "identity_pending"
@@ -102,14 +112,27 @@ def ingest(
             inbox.code = "command"
             status_command = "agent status" if channel.provider == "slack" else "/status"
             help_command = "agent help" if channel.provider == "slack" else "/help"
+            status = None
+            if command == "/status":
+                snapshot = availability(session, agent)
+                status = next(
+                    (
+                        row["status"]
+                        for row in snapshot["accesses"]
+                        if row["access_id"] == access.id
+                    ),
+                    snapshot["status"],
+                )
             response = (
                 "Escribe un mensaje de texto para hablar con tu agente. "
                 f"{status_command} muestra su estado."
                 if command in ("/help", "/start")
                 else (
                     "Agente disponible."
-                    if agent.observed_state == "ready"
-                    else "Agente no disponible."
+                    if status == "available"
+                    else "Disponibilidad sin verificar. Consulta con tu administrador."
+                    if status == "unverified"
+                    else "Agente no disponible. Consulta con tu administrador."
                 )
                 if command == "/status"
                 else f"Comando no disponible. Usa {help_command} o escribe un mensaje de texto."
@@ -154,6 +177,13 @@ def inbox_authorized(session, inbox: ChannelInbox) -> bool:
         return False
     if inbox.code == "identity_pending":
         return access.state == "pending"
+    if inbox.challenge_id:
+        challenge = session.get(DeliveryChallenge, inbox.challenge_id, populate_existing=True)
+        return bool(
+            challenge
+            and challenge.expires_at > datetime.now(UTC)
+            and current_challenge(session, challenge, access)
+        )
     agent = session.get(Agent, access.agent_id, populate_existing=True)
     if not agent or not authorized_access(
         session,
@@ -253,6 +283,8 @@ class Delivery:
                 current.state = "sent" if current.next_part == len(current.parts) else "pending"
                 current.retry_at = datetime.now(UTC) + timedelta(seconds=1)
                 current.code = "provider_accepted" if current.state == "sent" else None
+                if current.state == "sent":
+                    record_acceptance(session, session.get(ChannelInbox, inbox.id), current)
         return True
 
     def finish(self, identifier, state, code, retry_after=None):

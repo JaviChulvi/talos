@@ -113,6 +113,7 @@ class ChannelInbox(Base):
     access_id: Mapped[UUID | None] = mapped_column(ForeignKey("employee_accesses.id"))
     access_revision: Mapped[int | None] = mapped_column(Integer)
     run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id"))
+    challenge_id: Mapped[UUID | None] = mapped_column(ForeignKey("delivery_challenges.id"))
     code: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -136,6 +137,27 @@ class ChannelOutbox(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class DeliveryChallenge(Base):
+    __tablename__ = "delivery_challenges"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    access_id: Mapped[UUID] = mapped_column(ForeignKey("employee_accesses.id"), index=True)
+    access_revision: Mapped[int] = mapped_column(Integer)
+    channel_revision: Mapped[int] = mapped_column(Integer)
+    credential_version_id: Mapped[UUID] = mapped_column(ForeignKey("connection_versions.id"))
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    application_fingerprint: Mapped[str] = mapped_column(String(64))
+    incarnation_id: Mapped[UUID | None] = mapped_column(ForeignKey("workload_incarnations.id"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    receipt_outbox_id: Mapped[UUID | None] = mapped_column(ForeignKey("channel_outbox.id"))
+    receipt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AvailabilityCheck(Base):

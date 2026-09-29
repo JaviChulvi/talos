@@ -39,6 +39,19 @@ type CheckResult = {
   error?: string | null;
 };
 type Invitation = { token: string; expires_at: string };
+type HandoffEvidence = {
+  id: string;
+  current: boolean;
+  received_at: string | null;
+  transport_state: string;
+  transport_accepted_at: string | null;
+  verified_at: string | null;
+  receipt: {
+    run_id: string;
+    accepted_parts: number;
+    total_parts: number;
+  } | null;
+};
 
 const states: Record<string, string> = {
   ok: "Ready",
@@ -800,6 +813,16 @@ function ChannelHandoff({
             : "Invitation expired. Create a new one."}
         </p>
       )}
+      {access && access.agent_id === agent.id && (
+        <HandoffVerification
+          key={`${access.id}:${access.revision}:${channel?.revision}`}
+          access={access}
+          provider={provider}
+          enabled={!!channel?.enabled && !!channel?.verified}
+          disabled={disabled || busy}
+          now={now}
+        />
+      )}
       {link &&
         access?.agent_id === agent.id &&
         (access.state === "active" || invitationValid) && (
@@ -845,5 +868,191 @@ function ChannelHandoff({
           </div>
         )}
     </section>
+  );
+}
+
+function HandoffVerification({
+  access,
+  provider,
+  enabled,
+  disabled,
+  now,
+}: {
+  access: EmployeeAccess;
+  provider: "telegram" | "slack";
+  enabled: boolean;
+  disabled: boolean;
+  now: number;
+}) {
+  const [history, setHistory] = useState<HandoffEvidence[]>([]);
+  const [challenge, setChallenge] = useState<Invitation | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = () => {
+      api<{ history: HandoffEvidence[] }>(
+        `/employee-accesses/${access.id}/handoff`,
+        { signal: controller.signal },
+      )
+        .then((result) => {
+          setHistory(result.history);
+          setError(null);
+        })
+        .catch((cause) => {
+          if (!controller.signal.aborted) setError(errorMessage(cause));
+        });
+    };
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [access.id]);
+  const latest = history[0];
+  const instructions =
+    challenge &&
+    new Date(challenge.expires_at).getTime() > now &&
+    enabled &&
+    access.state === "active"
+      ? `In your private chat, send ${provider === "telegram" ? "/verify" : "verify"} ${challenge.token}\nAfter the channel confirmation, send a normal text message to your agent.`
+      : null;
+  return (
+    <div className="space-y-3 border-t pt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-medium">Verify delivery</h4>
+        <Badge
+          variant={
+            latest?.verified_at && latest.current && !error
+              ? "success"
+              : "secondary"
+          }
+        >
+          {error
+            ? "Unverified"
+            : latest?.verified_at
+              ? latest.current
+                ? "Delivery verified"
+                : "Configuration changed"
+              : "Not yet verified"}
+        </Badge>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        The channel test uses no model. The employee's following message uses
+        the agent normally and can consume credit. Provider acceptance does not
+        prove the message was read.
+      </p>
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      <ol className="list-decimal space-y-1 pl-5 text-sm">
+        <li>
+          Identity:{" "}
+          {access.state === "active" ? "approved" : "requires approval"}.
+        </li>
+        <li>
+          Transport:{" "}
+          {error
+            ? "unverified"
+            : latest?.transport_accepted_at
+              ? "confirmation accepted by provider"
+              : latest?.received_at
+                ? `received · ${latest.transport_state}`
+                : "waiting for employee test"}
+          .
+        </li>
+        <li>
+          Agent reply:{" "}
+          {error
+            ? "unverified"
+            : latest?.receipt
+              ? `${latest.receipt.accepted_parts}/${latest.receipt.total_parts} parts accepted by provider`
+              : "waiting for a completed reply after the test"}
+          .
+        </li>
+        <li>
+          Current availability: see the checks above. A delivery receipt remains
+          historical.
+        </li>
+      </ol>
+      {latest?.verified_at && (
+        <p className="text-xs text-muted-foreground">
+          Verified {new Date(latest.verified_at).toLocaleString()}.{" "}
+          {latest.current
+            ? "Recorded for this Talos configuration."
+            : "Repeat the test for the current identity, channel or agent configuration."}
+        </p>
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={disabled || busy || !enabled || access.state !== "active"}
+        onClick={() => {
+          setBusy(true);
+          setError(null);
+          api<Invitation>(`/employee-accesses/${access.id}/challenge`, {
+            method: "POST",
+          })
+            .then((result) => setChallenge(result))
+            .catch((cause) => setError(errorMessage(cause)))
+            .finally(() => setBusy(false));
+        }}
+      >
+        Create transport test
+      </Button>
+      {instructions && (
+        <div className="space-y-2">
+          <p className="whitespace-pre-line break-all text-sm">
+            {instructions}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Single use. Expires at{" "}
+            {new Date(challenge!.expires_at).toLocaleTimeString()}. The
+            following reply completes the verification.
+          </p>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              navigator.clipboard
+                .writeText(instructions)
+                .catch(() =>
+                  setError(
+                    "Copy was blocked. Select the instructions and copy manually.",
+                  ),
+                );
+            }}
+          >
+            <Copy />
+            Copy test instructions
+          </Button>
+        </div>
+      )}
+      {challenge && !instructions && (
+        <p className="text-xs text-muted-foreground">
+          Test expired or access changed. Create a new test after checking
+          access.
+        </p>
+      )}
+      {history.length > 1 && (
+        <details className="text-xs text-muted-foreground">
+          <summary>Previous tests</summary>
+          <ul className="mt-2 space-y-1">
+            {history.slice(1).map((item) => (
+              <li key={item.id}>
+                {item.verified_at
+                  ? `Reply accepted ${new Date(item.verified_at).toLocaleString()}`
+                  : `Transport ${item.transport_state}`}{" "}
+                ·{" "}
+                {item.current ? "same configuration" : "configuration changed"}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }

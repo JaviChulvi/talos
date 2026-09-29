@@ -65,14 +65,18 @@ def test_employee_sessions_have_separate_private_checkpoints(tmp_path):
                 child.kill()
             child.wait()
 
-    telegram = "agent:main:employee:telegram:access:agent"
-    slack = "agent:main:employee:slack:access:agent"
+    scope = "01234567-89ab-cdef-0123-456789abcdef:2:fedcba98-7654-3210-fedc-ba9876543210"
+    telegram = "agent:main:employee:telegram:" + scope
+    slack = "agent:main:employee:slack:" + scope
     first = call(telegram)
     second = call(slack)
     resumed = call(telegram)
     assert first[0]["session_id"] != second[0]["session_id"]
     assert resumed[0]["session_id"] == first[0]["session_id"]
     assert "--resume" in resumed[0]["args"]
+    args = first[0]["args"]
+    title = args[args.index("--continue") + 1]
+    assert title.startswith("talos-") and len(title) <= 100
     assert legacy.read_text() == "existing-admin-session"
     directory = tmp_path / "talos-chat-sessions"
     files = list(directory.glob("*.session"))

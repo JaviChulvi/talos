@@ -18,6 +18,7 @@ from backend.app.config import get_settings
 from backend.app.connections import router as connections_router
 from backend.app.db import Database, get_engine
 from backend.app.diagnostics import router as diagnostics_router
+from backend.app.handoff import router as handoff_router
 from backend.app.inference import router as inference_router
 from backend.app.readiness import router as readiness_router
 from backend.app.setups import router as setups_router
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(administration_router)
+    app.include_router(handoff_router)
     app.include_router(agents_router)
     app.include_router(availability_router)
     app.include_router(connections_router)

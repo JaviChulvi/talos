@@ -148,9 +148,9 @@ class Slack:
         text = event["text"].strip()
         # Slack slash commands do not arrive through message.im. These narrow
         # private-message commands work with the internal Socket Mode manifest.
-        registration = re.fullmatch(r"register ([A-Za-z0-9_-]{20,64})", text)
-        if registration:
-            text = f"/register {registration[1]}"
+        command = re.fullmatch(r"(register|verify) ([A-Za-z0-9_-]{20,64})", text)
+        if command:
+            text = f"/{command[1]} {command[2]}"
         elif text in ("agent help", "agent status"):
             text = "/help" if text == "agent help" else "/status"
         return ingest(
