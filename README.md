@@ -355,6 +355,20 @@ The picker uses the upstream [OpenClaw favicon](https://github.com/openclaw/open
 
 ## Employee and role administration
 
+Employee channel configuration is admin-only. `/api/v1/channels` configures one
+Telegram bot and one Slack workspace app; channels are disabled initially. Store
+write-only credentials with `PUT /api/v1/channels/{id}/credentials` using
+`{"values":{"bot_token":"..."}}` for Telegram, or both `app_token` and `bot_token`
+for Slack. These immutable credential versions cannot be assigned to roles or
+agents, and rotation invalidates channel verification.
+
+`/api/v1/employee-accesses` associates an employee's assigned native agent with a
+stable platform user ID (and Slack workspace ID). New accesses are pending.
+`POST /{id}/invitation` returns a single-use token valid for 15 minutes; claiming
+it remains pending until the admin calls `POST /{id}/approve`. `POST /{id}/disable`
+revokes access. No employee login or public Talos API is introduced. Messaging
+transport and guided handoff are supplied by the following stacked PRs.
+
 The local administrator API supports `/api/v1/employees` and `/api/v1/roles`
 (GET/POST), their `/{id}` resources (PUT/DELETE), and GET `/api/v1/capabilities`.
 Employees have one role; roles select native capability groups. Referenced records
