@@ -8,6 +8,7 @@ import re
 import stat
 import tempfile
 import zipfile
+import zlib
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
@@ -338,6 +339,7 @@ def read_bundle(content: bytes, *, publication: bool = False) -> tuple[dict, dic
             }
     except (
         zipfile.BadZipFile,
+        zlib.error,
         KeyError,
         UnicodeError,
         json.JSONDecodeError,
