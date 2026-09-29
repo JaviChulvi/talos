@@ -12,7 +12,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.app.capabilities import compile_permissions
 from backend.app.db import Database
 from backend.app.db import get_db as get_db
 from backend.app.models import (
@@ -21,7 +20,6 @@ from backend.app.models import (
     Agent,
     Employee,
     Operation,
-    Role,
     WorkloadIncarnation,
 )
 
@@ -73,7 +71,12 @@ class AgentResponse(BaseModel):
     employee_name: str
     role: dict | None
     applied_role: dict | None
+    selected_application: dict | None
+    applied_application: dict | None
     permissions_pending: bool
+    setup_status: str = "not_configured"
+    setup_pending: bool = False
+    setup_blockers: list[str] = Field(default_factory=list)
     inference_override: dict | None
     runtime_release: str
     model_route: str
@@ -231,9 +234,12 @@ async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, sessi
 
 @router.get("/agents", response_model=list[AgentResponse])
 def list_agents(session: Database):
-    return session.scalars(
+    from backend.app.applications import annotate_agent
+
+    agents = session.scalars(
         select(Agent).where(Agent.observed_state != "deleted").order_by(Agent.created_at, Agent.id)
     ).all()
+    return [annotate_agent(session, agent) for agent in agents]
 
 
 @router.get("/agents/{agent_id}", response_model=AgentResponse)
@@ -241,7 +247,9 @@ def get_agent(agent_id: UUID, session: Database):
     agent = session.get(Agent, agent_id)
     if agent is None or agent.observed_state == "deleted":
         raise HTTPException(404, "Agent not found")
-    return agent
+    from backend.app.applications import annotate_agent
+
+    return annotate_agent(session, agent)
 
 
 def request_lifecycle(
@@ -296,20 +304,19 @@ def request_lifecycle(
                 and agent.employee_id
                 and agent.runtime_mode == "native"
             ):
-                employee = session.get(
-                    Employee, agent.employee_id, with_for_update=True, populate_existing=True
-                )
-                role = session.get(
-                    Role, employee.role_id, with_for_update=True, populate_existing=True
-                )
+                from backend.app.applications import desired_application, normalize_application
+
+                if action == "start" and agent.selected_application:
+                    application = normalize_application(
+                        agent.selected_application, agent.runtime_kind
+                    )
+                    if application.get("employee_id") != str(agent.employee_id):
+                        raise HTTPException(409, "Employee changed; apply the role before starting")
+                else:
+                    application = desired_application(session, agent)
+                    agent.selected_application = application
                 application = {
-                    "role": {
-                        "id": str(role.id),
-                        "name": role.name,
-                        "revision": role.revision,
-                        "capabilities": list(role.capabilities),
-                    },
-                    "permissions": compile_permissions(role.capabilities, agent.runtime_kind),
+                    **application,
                     "restart": action == "start" or agent.desired_state == "running",
                 }
             agent.revision += 1
@@ -319,7 +326,7 @@ def request_lifecycle(
                 "delete": "deleted",
                 "apply_role": agent.desired_state,
             }[action]
-            if action in {"stop", "delete", "apply_role"} and agent.current_incarnation_id:
+            if action in {"stop", "delete"} and agent.current_incarnation_id:
                 incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
                 incarnation.revoked_at = datetime.now(UTC)
             agent.last_error = None
@@ -393,3 +400,13 @@ def assign_employee(agent_id: UUID, body: AssignEmployee, session: Database):
 @router.post("/agents/{agent_id}/apply-role", status_code=202, response_model=OperationResponse)
 def apply_role(agent_id: UUID, idempotency_key: IdempotencyKey, session: Database):
     return request_lifecycle(session, agent_id, "apply_role", idempotency_key)
+
+
+@router.post("/agents/{agent_id}/setup-preview")
+def setup_preview(agent_id: UUID, session: Database):
+    from backend.app.applications import application_preview
+
+    agent = session.get(Agent, agent_id)
+    if agent is None or agent.desired_state == "deleted":
+        raise HTTPException(404, "Agent not found")
+    return application_preview(session, agent)

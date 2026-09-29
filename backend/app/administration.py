@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.agents import Database
 from backend.app.capabilities import CAPABILITIES
-from backend.app.models import Employee, Role
+from backend.app.models import Employee, Role, SetupRevision
 from backend.app.usage import employee_budget
 
 router = APIRouter(prefix="/api/v1")
@@ -21,6 +21,8 @@ class RoleInput(BaseModel):
     name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
     description: str = Field(default="", max_length=2000, pattern=r"^[^\x00]*$")
     capabilities: list[str] = Field(default_factory=list)
+    setup_revision_id: UUID | None = None
+    connector_grants: list[str] = Field(default_factory=list)
 
     @field_validator("capabilities")
     @classmethod
@@ -58,8 +60,21 @@ def roles(session: Database):
     return session.scalars(select(Role).order_by(Role.name, Role.id)).all()
 
 
+def validate_role_setup(body: RoleInput, session: Database):
+    if body.setup_revision_id is None:
+        if body.connector_grants:
+            raise HTTPException(400, "Choose a setup before granting connectors")
+        return
+    revision = session.get(SetupRevision, body.setup_revision_id, with_for_update=True)
+    if revision is None:
+        raise HTTPException(400, "Setup revision not found")
+    if set(body.connector_grants) - {c["id"] for c in revision.manifest["connectors"]}:
+        raise HTTPException(400, "Connector is not in the selected setup")
+
+
 @router.post("/roles", response_model=RoleResponse, status_code=201)
 def create_role(body: RoleInput, session: Database):
+    validate_role_setup(body, session)
     role = Role(**body.model_dump())
     session.add(role)
     try:
@@ -75,7 +90,12 @@ def update_role(role_id: UUID, body: RoleInput, session: Database):
     role = session.get(Role, role_id, with_for_update=True)
     if role is None:
         raise HTTPException(404, "Role not found")
-    if role.capabilities != body.capabilities:
+    validate_role_setup(body, session)
+    if (
+        role.capabilities != body.capabilities
+        or role.setup_revision_id != body.setup_revision_id
+        or role.connector_grants != body.connector_grants
+    ):
         role.revision += 1
     for key, value in body.model_dump().items():
         setattr(role, key, value)

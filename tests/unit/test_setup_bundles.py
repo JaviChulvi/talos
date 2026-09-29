@@ -61,6 +61,8 @@ def test_canonical_bundle_roundtrip_and_immutable_storage(tmp_path, monkeypatch)
     assert restored == files and imported == normalized
     digest = store_bundle(content)
     assert digest == store_bundle(content)
+    assert stat.S_IMODE((tmp_path / f"{digest}.zip").stat().st_mode) == 0o640
+    assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o2770
     assert load_bundle(digest) == (normalized, files)
     (tmp_path / f"{digest}.zip").write_bytes(b"corrupted")
     with pytest.raises(BundleError, match="integrity"):

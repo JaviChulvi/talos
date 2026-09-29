@@ -13,6 +13,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -41,7 +42,6 @@ from worker.runtime import (
     OwnershipError,
     RuntimeReadinessError,
     apply_native_model,
-    apply_native_permissions,
     approve_device,
     launch_options,
     model_profile,
@@ -52,6 +52,7 @@ from worker.runtime import (
     runtime_config,
     runtime_error_message,
 )
+from worker.setup_runtime import apply_setup, prepare_setup, verify_setup
 
 MAX_ATTEMPTS = 5
 
@@ -639,6 +640,21 @@ class Worker:
                     proxy = self.ui_proxy(incarnation)
                     if proxy is None or proxy.status != "running":
                         raise RuntimeError("UI relay is not running")
+                if (
+                    agent.applied_application
+                    and not agent.applied_application.get("legacy_receipt")
+                    and incarnation.model_route == "native"
+                ):
+                    state, _ = self.names(agent.id)
+                    verify_setup(
+                        self.client,
+                        state,
+                        incarnation,
+                        agent.runtime_kind,
+                        agent.applied_application,
+                        self.labels(agent.id),
+                        discover=False,
+                    )
                 credentials = read_credentials(incarnation)
                 asyncio.run(
                     self.wait_ready(
@@ -777,10 +793,64 @@ class Worker:
             self.client.images.get(
                 NATIVE_IMAGES[agent.runtime_kind] if agent.runtime_mode == "native" else IMAGE
             )  # Pull/install the approved image before starting the worker.
+            application = operation.role_application
+            if application:
+                from backend.app.applications import normalize_application
+
+                application = {
+                    **normalize_application(application, agent.runtime_kind),
+                    "restart": application["restart"],
+                }
+                operation.role_application = application
+                with self.sessions.begin() as session:
+                    session.get(Operation, operation.id).role_application = application
+            # Empty applications must also remove any partially installed setup.
+            has_setup = bool(application)
+            prepared_setup = None
+            # Once the stop boundary is durable, an interrupted predecessor may
+            # have lost its config volume, or its successor may not have one yet.
+            # Let apply_setup prepare after prepare_volumes on those retries.
+            if (
+                has_setup
+                and agent.current_incarnation_id
+                and operation.step != "applying_setup"
+            ):
+                with self.sessions() as session:
+                    previous = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+                if previous and previous.revoked_at is None and previous.config_volume:
+                    state, _ = self.names(agent.id)
+                    prepared_setup = prepare_setup(
+                        self.client,
+                        state,
+                        SimpleNamespace(
+                            config_volume=previous.config_volume,
+                            image_digest=self.client.images.get(
+                                NATIVE_IMAGES[agent.runtime_kind]
+                            ).id,
+                        ),
+                        agent.runtime_kind,
+                        application,
+                        self.labels(agent.id),
+                    )
+            if application:
+                # Persist the stop boundary before mutating Docker. A preflight
+                # failure preserves the old running incarnation; later failures
+                # must leave the runtime stopped, including after worker restart.
+                with self.sessions.begin() as session:
+                    session.get(Operation, operation.id).step = "applying_setup"
+                operation.step = "applying_setup"
             incarnation = self.ensure_incarnation(operation)
             if incarnation.revoked_at is not None or incarnation.expires_at <= datetime.now(UTC):
                 raise RuntimeError("Start identity is revoked or expired")
             if operation.role_application:
+                if application.get("legacy_receipt"):
+                    # A pre-upgrade operation may already have created a container
+                    # without a receipt. Recreate it with the captured selection.
+                    if self.owned_container(incarnation):
+                        self.stop_incarnation(incarnation, remove=True)
+                    with self.sessions.begin() as session:
+                        session.get(WorkloadIncarnation, incarnation.id).container_id = None
+                    incarnation.container_id = None
                 with self.sessions.begin() as session:
                     self.mark_stopped(session, session.get(Agent, agent.id))
             credentials, config = self.ensure_credentials(incarnation)
@@ -808,14 +878,24 @@ class Worker:
                     native=agent.runtime_mode == "native",
                     runtime_kind=agent.runtime_kind,
                 )
-                if operation.role_application:
-                    apply_native_permissions(
+                if has_setup:
+                    apply_setup(
                         self.client,
                         state,
                         incarnation,
                         agent.runtime_kind,
-                        operation.role_application["permissions"],
+                        application,
                         self.labels(agent.id),
+                        prepared=prepared_setup,
+                    )
+                    verify_setup(
+                        self.client,
+                        state,
+                        incarnation,
+                        agent.runtime_kind,
+                        application,
+                        self.labels(agent.id),
+                        network=network,
                     )
                 if agent.runtime_mode == "native" and agent.inference_override:
                     apply_native_model(
@@ -850,7 +930,17 @@ class Worker:
                     )
                 )
             # A crash immediately above is recovered by looking up this exact
-            # labeled name; no second container or state volume is allocated.
+            # labeled name; setup receipts must also match before adoption.
+            elif has_setup:
+                verify_setup(
+                    self.client,
+                    state,
+                    incarnation,
+                    agent.runtime_kind,
+                    application,
+                    self.labels(agent.id),
+                    network=network,
+                )
             with self.sessions.begin() as session:
                 session.get(WorkloadIncarnation, incarnation.id).container_id = container.id
             container.reload()
@@ -876,6 +966,12 @@ class Worker:
             agent = session.get(Agent, operation.agent_id, with_for_update=True)
             if operation.role_application:
                 agent.applied_role = operation.role_application["role"]
+                agent.applied_application = {
+                    k: v
+                    for k, v in operation.role_application.items()
+                    if k not in {"restart", "legacy_receipt"}
+                }
+                agent.selected_application = agent.applied_application
             if observed in {"stopped", "deleted"}:
                 self.mark_stopped(session, agent)
             agent.observed_state, agent.last_error = observed, None
@@ -931,8 +1027,10 @@ class Worker:
             operation.attempts += 1
             operation.next_retry_at = None
             operation.heartbeat_at = datetime.now(UTC)
-            operation.step = operation.action
+            if operation.step != "applying_setup":
+                operation.step = operation.action
             agent = session.get(Agent, operation.agent_id)
+            previous_observed_state = agent.observed_state
             agent.observed_state = {
                 "create": "provisioning",
                 "start": "starting",
@@ -946,7 +1044,10 @@ class Worker:
             raise
         except Exception as error:
             stop_error = None
-            if operation.role_application:
+            preflight_failed = bool(
+                operation.role_application and operation.step != "applying_setup"
+            )
+            if operation.role_application and not preflight_failed:
                 with self.sessions() as session:
                     incarnations = session.scalars(
                         select(WorkloadIncarnation).where(
@@ -964,8 +1065,9 @@ class Worker:
                 else StorageFullError.message
                 if isinstance(error, StorageFullError)
                 else (
-                    f"Role application failed ({type(error).__name__}). Agent stopped; "
-                    "check native configuration and retry Start or Apply."
+                    f"Role application failed ({type(error).__name__}). "
+                    + ("Existing runtime preserved; " if preflight_failed else "Agent stopped; ")
+                    + "check native configuration and retry Start or Apply."
                     if operation.role_application
                     else (
                         f"Model configuration failed ({type(error).__name__}). "
@@ -990,7 +1092,8 @@ class Worker:
             with self.sessions.begin() as session:
                 current = session.get(Operation, operation.id)
                 terminal = (
-                    current.attempts >= MAX_ATTEMPTS
+                    preflight_failed
+                    or current.attempts >= MAX_ATTEMPTS
                     or isinstance(error, (OwnershipError, StorageFullError, NativeModelError))
                     or isinstance(stop_error, OwnershipError)
                 )
@@ -1005,10 +1108,14 @@ class Worker:
                 agent = session.get(Agent, operation.agent_id)
                 if operation.action not in {"dashboard", "configure_model"}:
                     agent.observed_state, agent.last_error = (
-                        "stopped" if operation.role_application and stop_error is None else "error",
+                        previous_observed_state
+                        if preflight_failed
+                        else "stopped"
+                        if operation.role_application and stop_error is None
+                        else "error",
                         current.error,
                     )
-                    if operation.role_application:
+                    if operation.role_application and not preflight_failed:
                         if stop_error is None:
                             self.mark_stopped(session, agent)
                         if terminal:
@@ -1016,6 +1123,7 @@ class Worker:
                 if (
                     agent.current_incarnation_id
                     and terminal
+                    and not preflight_failed
                     and operation.action not in {"dashboard", "configure_model"}
                 ):
                     session.get(

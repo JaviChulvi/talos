@@ -84,7 +84,7 @@ services:
     restart: unless-stopped
     labels:
       io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
-    user: "0:0"
+    user: "0:10001"
     command: ["python", "-m", "worker.main"]
     volumes: ["/var/run/docker.sock:/var/run/docker.sock", "worker-state:/var/lib/talos", "setup-artifacts:/var/lib/talos-setups"]
     depends_on:

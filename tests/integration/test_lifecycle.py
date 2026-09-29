@@ -753,7 +753,9 @@ def role_agent(client, worker, session_maker, monkeypatch):
     )
     monkeypatch.setattr(worker, "ui_proxy", lambda *a, **kw: proxy)
     writer = Mock()
-    monkeypatch.setattr("worker.lifecycle.apply_native_permissions", writer)
+    monkeypatch.setattr("worker.lifecycle.apply_setup", writer)
+    monkeypatch.setattr("worker.lifecycle.prepare_setup", Mock())
+    monkeypatch.setattr("worker.lifecycle.verify_setup", Mock())
     worker.process_one()
     return created["agent_id"], role, writer
 
