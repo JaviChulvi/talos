@@ -86,7 +86,10 @@ if path.exists():
 else:
     # If the first process died before publishing its ID, do not find that
     # abandoned conversation again by title.
-    command += ['--continue', request['session'] + ':' + uuid.uuid4().hex, '--create-if-missing']
+    # Native titles are limited to 100 characters. Scoped employee keys include
+    # several UUIDs; keep the title bounded without exposing external identities.
+    title = 'talos-' + hashlib.sha256(request['session'].encode()).hexdigest()[:32]
+    command += ['--continue', title + ':' + uuid.uuid4().hex, '--create-if-missing']
 child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                          stderr=subprocess.DEVNULL, start_new_session=True)
 cancelled = False

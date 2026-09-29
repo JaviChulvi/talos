@@ -2,7 +2,7 @@
 
 A self-hosted control plane for personal employee agents. The goal is to let companies manage agent integrations, permissions, credentials, spending, and offboarding.
 
-**Current status: local prototype.** Talos creates and manages native OpenClaw and Hermes instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. Employee roles, Talos-routed spend reporting, and employee monthly allowances are available. User authentication and employee sign-in are future work.
+**Current status: local prototype.** Talos creates and manages native OpenClaw and Hermes instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. Employee roles, Talos-routed spend reporting, and employee monthly allowances are available. Administrator authentication is future work. Employees access their assigned agents through approved private Telegram or Slack identities.
 
 ## What works
 
@@ -367,7 +367,7 @@ stable platform user ID (and Slack workspace ID). New accesses are pending.
 `POST /{id}/invitation` returns a single-use token valid for 15 minutes; claiming
 it remains pending until the admin calls `POST /{id}/approve`. `POST /{id}/disable`
 revokes access. No employee login or public Talos API is introduced. Messaging
-transport and guided handoff are supplied by the following stacked PRs.
+transport and guided handoff use these records without employee Talos accounts.
 
 The `connector` service receives private Telegram text messages by long polling.
 Enable the configured channel after saving its bot token. It verifies `getMe`
@@ -383,7 +383,7 @@ An ambiguous send or connector restart during sending is marked uncertain withou
 blind retries. Access is checked again before each response. Provider acceptance
 does not imply that the employee read the response. The connector has no Docker
 socket, publishes no endpoint, and reads channel credential versions from the
-existing secret volume. Slack reuses this admission and delivery path in the next PR.
+existing secret volume. Slack reuses this admission and delivery path.
 
 Install an internal Slack app from `deploy/slack-manifest.yaml`. Generate an
 app-level token with `connections:write`, install the bot in the workspace, and
@@ -432,6 +432,34 @@ an employee, approve or revoke their identity, and copy platform instructions.
 Employees receive Telegram/Slack links only. The screen distinguishes expiring
 availability evidence from recorded delivery acceptance. Channel credentials are
 excluded from the tool connection picker.
+
+**Verify delivery** creates a single-use, 15-minute transport challenge for an
+approved platform identity. Send `/verify <token>` in the private Telegram chat,
+or `verify <token>` as ordinary private Slack text. This confirmation uses no
+model or business tool. Its provider-accepted reply verifies transport only.
+The employee must then send a normal text message: after the native agent
+completes and every response part is accepted, Talos persists a delivery receipt.
+Uncertain sends, incomplete replies and busy/error responses cannot verify delivery.
+
+`POST /api/v1/employee-accesses/{id}/challenge` returns the token once with
+`Cache-Control: no-store`; only its hash is stored. GET `/{id}/handoff` reads
+metadata and historical receipts, never probes or sends. Tests are bound to the
+identity/access revision, channel revision and credential version, agent
+incarnation and Talos configuration fingerprint. Changed configurations require
+a new test. Native edits made outside Talos are not automatically detected;
+repeat delivery verification after such edits. Historical delivery acceptance
+does not prove present availability or that a human read the message.
+
+The optional Docker acceptance suite exercises both pinned native runtimes with
+both adapters, isolated channel histories and native stop/start persistence:
+`TALOS_NATIVE_CHANNEL_PROOF=1 python -m pytest -s
+tests/integration/test_native_channel_acceptance.py`. Run inside the verification
+image with a Docker socket and disposable PostgreSQL database. The suite uses
+an internal Docker network, a local model provider and mocked Telegram/Slack
+HTTP responses. It does not send external messages or spend provider credit.
+For a live smoke, configure dedicated test bot/app credentials and test employee
+IDs in the admin screen, explicitly approve them, then complete **Verify delivery**
+from those accounts. Never use production employee recipients for an automated smoke.
 
 `POST /api/v1/channels/{id}/check` queues a connector-owned check of bot/app identity,
 scopes and transport, including Slack token pairing. Disabled Telegram channels

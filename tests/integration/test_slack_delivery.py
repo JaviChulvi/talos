@@ -126,6 +126,8 @@ def test_slack_employee_commands_do_not_dispatch(session_maker, ready_accesses, 
     assert inbox.code == "command" and inbox.run_id is None
     with session_maker() as session:
         assert session.scalars(select(Run)).all() == []
+        if text == "agent status":
+            assert "sin verificar" in session.scalar(select(ChannelOutbox)).parts[0]
 
 
 def test_slack_and_telegram_share_busy_admission(session_maker, ready_accesses):
