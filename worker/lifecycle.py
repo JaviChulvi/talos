@@ -128,6 +128,7 @@ async def connect_runtime(sessions, agent_id: UUID) -> OpenClawClient | HermesCl
 
 async def configure_inference(sessions, run, client):
     """Publish a model profile before send, then wait for the runtime's active catalog."""
+    session_key = run.session_key or f"agent:main:talos:{run.agent_id}"
     with sessions() as session:
         incarnation = session.get(WorkloadIncarnation, run.incarnation_id)
         if incarnation.model_route == "native":
@@ -151,7 +152,7 @@ async def configure_inference(sessions, run, client):
                 await client.request(
                     "sessions.patch",
                     {
-                        "key": f"agent:main:talos:{run.agent_id}",
+                        "key": session_key,
                         "model": "talos-openrouter/" + model_id if model_id else None,
                     },
                 )
@@ -209,7 +210,7 @@ async def configure_inference(sessions, run, client):
     await client.request(
         "sessions.patch",
         {
-            "key": f"agent:main:talos:{run.agent_id}",
+            "key": session_key,
             "model": f"foundation/{identifier}",
             "thinkingLevel": None,
         },

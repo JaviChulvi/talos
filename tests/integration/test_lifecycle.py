@@ -231,7 +231,9 @@ def test_native_reset_clears_persisted_test_session_before_next_turn(
     asyncio.run(
         configure_inference(
             session_maker,
-            SimpleNamespace(agent_id=UUID(agent_id), incarnation_id=incarnation_id),
+            SimpleNamespace(
+                agent_id=UUID(agent_id), incarnation_id=incarnation_id, session_key=None
+            ),
             runtime,
         )
     )

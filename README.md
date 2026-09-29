@@ -369,6 +369,13 @@ it remains pending until the admin calls `POST /{id}/approve`. `POST /{id}/disab
 revokes access. No employee login or public Talos API is introduced. Messaging
 transport and guided handoff are supplied by the following stacked PRs.
 
+Employee turns share the existing single active run admission with administrator
+turns. Telegram, Slack and administrator conversations use independent native
+sessions; the legacy administrator history is preserved. Revocation, reassignment
+and credential rotation are checked again before runtime dispatch. Administrator
+history defaults to admin turns; `GET /api/v1/agents/{id}/runs?source=employee`
+shows employee turns separately (`source=all` includes every origin).
+
 The local administrator API supports `/api/v1/employees` and `/api/v1/roles`
 (GET/POST), their `/{id}` resources (PUT/DELETE), and GET `/api/v1/capabilities`.
 Employees have one role; roles select native capability groups. Referenced records

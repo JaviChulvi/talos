@@ -10,6 +10,77 @@ import pytest
 from worker.hermes import BRIDGE
 
 
+def test_employee_sessions_have_separate_private_checkpoints(tmp_path):
+    (tmp_path / "hermes_state.py").write_text(
+        "class SessionDB:\n"
+        " def __enter__(self): return self\n"
+        " def __exit__(self, *args): pass\n"
+        " def get_active_message_ids(self, session_id): return []\n"
+        " def get_messages(self, session_id, **kwargs): return []\n"
+    )
+    executable = tmp_path / "hermes"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json,sys,uuid\n"
+        "session=(sys.argv[sys.argv.index('--resume')+1] "
+        "if '--resume' in sys.argv else str(uuid.uuid4()))\n"
+        "print(json.dumps({'type':'system','session_id':session,'args':sys.argv[1:]}),flush=True)\n"
+        "print(json.dumps({'type':'result','text':session,'exit_code':0}),flush=True)\n"
+    )
+    executable.chmod(0o755)
+    legacy = tmp_path / "talos-chat-session"
+    legacy.write_text("existing-admin-session")
+    bridge = BRIDGE.replace("/opt/data/talos-chat-session", str(legacy))
+
+    def call(key):
+        child = subprocess.Popen(
+            [sys.executable, "-u", "-c", bridge],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={
+                **os.environ,
+                "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+                "PYTHONPATH": str(tmp_path),
+            },
+            text=True,
+        )
+        try:
+            child.stdin.write(
+                json.dumps({"session": key, "message": "hello", "max_frame": 4096}) + "\n"
+            )
+            child.stdin.flush()
+            events = []
+            while True:
+                assert select.select([child.stdout], [], [], 5)[0]
+                line = child.stdout.readline()
+                assert line, child.stderr.read()
+                events.append(json.loads(line))
+                if events[-1]["type"] == "talos_exit":
+                    break
+            assert child.wait(timeout=5) == 0
+            return events
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
+
+    telegram = "agent:main:employee:telegram:access:agent"
+    slack = "agent:main:employee:slack:access:agent"
+    first = call(telegram)
+    second = call(slack)
+    resumed = call(telegram)
+    assert first[0]["session_id"] != second[0]["session_id"]
+    assert resumed[0]["session_id"] == first[0]["session_id"]
+    assert "--resume" in resumed[0]["args"]
+    assert legacy.read_text() == "existing-admin-session"
+    directory = tmp_path / "talos-chat-sessions"
+    files = list(directory.glob("*.session"))
+    assert len(files) == 2
+    assert directory.stat().st_mode & 0o777 == 0o700
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in files)
+
+
 @pytest.mark.parametrize("end", ["result", "cancel", "disconnect"])
 def test_hermes_bridge_preserves_session_and_reaps_child(tmp_path, end):
     (tmp_path / "hermes_state.py").write_text(

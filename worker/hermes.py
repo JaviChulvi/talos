@@ -11,12 +11,16 @@ from backend.app.config import get_settings
 # The supervisor owns the child for its entire lifetime. Cancellation and a lost
 # worker connection both reap it; the CLI never reads the control channel.
 BRIDGE = r"""
-import json, os, select, signal, subprocess, sys, uuid
+import hashlib, json, os, select, signal, subprocess, sys, uuid
 from contextlib import suppress
 from pathlib import Path
 control = sys.stdin.buffer.raw
 request = json.loads(control.readline())
 path = Path('/opt/data/talos-chat-session')
+if ':employee:' in request['session'] or ':probe:' in request['session']:
+    directory = path.parent / 'talos-chat-sessions'
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / (hashlib.sha256(request['session'].encode()).hexdigest() + '.session')
 pending = path.with_suffix('.pending')
 from hermes_state import SessionDB
 with SessionDB() as db:

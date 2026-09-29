@@ -313,6 +313,7 @@ TERMINAL_RUN_STATUSES = ("completed", "cancelled", "failed", "interrupted")
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (
+        CheckConstraint("source IN ('admin','employee','probe')"),
         UniqueConstraint("agent_id", "idempotency_key", name="uq_run_idempotency"),
         Index(
             "uq_run_active_agent",
@@ -331,6 +332,12 @@ class Run(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
     incarnation_id: Mapped[UUID] = mapped_column(ForeignKey("workload_incarnations.id"))
+    source: Mapped[str] = mapped_column(String(20), default="admin")
+    session_key: Mapped[str | None] = mapped_column(String(255))
+    access_id: Mapped[UUID | None] = mapped_column(ForeignKey("employee_accesses.id"))
+    access_revision: Mapped[int | None] = mapped_column(Integer)
+    channel_revision: Mapped[int | None] = mapped_column(Integer)
+    employee_id: Mapped[UUID | None] = mapped_column(ForeignKey("employees.id"))
     model_id: Mapped[str] = mapped_column(String(255), default="fixture")
     inference: Mapped[dict] = mapped_column(JSON, default=dict)
     legacy_inference_calls: Mapped[list] = mapped_column("inference_calls", JSON, default=list)
