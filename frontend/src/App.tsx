@@ -17,6 +17,8 @@ import {
   InferenceSettings,
   OpenRouterSettings,
 } from "@/components/inference-settings";
+import { Setups } from "@/components/setups";
+import { Connections } from "@/components/connections";
 import { Administration } from "@/components/administration";
 import { Usage } from "@/components/usage";
 import { AgentWorkspace } from "@/components/agent-workspace";
@@ -97,6 +99,7 @@ function saveIds(key: string, ids: Record<string, string>) {
 }
 
 function pageFromHash(hash: string) {
+  if (/^#setups(?:\/[^/]+)?$/.test(hash)) return hash.slice(1);
   if (hash === "#usage" || hash.startsWith("#usage?")) return hash.slice(1);
   if (/^#agents\/[^/]+\/settings$/.test(hash)) return hash.slice(1);
   if (["#platform", "#settings", "#roles", "#employees"].includes(hash))
@@ -209,6 +212,9 @@ export default function App() {
             onOperation={recordOperation}
           />
         </div>
+        {(page === "setups" || page.startsWith("setups/")) && (
+          <Setups key={page} setupId={page.split("/")[1]} />
+        )}
         {page.startsWith("usage") && <Usage key={page} query={page.split("?")[1] ?? ""} />}
         {page === "settings" && (
           <section
@@ -223,6 +229,7 @@ export default function App() {
             </div>
             <OpenRouterSettings />
             <InferenceSettings />
+            <Connections />
           </section>
         )}
         <section

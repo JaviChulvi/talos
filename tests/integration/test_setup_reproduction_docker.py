@@ -1,4 +1,4 @@
-"""Apply -> capture -> clone -> portable export/import on both pinned runtimes."""
+"""Capture and reproduce portable setups within and across both pinned runtimes."""
 
 import hashlib
 import io
@@ -20,7 +20,13 @@ from backend.app.setups import (
     validate_manifest,
     write_bundle,
 )
-from worker.runtime import NATIVE_IMAGES, STATE_PATH, native_config, prepare_volumes
+from worker.runtime import (
+    NATIVE_IMAGES,
+    STATE_PATH,
+    RuntimeReadinessError,
+    native_config,
+    prepare_volumes,
+)
 from worker.setup_capture import capture_setup
 from worker.setup_runtime import apply_setup, prepare_setup, verify_setup
 
@@ -72,8 +78,17 @@ def read_state_file(client, image_id, state, mount, relative):
         reader.remove(force=True)
 
 
-@pytest.mark.parametrize("kind", ["openclaw", "hermes"])
+@pytest.mark.parametrize(
+    ("source_kind", "kind"),
+    [
+        ("openclaw", "openclaw"),
+        ("hermes", "hermes"),
+        ("hermes", "openclaw"),
+        ("openclaw", "hermes"),
+    ],
+)
 def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
+    source_kind,
     kind,
     monkeypatch,
     tmp_path,
@@ -81,8 +96,7 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
     client = docker.from_env(timeout=180)
     prefix = "talos-reproduction-test-" + uuid4().hex
     labels = {"io.talos.test": prefix}
-    image = client.images.get(NATIVE_IMAGES[kind])
-    mount = "/opt/data" if kind == "hermes" else STATE_PATH
+    images = {runtime: client.images.get(NATIVE_IMAGES[runtime]) for runtime in {source_kind, kind}}
     volumes = []
     create_calls = []
     original_create = client.containers.create
@@ -95,20 +109,29 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
     registry = SimpleNamespace(setup_artifacts_dir=tmp_path / "installation-a")
     monkeypatch.setattr("backend.app.setups.get_settings", lambda: registry)
     try:
-        python_version = (
-            client.containers.run(
-                image.id,
-                entrypoint=["python3", "-c"],
-                command=[
-                    "import sys;print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"
-                ],
-                network_mode="none",
-                read_only=True,
-                remove=True,
+        targets = {}
+        for runtime, image in images.items():
+            interpreters = json.loads(
+                client.containers.run(
+                    image.id,
+                    entrypoint=["python3", "-c"],
+                    command=[
+                        "import json,subprocess,sys;print(json.dumps({"
+                        "'python_version':str(sys.version_info.major)+'.'+str(sys.version_info.minor),"
+                        "'node_major':int(subprocess.check_output(['node','-p',"
+                        "'process.versions.node.split(\".\")[0]']))}))"
+                    ],
+                    network_mode="none",
+                    read_only=True,
+                    remove=True,
+                )
             )
-            .decode()
-            .strip()
-        )
+            targets[runtime] = {
+                "runtime_kind": runtime,
+                "runtime_release": RUNTIME_RELEASES[runtime],
+                "architecture": image.attrs["Architecture"],
+                **interpreters,
+            }
         files = {
             "skills/sales/SKILL.md": (
                 b"---\nname: talos-reproduction-sales\ndescription: Qualify sales leads.\n"
@@ -121,14 +144,7 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
         manifest = {
             "schema_version": 1,
             "instructions": "Use the sales skill and CRM connector to qualify leads.",
-            "targets": [
-                {
-                    "runtime_kind": kind,
-                    "runtime_release": RUNTIME_RELEASES[kind],
-                    "architecture": image.attrs["Architecture"],
-                    "python_version": python_version,
-                }
-            ],
+            "targets": [targets[source_kind]],
             "skills": [
                 {
                     "id": "sales",
@@ -158,11 +174,12 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
         manifest = validate_manifest(manifest, files)
         artifact_hash = store_bundle(write_bundle(manifest, files))
 
-        def new_agent(suffix):
+        def new_agent(suffix, runtime_kind=kind):
+            image = images[runtime_kind]
             state = prefix + "-" + suffix
             incarnation = SimpleNamespace(
                 image_digest=image.id,
-                runtime_release=RUNTIME_RELEASES[kind],
+                runtime_release=RUNTIME_RELEASES[runtime_kind],
                 config_volume=state + "-config",
                 container_id=None,
                 container_name=None,
@@ -173,18 +190,18 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
                 client,
                 state,
                 incarnation.config_volume,
-                native_config(kind, "synthetic-hash"),
+                native_config(runtime_kind, "synthetic-hash"),
                 labels,
                 native=True,
-                runtime_kind=kind,
+                runtime_kind=runtime_kind,
             )
             return state, incarnation
 
-        def apply_and_verify(state, incarnation, digest, account):
+        def apply_and_verify(state, incarnation, digest, account, runtime_kind=kind):
             stored, _ = load_bundle(digest)
             application = {
                 "setup": {"artifact_hash": digest, "manifest": stored},
-                "permissions": compile_permissions([], kind),
+                "permissions": compile_permissions([], runtime_kind),
                 "connector_grants": ["crm"],
                 "connections": {
                     "crm": {
@@ -199,7 +216,7 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
                 client,
                 state,
                 incarnation,
-                kind,
+                runtime_kind,
                 application,
                 labels,
                 secrets=secrets,
@@ -208,16 +225,17 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
                 client,
                 state,
                 incarnation,
-                kind,
+                runtime_kind,
                 application,
                 labels,
                 prepared=prepared,
                 secrets=secrets,
             )
             # Native skill lookup plus MCP tools/list verify actual runtime discovery.
-            verified = verify_setup(client, state, incarnation, kind, application, labels)
+            verified = verify_setup(client, state, incarnation, runtime_kind, application, labels)
             assert verified["fingerprint"] == installed["fingerprint"]
             assert verified["manifest"]["assets"] == manifest["assets"]
+            mount = "/opt/data" if runtime_kind == "hermes" else STATE_PATH
             assert verified["manifest"]["executables"] == manifest["executables"]
             assert set(verified["executables"]) == {
                 "skills/sales/scripts/check.sh",
@@ -226,11 +244,11 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
             # Execute the benign fixture directly, so a missing executable bit
             # cannot be masked by invoking a shell interpreter explicitly.
             output = client.containers.run(
-                image.id,
+                images[runtime_kind].id,
                 entrypoint=[
                     mount + "/.talos/setups/" + digest + "/enabled-skills/sales/scripts/check.sh"
                 ],
-                user="10000:10000" if kind == "hermes" else "1000:1000",
+                user="10000:10000" if runtime_kind == "hermes" else "1000:1000",
                 labels=labels,
                 network_mode="none",
                 read_only=True,
@@ -238,15 +256,26 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
                 remove=True,
             )
             assert output == b"portable fixture\n"
-            env = read_state_file(client, image.id, state, mount, ".env")
+            env = read_state_file(client, images[runtime_kind].id, state, mount, ".env")
             assert secrets["crm"]["token"].encode() in env
             return application, env
 
-        source, source_incarnation = new_agent("reference")
+        source, source_incarnation = new_agent("reference", source_kind)
         source_app, source_env = apply_and_verify(
-            source, source_incarnation, artifact_hash, "source"
+            source, source_incarnation, artifact_hash, "source", source_kind
         )
-        captured = capture_setup(client, source, source_incarnation, kind, labels)
+        source_mount = "/opt/data" if source_kind == "hermes" else STATE_PATH
+        source_files = [
+            ".talos/setup-receipt.json",
+            "config.yaml" if source_kind == "hermes" else "openclaw.json",
+            ".env",
+            "workspace/AGENTS.md",
+        ]
+        source_before = {
+            path: read_state_file(client, images[source_kind].id, source, source_mount, path)
+            for path in source_files
+        }
+        captured = capture_setup(client, source, source_incarnation, source_kind, labels)
         assert captured["manifest"]["unresolved"] == []
         assert captured["manifest"]["assets"] == manifest["assets"]
         assert captured["manifest"]["executables"] == manifest["executables"]
@@ -255,10 +284,33 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
         assert captured["manifest"]["connection_slots"] == manifest["connection_slots"]
         assert all(c["source"] == "talos-managed" for c in captured["metadata"]["candidates"])
         reviewed = validate_manifest(captured["manifest"], captured["files"])
+        second, second_incarnation = new_agent("second")
+        if source_kind != kind:
+            # A captured source-only declaration must not bypass compatibility.
+            source_only_hash = store_bundle(write_bundle(reviewed, captured["files"]))
+            source_only_application = {
+                **source_app,
+                "setup": {"artifact_hash": source_only_hash, "manifest": reviewed},
+                "permissions": compile_permissions([], kind),
+            }
+            with pytest.raises(RuntimeReadinessError, match="runtime release"):
+                prepare_setup(
+                    client,
+                    second,
+                    second_incarnation,
+                    kind,
+                    source_only_application,
+                    labels,
+                    secrets={"crm": {"token": "synthetic-reproduction-second"}},
+                )
+            # Administrators explicitly add support using measured destination
+            # interpreter versions; the captured assets remain byte-identical.
+            reviewed["targets"].append(targets[kind])
+            reviewed = validate_manifest(reviewed, captured["files"])
+            assert reviewed["assets"] == manifest["assets"]
         exported = write_bundle(reviewed, captured["files"])
         capture_hash = store_bundle(exported)
 
-        second, second_incarnation = new_agent("second")
         second_app, second_env = apply_and_verify(
             second, second_incarnation, capture_hash, "second"
         )
@@ -300,6 +352,11 @@ def test_captured_setup_reproduces_with_new_accounts_and_in_fresh_installation(
         assert recaptured["manifest"]["executables"] == manifest["executables"]
         assert recaptured["files"] == files
         assert recaptured["manifest"]["unresolved"] == []
+        source_after = {
+            path: read_state_file(client, images[source_kind].id, source, source_mount, path)
+            for path in source_files
+        }
+        assert source_after == source_before
         # Agent accounts traveled through upload/stdin, never Docker command args.
         docker_configuration = json.dumps(create_calls, default=str)
         for account in ("source", "second", "fresh-installation"):

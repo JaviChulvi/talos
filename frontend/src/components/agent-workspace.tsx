@@ -26,6 +26,7 @@ import {
   Activity,
   MessageSquare,
   PanelLeftClose,
+  Package,
   DollarSign,
 } from "lucide-react";
 import {
@@ -111,7 +112,13 @@ import {
   type Employee,
   type Capability,
   type AgentPermissions,
+  type SetupPreview,
 } from "@/lib/api";
+import {
+  ApplyPreview,
+  CaptureSetup,
+  SetupStatus,
+} from "@/components/setup-controls";
 import { cn } from "@/lib/utils";
 
 type Agent = AgentPermissions & {
@@ -127,6 +134,7 @@ type Agent = AgentPermissions & {
   inference_override: InferenceSelection | null;
 };
 type Operation = {
+  result?: { setup_id?: string } | null;
   action?: string;
   dashboard_url?: string | null;
   id: string;
@@ -238,6 +246,9 @@ export function AgentWorkspace({
     action: "delete" | "apply-role";
     agentId: string;
   } | null>(null);
+  const [applyPreview, setApplyPreview] = useState<SetupPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewRequest = useRef(0);
   const conversation = useRef<HTMLDivElement>(null);
   const actionsTrigger = useRef<HTMLButtonElement>(null);
   const confirmationTrigger = useRef<HTMLElement | null>(null);
@@ -515,16 +526,35 @@ export function AgentWorkspace({
       (agent.id === selectedId && operationActive)
     )
       return;
-    if (
-      !confirmed &&
-      (action === "delete" ||
-        (action === "apply-role" && agent.desired_state === "running"))
-    ) {
+    if (!confirmed && (action === "delete" || action === "apply-role")) {
       confirmationTrigger.current =
         document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null;
       setConfirmation({ action, agentId: agent.id });
+      if (action === "apply-role") {
+        const request = ++previewRequest.current;
+        setApplyPreview(null);
+        setPreviewLoading(true);
+        void api<SetupPreview>(`/agents/${agent.id}/setup-preview`, {
+          method: "POST",
+          signal: AbortSignal.timeout(15_000),
+        })
+          .then((preview) => {
+            if (previewRequest.current === request) setApplyPreview(preview);
+          })
+          .catch((cause) => {
+            if (previewRequest.current === request)
+              setApplyPreview({
+                application: null,
+                changes: [],
+                blockers: [errorMessage(cause)],
+              });
+          })
+          .finally(() => {
+            if (previewRequest.current === request) setPreviewLoading(false);
+          });
+      }
       return;
     }
     setConfirmation(null);
@@ -611,8 +641,9 @@ export function AgentWorkspace({
   const budgetCoverage = selected?.runtime_mode === "native"
     ? selected.inference_override ? "gateway" : "external"
     : effectiveModel === "fixture" ? "simulator" : "gateway";
-  const pageTitle =
-    page.startsWith("usage")
+  const pageTitle = page.startsWith("setups")
+    ? "Setups"
+    : page.startsWith("usage")
       ? "Usage"
       : page === "employees"
       ? "Employees"
@@ -700,7 +731,9 @@ export function AgentWorkspace({
                             aria-hidden="true"
                             className={cn(
                               "size-2 shrink-0 rounded-full",
-                              ["ready", "running"].includes(agent.observed_state)
+                              ["ready", "running"].includes(
+                                agent.observed_state,
+                              )
                                 ? "bg-success"
                                 : ["failed", "error", "unknown"].includes(
                                       agent.observed_state,
@@ -782,7 +815,8 @@ export function AgentWorkspace({
                           }
                           onSelect={() => {
                             selectAgent(agent.id);
-                            confirmationTrigger.current = actionsTrigger.current;
+                            confirmationTrigger.current =
+                              actionsTrigger.current;
                             setConfirmation({
                               action: "delete",
                               agentId: agent.id,
@@ -806,19 +840,28 @@ export function AgentWorkspace({
               { id: "usage", label: "Usage", icon: DollarSign },
               { id: "employees", label: "Employees", icon: Users },
               { id: "roles", label: "Roles", icon: ShieldCheck },
+              { id: "setups", label: "Setups", icon: Package },
               { id: "settings", label: "Settings", icon: Settings },
               { id: "platform", label: "Platform status", icon: Activity },
             ].map(({ id, label, icon: Icon }) => (
               <SidebarMenuItem key={id}>
                 <SidebarMenuButton
                   asChild
-                  isActive={page.split("?")[0] === id}
+                  isActive={
+                    page.split("?")[0] === id ||
+                    (id === "setups" && page.startsWith("setups/"))
+                  }
                   className="h-10"
                 >
                   <a
                     href={`#${id}`}
                     onClick={navigate}
-                    aria-current={page.split("?")[0] === id ? "page" : undefined}
+                    aria-current={
+                      page.split("?")[0] === id ||
+                      (id === "setups" && page.startsWith("setups/"))
+                        ? "page"
+                        : undefined
+                    }
                   >
                     <Icon />
                     <span>{label}</span>
@@ -1009,14 +1052,21 @@ export function AgentWorkspace({
                                 {item.error}
                               </p>
                             )}
-                            {item.id === runId && runActive && item.status !== "unknown" && lastTool && (
-                              <p role="status" className="mt-2 text-sm text-muted-foreground">
-                                {String(lastTool.payload.name)}: {String(lastTool.payload.phase)}
-                                {lastTool.payload.phase === "started"
-                                  ? "…"
-                                  : "; waiting for response…"}
-                              </p>
-                            )}
+                            {item.id === runId &&
+                              runActive &&
+                              item.status !== "unknown" &&
+                              lastTool && (
+                                <p
+                                  role="status"
+                                  className="mt-2 text-sm text-muted-foreground"
+                                >
+                                  {String(lastTool.payload.name)}:{" "}
+                                  {String(lastTool.payload.phase)}
+                                  {lastTool.payload.phase === "started"
+                                    ? "…"
+                                    : "; waiting for response…"}
+                                </p>
+                              )}
                           </div>
                         </article>
                       ))
@@ -1297,9 +1347,7 @@ export function AgentWorkspace({
                   >
                     <TabsList className="mb-7 w-full sm:w-72">
                       <TabsTrigger value="settings">Settings</TabsTrigger>
-                      <TabsTrigger value="permissions">
-                        Permissions
-                      </TabsTrigger>
+                      <TabsTrigger value="permissions">Permissions</TabsTrigger>
                     </TabsList>
                     <TabsContent value="settings">
                       {settingsActive && (
@@ -1310,6 +1358,15 @@ export function AgentWorkspace({
                       <a href={`#usage?agent_id=${selected.id}`} className="mb-5 block text-sm text-primary underline">View agent usage</a>
                       {selected.runtime_mode === "native" ? (
                         <div className="space-y-5">
+                          <CaptureSetup
+                            key={`capture-${selected.id}`}
+                            agent={selected}
+                            disabled={
+                              writesDisabled || operationActive || runActive
+                            }
+                            operation={selectedOperation}
+                            onOperation={onOperation}
+                          />
                           <NativeModelSettings
                             key={selected.id}
                             agentId={selected.id}
@@ -1334,9 +1391,8 @@ export function AgentWorkspace({
                             </h3>
                             <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
                               Open {runtimeName} to manage native settings,
-                              credentials and integrations. Your
-                              configuration and files persist across stops
-                              and starts.
+                              credentials and integrations. Your configuration
+                              and files persist across stops and starts.
                             </p>
                           </div>
                           <Button
@@ -1371,10 +1427,10 @@ export function AgentWorkspace({
                               : `First visit: ${selected.runtime_kind === "hermes" ? "sign in as talos with the dashboard password you chose, then " : ""}configure a provider in ${runtimeName} if you selected “Handled by agent”.`}
                           </p>
                           <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
-                            Assigned agents use their applied role
-                            permissions. Saving a role does not change
-                            running agents. Remote Docker hosts require a
-                            tunnel for the workspace port.
+                            Assigned agents use their applied role permissions.
+                            Saving a role does not change running agents. Remote
+                            Docker hosts require a tunnel for the workspace
+                            port.
                           </p>
                         </div>
                       ) : (
@@ -1388,10 +1444,9 @@ export function AgentWorkspace({
                                   agent.id === selected.id
                                     ? {
                                         ...agent,
-                                        inference_override:
-                                          selection.inherited
-                                            ? null
-                                            : selection,
+                                        inference_override: selection.inherited
+                                          ? null
+                                          : selection,
                                       }
                                     : agent,
                                 ),
@@ -1402,6 +1457,9 @@ export function AgentWorkspace({
                       )}
                     </TabsContent>
                     <TabsContent value="permissions" className="space-y-5">
+                      {selected.runtime_mode === "native" && (
+                        <SetupStatus agent={selected} />
+                      )}
                       <div>
                         <Label
                           htmlFor="assigned-employee"
@@ -1417,9 +1475,7 @@ export function AgentWorkspace({
                             selected.desired_state !== "stopped" ||
                             selected.observed_state !== "stopped"
                           }
-                          onValueChange={(value) =>
-                            void assignEmployee(value)
-                          }
+                          onValueChange={(value) => void assignEmployee(value)}
                         >
                           <SelectTrigger
                             id="assigned-employee"
@@ -1429,10 +1485,7 @@ export function AgentWorkspace({
                           </SelectTrigger>
                           <SelectContent>
                             {employees.map((employee) => (
-                              <SelectItem
-                                key={employee.id}
-                                value={employee.id}
-                              >
+                              <SelectItem key={employee.id} value={employee.id}>
                                 {employee.name}
                               </SelectItem>
                             ))}
@@ -1450,8 +1503,8 @@ export function AgentWorkspace({
                       </div>
                       {selected.runtime_mode === "managed" ? (
                         <p className="text-sm text-muted-foreground">
-                          Managed conversations have no native tools,
-                          regardless of the assigned role.
+                          Managed conversations have no native tools, regardless
+                          of the assigned role.
                         </p>
                       ) : selected.role ? (
                         <>
@@ -1482,8 +1535,7 @@ export function AgentWorkspace({
                                   .map(
                                     (id) =>
                                       catalog.find(
-                                        (capability) =>
-                                          capability.id === id,
+                                        (capability) => capability.id === id,
                                       )?.name ?? id,
                                   )
                                   .join(", ") || "No tools"}
@@ -1512,9 +1564,9 @@ export function AgentWorkspace({
                             </div>
                           </dl>
                           <p className="text-sm text-muted-foreground">
-                            Apply interrupts running work and restarts the
-                            agent if it was running. Starting a stopped
-                            agent applies its current role automatically.
+                            Apply interrupts running work and restarts the agent
+                            if it was running. Starts preserve the selected
+                            setup, permissions, and account versions.
                           </p>
                           <Button
                             variant="outline"
@@ -1525,10 +1577,9 @@ export function AgentWorkspace({
                           </Button>
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             Terminal execution permits file and network
-                            operations even when dedicated tools are
-                            disabled. Native settings are a trusted
-                            administrator surface; direct edits there are
-                            outside role management.
+                            operations even when dedicated tools are disabled.
+                            Native settings are a trusted administrator surface;
+                            direct edits there are outside role management.
                           </p>
                         </>
                       ) : (
@@ -1553,8 +1604,7 @@ export function AgentWorkspace({
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-10 sm:py-10">
               {children}
               <p className="mt-10 text-xs leading-relaxed text-muted-foreground">
-                Local administrator workspace. Employee sign-in and business
-                integrations are not enabled.
+                Local administrator workspace. Employee sign-in is not enabled.
               </p>
             </div>
           </div>
@@ -1832,12 +1882,39 @@ export function AgentWorkspace({
               <AlertDialogDescription>
                 {confirmation.action === "delete"
                   ? "This removes its runtime and private agent state. This cannot be undone."
-                  : "Running work will be interrupted. This agent will restart with the captured permissions."}
+                  : agents.find((agent) => agent.id === confirmation.agentId)
+                        ?.desired_state === "running"
+                    ? "Running work will be interrupted. This agent will restart with the selected setup, permissions, and account versions."
+                    : "Apply the saved setup, permissions, and account versions. This agent will remain stopped."}
               </AlertDialogDescription>
             </AlertDialogHeader>
+            {confirmation.action === "apply-role" && (
+              <ApplyPreview
+                loading={previewLoading}
+                previews={
+                  applyPreview
+                    ? [
+                        {
+                          name:
+                            agents.find(
+                              (agent) => agent.id === confirmation.agentId,
+                            )?.display_name ?? "Agent",
+                          preview: applyPreview,
+                        },
+                      ]
+                    : []
+                }
+              />
+            )}
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
+                disabled={
+                  confirmation.action === "apply-role" &&
+                  (previewLoading ||
+                    !applyPreview ||
+                    !!applyPreview.blockers.length)
+                }
                 variant={
                   confirmation.action === "delete" ? "destructive" : "default"
                 }
@@ -1851,7 +1928,7 @@ export function AgentWorkspace({
               >
                 {confirmation.action === "delete"
                   ? "Delete agent"
-                  : "Apply and restart"}
+                  : "Apply saved role"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
