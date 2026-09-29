@@ -103,7 +103,8 @@ def ingest(
             status_command = "agent status" if channel.provider == "slack" else "/status"
             help_command = "agent help" if channel.provider == "slack" else "/help"
             response = (
-                f"Escribe un mensaje de texto para hablar con tu agente. {status_command} muestra su estado."
+                "Escribe un mensaje de texto para hablar con tu agente. "
+                f"{status_command} muestra su estado."
                 if command in ("/help", "/start")
                 else (
                     "Agente disponible."
