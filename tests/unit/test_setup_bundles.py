@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import stat
+import struct
 import zipfile
 
 import pytest
@@ -101,6 +102,18 @@ def test_limits_are_checked_before_decompression(monkeypatch):
     monkeypatch.setattr("backend.app.setups.MAX_FILES", 1)
     with pytest.raises(BundleError, match="file count"):
         read_bundle(archive_with([("a", b"a"), ("b", b"b"), ("c", b"c")]))
+
+
+def test_corrupt_deflate_data_is_a_bundle_validation_error():
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(empty_manifest()))
+    content = bytearray(output.getvalue())
+    name_length, extra_length = struct.unpack_from("<HH", content, 26)
+    # Reserved DEFLATE block type, with an otherwise intact ZIP directory.
+    content[30 + name_length + extra_length] = 7
+    with pytest.raises(BundleError, match="valid supported ZIP"):
+        read_bundle(bytes(content))
 
 
 def test_incomplete_draft_cannot_publish_or_hide_unowned_files():
