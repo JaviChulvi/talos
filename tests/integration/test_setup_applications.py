@@ -1,6 +1,9 @@
 """Exercise explicit application selection through the real API and operation worker."""
 
 import pytest
+from sqlalchemy import event, select
+
+from backend.app.models import Employee
 
 # Imported fixtures intentionally share the existing lifecycle test harness.
 # ruff: noqa: F401, F811
@@ -13,6 +16,26 @@ from tests.integration.test_lifecycle import (  # noqa: F401
 )
 
 pytestmark = pytest.mark.integration
+
+
+def test_status_reads_do_not_wait_for_employee_edits(client, session_maker, role_agent):
+    agent_id, _, _ = role_agent
+    engine = session_maker.kw["bind"]
+
+    def bounded_lock_wait(connection, *_):
+        with connection.cursor() as cursor:
+            cursor.execute("SET lock_timeout = '500ms'")
+
+    with session_maker() as editor:
+        editor.scalar(select(Employee).with_for_update())
+        event.listen(engine, "checkout", bounded_lock_wait)
+        try:
+            assert client.get("/api/v1/agents").status_code == 200
+            assert client.get(f"/api/v1/agents/{agent_id}").status_code == 200
+            preview = client.post(f"/api/v1/agents/{agent_id}/setup-preview")
+            assert preview.status_code == 200 and not preview.json()["blockers"]
+        finally:
+            event.remove(engine, "checkout", bounded_lock_wait)
 
 
 def test_restart_retains_selection_until_explicit_apply(client, worker, role_agent):

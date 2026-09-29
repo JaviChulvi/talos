@@ -37,13 +37,13 @@ def normalize_application(application: dict, runtime_kind: str) -> dict:
     return result
 
 
-def desired_application(session: Session, agent: Agent) -> dict:
+def desired_application(session: Session, agent: Agent, *, lock: bool = True) -> dict:
     if agent.runtime_mode != "native" or agent.employee_id is None:
         raise HTTPException(409, "Choose an employee for a native agent first")
     employee = session.get(
-        Employee, agent.employee_id, with_for_update=True, populate_existing=True
+        Employee, agent.employee_id, with_for_update=lock, populate_existing=True
     )
-    role = session.get(Role, employee.role_id, with_for_update=True, populate_existing=True)
+    role = session.get(Role, employee.role_id, with_for_update=lock, populate_existing=True)
     setup = None
     grants = sorted(role.connector_grants or [])
     if role.setup_revision_id:
@@ -95,7 +95,7 @@ def desired_application(session: Session, agent: Agent) -> dict:
 
 def application_preview(session: Session, agent: Agent) -> dict:
     try:
-        application = desired_application(session, agent)
+        application = desired_application(session, agent, lock=False)
     except HTTPException as error:
         return {"application": None, "changes": [], "blockers": [str(error.detail)]}
     applied = agent.applied_application
