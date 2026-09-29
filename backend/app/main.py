@@ -11,9 +11,11 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from backend.app.administration import router as administration_router
 from backend.app.agents import router as agents_router
+from backend.app.availability import platform_status
+from backend.app.availability import router as availability_router
 from backend.app.config import get_settings
 from backend.app.connections import router as connections_router
-from backend.app.db import get_engine
+from backend.app.db import Database, get_engine
 from backend.app.diagnostics import router as diagnostics_router
 from backend.app.inference import router as inference_router
 from backend.app.setups import router as setups_router
@@ -75,18 +77,26 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/api/v1/status")
-    def status():
+    def status(session: Database):
         ok = database_ready()
+        try:
+            services = platform_status(session) if ok else {}
+        except SQLAlchemyError:
+            services = {}
+        worker = services.get("worker", {}).get("state", "unknown")
+        gateway = services.get("gateway", {}).get("state", "unknown")
         return {
-            "status": "ok" if ok else "degraded",
+            "status": "ok" if ok and worker == gateway == "ok" else "degraded",
             "database": "ready" if ok else "unavailable",
-            "worker": "configured",
-            "gateway": "configured",
+            "worker": worker,
+            "gateway": gateway,
+            "services": services,
             "version": "0.1.0",
         }
 
     app.include_router(administration_router)
     app.include_router(agents_router)
+    app.include_router(availability_router)
     app.include_router(connections_router)
     app.include_router(diagnostics_router)
     app.include_router(inference_router)

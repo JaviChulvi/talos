@@ -2,14 +2,17 @@ import asyncio
 import json
 import logging
 import time
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from decimal import Decimal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from sqlalchemy.exc import SQLAlchemyError
 
+from backend.app.availability import heartbeat
 from backend.app.config import get_settings
+from backend.app.db import session_factory
 from gateway.fake_model import model_router
 from gateway.identity import (
     AdmissionDenied,
@@ -21,7 +24,30 @@ from gateway.identity import (
 )
 from gateway.openrouter import UsageObserver, observe_usage, provider_key, provider_key_source
 
-app = FastAPI(title="Talos gateway", docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(app):
+    def report_alive():
+        with session_factory().begin() as session:
+            heartbeat(session, "gateway")
+
+    async def report():
+        while True:
+            try:
+                await asyncio.to_thread(report_alive)
+            except SQLAlchemyError:
+                logging.warning("Gateway heartbeat unavailable")
+            await asyncio.sleep(5)
+
+    task = asyncio.create_task(report())
+    try:
+        yield
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+app = FastAPI(title="Talos gateway", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.include_router(
     model_router(
         lambda token: validate_token(token, require_run=True, accounting=True),
