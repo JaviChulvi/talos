@@ -11,6 +11,7 @@ import json
 import re
 import tarfile
 from copy import deepcopy
+from threading import RLock
 
 from docker.errors import NotFound
 
@@ -18,6 +19,7 @@ from .runtime import STATE_PATH, OwnershipError, RuntimeReadinessError, require_
 
 BEGIN = "<!-- TALOS SETUP BEGIN -->"
 END = "<!-- TALOS SETUP END -->"
+_HELPER_LOCK = RLock()
 
 
 def application_fingerprint(application):
@@ -104,10 +106,9 @@ def _request(application, runtime_kind, image):
         for t in c["tools"]
     ]
     servers = [
-        connector_name(c["id"])[:30]
-        if runtime_kind == "openclaw"
-        else connector_name(c["id"])
-        for c in manifest.get("connectors", []) if c["id"] in grants
+        connector_name(c["id"])[:30] if runtime_kind == "openclaw" else connector_name(c["id"])
+        for c in manifest.get("connectors", [])
+        if c["id"] in grants
     ]
     if len(set(names)) != len(names) or len(set(servers)) != len(servers):
         raise RuntimeReadinessError("Setup connector names collide after native normalization.")
@@ -172,6 +173,13 @@ def verify_setup(
 
 
 def _run(client, state, incarnation, labels, request, mode, files=None, network=None):
+    # Recovery, lifecycle and explicit probes share the same deterministic helper
+    # name and input volume. Never remove an in-process verification helper.
+    with _HELPER_LOCK:
+        return _run_locked(client, state, incarnation, labels, request, mode, files, network)
+
+
+def _run_locked(client, state, incarnation, labels, request, mode, files=None, network=None):
     require_labels(client.volumes.get(state).attrs.get("Labels") or {}, labels)
     require_labels(client.volumes.get(incarnation.config_volume).attrs.get("Labels") or {}, labels)
     name = incarnation.config_volume + "-setup"
@@ -246,7 +254,8 @@ def _run(client, state, incarnation, labels, request, mode, files=None, network=
             raise RuntimeReadinessError(
                 _ERRORS.get(
                     result.get("error"), "Setup validation failed in the selected native runtime."
-                )
+                ),
+                code=result.get("error") if result.get("error") in _ERRORS else "native",
             )
         return result["receipt"]
     except RuntimeReadinessError:
@@ -267,6 +276,10 @@ _ERRORS = {
     "collision": "A native connector name conflicts with a setup connector namespace.",
     "receipt": "The selected setup has no matching complete application receipt. Apply it again.",
     "connection": "A required setup connection credential is missing.",
+    "tools_changed": (
+        "Expected MCP tools are unavailable. "
+        "Check the endpoint and credential, then run discovery again."
+    ),
     "encoding": "This runtime cannot represent a credential exactly. Use a compatible API token.",
     "discovery": (
         "A granted connector or skill is unavailable in native discovery. "
@@ -745,7 +758,7 @@ def native_verify(target, config):
                         mcp_prefixed_tool_name("talos-" + c["id"], t) for t in c["tools"]
                     )
             if actual != expected:
-                fail("discovery")
+                fail("tools_changed")
             allowed = set().union(*(set(resolve_toolset(k)) for k in r["policy"]["enabled"]))
             disabled = config["agent"]["disabled_toolsets"]
             if _select_tool_names(None, disabled, True) != allowed:
@@ -790,7 +803,7 @@ def native_verify(target, config):
             if name not in probe.get("servers", {}) or probe["servers"][name]["tools"] != len(
                 c["tools"]
             ):
-                fail("discovery")
+                fail("tools_changed")
             expected.update(probe["tools"])
         if not expected <= set(config["tools"]["allow"]):
             fail("discovery")

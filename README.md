@@ -403,6 +403,34 @@ use the original DM and the same shared durable outbox as Telegram. Slack SDK HT
 automatic retries are disabled for sends; explicit rate limits are deferred and
 ambiguous results stay uncertain. Token-bearing SDK protocol logs are suppressed.
 
+Availability is read from expiring evidence. Agent readiness and the state of each
+employee channel are reported independently; a Slack failure does not hide a
+healthy Telegram access. Talos-managed routes also show allowance/assignment
+blockers. Delivery history exposes provider acceptance and uncertain sends without
+message bodies or secrets.
+
+Admin actions request durable checks: `POST /api/v1/agents/{id}/checks` with
+`{"kind":"runtime"}`, `{"kind":"connections"}` or `{"kind":"model"}`, plus an
+`Idempotency-Key`. Checks share conversation admission and stay out of the default
+admin history. Runtime checks read the owned runtime, and connection checks reuse
+native setup/MCP discovery without calling business tools. Results from a changed
+configuration are discarded. Completed conversations also provide recent evidence
+that the model responded.
+
+**A model test can consume provider credit.** It sends one bounded, tools-free
+request through the effective Talos gateway route, using its normal accounting and
+allowance admission. Native providers configured outside Talos have no portable
+safe probe contract in this release: their explicit test returns
+`native_safe_probe_unavailable`, rather than starting an ordinary agent chat.
+Their actual completed conversations can still verify recent model availability.
+
+`POST /api/v1/channels/{id}/check` queues a connector-owned check of bot/app identity,
+scopes and transport, including Slack token pairing. Disabled Telegram channels
+check only credentials and webhook compatibility; they do not poll or send messages.
+Disabled Slack checks open a short-lived socket to validate the app token without
+granting conversation access. Enabling a channel requires fresh transport evidence.
+Read results with `GET /api/v1/channel-checks/{id}` or the channel's `/availability`.
+
 Employee turns share the existing single active run admission with administrator
 turns. Telegram, Slack and administrator conversations use independent native
 sessions; the legacy administrator history is preserved. Revocation, reassignment

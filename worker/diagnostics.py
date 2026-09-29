@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
+from backend.app.availability import record_check
 from backend.app.config import get_settings
 from backend.app.diagnostics import append_event, authorized_run
 from backend.app.models import ACTIVE_RUN_STATUSES, Agent, Run
@@ -38,13 +39,16 @@ def message_text(message: dict | None) -> str:
 
 
 class DiagnosticManager:
-    def __init__(self, session_maker, connector, timeout: float | None = None, configure=None):
+    def __init__(
+        self, session_maker, connector, timeout: float | None = None, configure=None, probe=None
+    ):
         self.sessions = session_maker
         self.connector = connector
         self.timeout = (
             timeout if timeout is not None else get_settings().inference_timeout_seconds + 60
         )
         self.configure = configure
+        self.probe = probe
         self.tasks: dict[UUID, asyncio.Task] = {}
 
     def recover(self):
@@ -207,12 +211,37 @@ class DiagnosticManager:
                             "to inspect its provider and tool diagnostics."
                         )
                     event["reason"] = run.error
+                elif state == "final" and run.availability_fingerprint and run.output.strip():
+                    agent = session.get(Agent, run.agent_id)
+                    record_check(
+                        session,
+                        agent,
+                        "model",
+                        "ok",
+                        "native_conversation_completed",
+                        fingerprint=run.availability_fingerprint,
+                    )
             append_event(session, run, state, event)
             return state != "delta"
 
     async def _execute(self, run_id: UUID):
         run = self._claim(run_id)
         if run is None:
+            return
+        if run.source == "probe":
+            if self.probe is None:
+                self._finish(run.id, "failed", "Readiness probe handler is unavailable")
+                return
+            if self._can_send(run.id):
+                try:
+                    await self.probe(run)
+                except asyncio.CancelledError:
+                    self._finish(run.id, "unknown", "Worker stopped during readiness check")
+                    raise
+                except OperationalError:
+                    raise
+                except Exception:
+                    self._finish(run.id, "unknown", "Readiness check could not finish")
             return
         client = None
         sent = False

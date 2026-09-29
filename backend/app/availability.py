@@ -121,8 +121,9 @@ def availability(session: Session, agent: Agent, now: datetime | None = None) ->
         checks.append({"kind": "gateway", **services["gateway"]})
     for kind in CHECKS:
         row = records.get(kind)
-        not_required = kind in {"setup", "connections"} and not (
-            (agent.applied_application or {}).get("setup")
+        application = agent.applied_application or {}
+        not_required = (kind == "setup" and not application.get("setup")) or (
+            kind == "connections" and not application.get("connector_grants")
         )
         incarnation = agent.current_incarnation
         identity_expired = (
@@ -155,6 +156,28 @@ def availability(session: Session, agent: Agent, now: datetime | None = None) ->
                 "action": ACTIONS[kind],
             }
         )
+    if (
+        agent.runtime_mode != "native" and agent.model_route != "fixture"
+    ) or agent.inference_override:
+        from backend.app.models import Employee
+        from backend.app.usage import employee_budget
+
+        employee = session.get(Employee, agent.employee_id) if agent.employee_id else None
+        budget = employee_budget(session, employee, now) if employee else None
+        checks.append(
+            {
+                "kind": "allowance",
+                "state": "blocked" if not employee or budget["status"] == "exhausted" else "ok",
+                "code": "employee_assignment_required"
+                if not employee
+                else "allowance_exhausted"
+                if budget["status"] == "exhausted"
+                else "allowance_available",
+                "action": "Assign an employee or review their monthly allowance",
+                "checked_at": now,
+                "expires_at": None,
+            }
+        )
     running = agent.desired_state == "running" and agent.observed_state == "ready"
     states = {check["state"] for check in checks}
     status = (
@@ -169,6 +192,29 @@ def availability(session: Session, agent: Agent, now: datetime | None = None) ->
         else "available"
     )
     from backend.app.applications import annotate_agent
+    from backend.app.models import EmployeeAccess, EmployeeChannel
+    from backend.app.readiness import channel_status
+
+    accesses = []
+    for access in session.scalars(
+        select(EmployeeAccess).where(EmployeeAccess.agent_id == agent.id)
+    ):
+        channel = session.get(EmployeeChannel, access.channel_id)
+        check = channel_status(session, channel, now)
+        accesses.append(
+            {
+                "access_id": access.id,
+                "channel_id": channel.id,
+                "provider": channel.provider,
+                "identity_state": access.state,
+                "channel": check,
+                "status": "available"
+                if status == "available" and access.state == "active" and check["state"] == "ok"
+                else "requires_action"
+                if access.state != "active" or check["state"] in ("blocked", "not_applicable")
+                else "unverified",
+            }
+        )
 
     annotate_agent(session, agent)
     return {
@@ -176,6 +222,7 @@ def availability(session: Session, agent: Agent, now: datetime | None = None) ->
         "status": status,
         "fingerprint": fingerprint,
         "checks": checks,
+        "accesses": accesses,
         "update_available": agent.setup_pending,
         "pending_blockers": agent.setup_blockers,
     }

@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from backend.app.availability import heartbeat
 from backend.app.connections import Connection, ConnectionBindingError, load_bound_secrets
 from backend.app.db import get_engine, session_factory
-from backend.app.models import ChannelCursor, EmployeeChannel
+from backend.app.models import ChannelCursor, ChannelProbe, EmployeeChannel
 from connector.delivery import Delivery, TransportError
 from connector.slack import Slack
 from connector.telegram import Telegram
@@ -33,7 +33,9 @@ class Connector:
                 )
             ]
 
-    def report(self, channel_id, revision, version, state, code, identity=None):
+    def report(
+        self, channel_id, revision, version, state, code, identity=None, *, allow_disabled=False
+    ):
         with self.sessions.begin() as session:
             channel = session.get(EmployeeChannel, channel_id)
             # Same connection -> channel order as credential rotation.
@@ -44,7 +46,7 @@ class Connector:
                 EmployeeChannel, channel_id, with_for_update=True, populate_existing=True
             )
             if (
-                not channel.enabled
+                (not channel.enabled and not allow_disabled)
                 or channel.revision != revision
                 or connection.current_version_id != version
             ):
@@ -197,6 +199,7 @@ class Connector:
             delay = min(delay * 2, 30)
 
     async def tick(self):
+        await self.process_check()
         configurations = {
             channel.id: (channel, connection.current_version_id)
             for channel, connection in self.configurations()
@@ -229,6 +232,136 @@ class Connector:
             )
         )
 
+    def recover(self):
+        self.delivery.recover()
+        with self.sessions.begin() as session:
+            for probe in session.scalars(
+                select(ChannelProbe).where(ChannelProbe.status == "running")
+            ):
+                probe.status, probe.code = "failed", "connector_restarted"
+                probe.completed_at = datetime.now(UTC)
+
+    async def process_check(self):
+        with self.sessions.begin() as session:
+            probe = session.scalar(
+                select(ChannelProbe)
+                .where(ChannelProbe.status == "queued")
+                .order_by(ChannelProbe.created_at)
+                .with_for_update(skip_locked=True)
+            )
+            if probe is None:
+                return
+            channel = session.get(EmployeeChannel, probe.channel_id)
+            probe.status = "running"
+        # A single owner replaces its existing consumer while checking a channel.
+        existing = self.tasks.pop(channel.id, None)
+        if existing:
+            existing[2].cancel()
+            with suppress(asyncio.CancelledError):
+                await existing[2]
+        transport = None
+        code, status = "channel_changed", "stale"
+        try:
+            if not self.report(
+                channel.id,
+                probe.revision,
+                probe.credential_version_id,
+                "checking",
+                "probe_running",
+                allow_disabled=True,
+            ):
+                return
+            fields = ["bot_token"] if channel.provider == "telegram" else ["bot_token", "app_token"]
+            credentials = load_bound_secrets(
+                {"channel": {"version_id": str(probe.credential_version_id), "fields": fields}}
+            )["channel"]
+            transport = (
+                Telegram(credentials["bot_token"])
+                if channel.provider == "telegram"
+                else Slack(credentials["bot_token"], credentials["app_token"])
+            )
+            identity = await transport.verify(channel.workspace_id)
+
+            def verified():
+                return self.report(
+                    channel.id,
+                    probe.revision,
+                    probe.credential_version_id,
+                    "ok",
+                    "socket_active" if channel.enabled else "credentials_verified",
+                    identity,
+                    allow_disabled=True,
+                )
+
+            if channel.provider == "slack":
+                await transport.connect(self.sessions, channel, verified=verified)
+                if not await transport.connected():
+                    raise TransportError("socket_disconnected")
+            elif verified():
+                if channel.enabled:
+                    with self.sessions() as session:
+                        offset = session.get(ChannelCursor, channel.id).offset
+                    updates = await transport.poll(offset)
+                    for update in updates:
+                        if not isinstance(update, dict) or type(update.get("update_id")) is not int:
+                            raise TransportError("invalid_updates")
+                        with self.sessions.begin() as session:
+                            cursor = session.get(ChannelCursor, channel.id)
+                            if update["update_id"] >= cursor.offset:
+                                transport.receive(
+                                    session, channel, probe.revision, identity["bot_id"], update
+                                )
+                                cursor.offset = update["update_id"] + 1
+                    self.report(
+                        channel.id,
+                        probe.revision,
+                        probe.credential_version_id,
+                        "ok",
+                        "polling_active",
+                    )
+            code, status = (
+                "credentials_and_transport_verified" if channel.enabled else "credentials_verified",
+                "completed",
+            )
+        except asyncio.CancelledError:
+            code, status = "check_interrupted", "failed"
+            raise
+        except TransportError as error:
+            code, status = error.code, "failed"
+            self.report(
+                channel.id,
+                probe.revision,
+                probe.credential_version_id,
+                "blocked",
+                code,
+                allow_disabled=True,
+            )
+        except ConnectionBindingError:
+            code, status = "credentials_unavailable", "failed"
+            self.report(
+                channel.id,
+                probe.revision,
+                probe.credential_version_id,
+                "blocked",
+                code,
+                allow_disabled=True,
+            )
+        finally:
+            if transport:
+                await transport.close()
+            from backend.app.channels import channel_row
+
+            with self.sessions.begin() as session:
+                current = channel_row(session, channel.id, lock=True)
+                connection = session.get(Connection, current.connection_id)
+                row = session.get(ChannelProbe, probe.id, with_for_update=True)
+                changed = (
+                    current.revision != probe.revision
+                    or connection.current_version_id != probe.credential_version_id
+                )
+                row.status, row.code = ("stale", "channel_changed") if changed else (status, code)
+                row.completed_at = datetime.now(UTC)
+
     async def close(self):
         for _, _, task in self.tasks.values():
             task.cancel()
@@ -248,7 +381,7 @@ async def run():
         lease.commit()
         connector = Connector(session_factory())
         try:
-            connector.delivery.recover()
+            connector.recover()
             while not stop.is_set():
                 if lease.scalar(text("SELECT pg_backend_pid()")) != pid:
                     raise RuntimeError("Messaging connector database lease lost")

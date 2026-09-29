@@ -153,6 +153,30 @@ class AvailabilityCheck(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class ChannelProbe(Base):
+    __tablename__ = "channel_probes"
+    __table_args__ = (
+        UniqueConstraint("channel_id", "idempotency_key"),
+        CheckConstraint("status IN ('queued','running','completed','failed','stale')"),
+        Index(
+            "one_active_channel_probe",
+            "channel_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued','running')"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    channel_id: Mapped[UUID] = mapped_column(ForeignKey("employee_channels.id"))
+    revision: Mapped[int] = mapped_column(Integer)
+    credential_version_id: Mapped[UUID] = mapped_column(ForeignKey("connection_versions.id"))
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(20), default="queued")
+    code: Mapped[str] = mapped_column(String(80), default="not_checked")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Setup(Base):
     __tablename__ = "setups"
 
@@ -385,6 +409,7 @@ class Run(Base):
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
     incarnation_id: Mapped[UUID] = mapped_column(ForeignKey("workload_incarnations.id"))
     source: Mapped[str] = mapped_column(String(20), default="admin")
+    availability_fingerprint: Mapped[str | None] = mapped_column(String(64))
     session_key: Mapped[str | None] = mapped_column(String(255))
     access_id: Mapped[UUID | None] = mapped_column(ForeignKey("employee_accesses.id"))
     access_revision: Mapped[int | None] = mapped_column(Integer)
