@@ -99,6 +99,35 @@ def test_event_retry_deduplicates_independent_of_envelope(session_maker, ready_a
         assert len(session.scalars(select(Run)).all()) == 1
 
 
+def test_registration_is_private_text_and_never_an_agent_turn(
+    client, session_maker, ready_accesses
+):
+    _, pairs = ready_accesses
+    access, _ = pairs[1]
+    path = f"/api/v1/employee-accesses/{access['id']}"
+    client.post(path + "/disable")
+    token = client.post(path + "/invitation").json()["token"]
+    inbox = receive(session_maker, pairs[1], payload(text=f"register {token}"))
+    assert inbox.code == "identity_pending" and inbox.run_id is None
+    with session_maker() as session:
+        assert session.scalars(select(Run)).all() == []
+        outbox = session.scalar(select(ChannelOutbox))
+        assert token not in str(outbox.parts)
+    current = next(
+        row for row in client.get("/api/v1/employee-accesses").json() if row["id"] == access["id"]
+    )
+    assert current["state"] == "pending" and current["external_user_id"] == "U12345"
+
+
+@pytest.mark.parametrize("text", ["agent help", "agent status"])
+def test_slack_employee_commands_do_not_dispatch(session_maker, ready_accesses, text):
+    _, pairs = ready_accesses
+    inbox = receive(session_maker, pairs[1], payload(text=text))
+    assert inbox.code == "command" and inbox.run_id is None
+    with session_maker() as session:
+        assert session.scalars(select(Run)).all() == []
+
+
 def test_slack_and_telegram_share_busy_admission(session_maker, ready_accesses):
     _, pairs = ready_accesses
     telegram = receive_telegram(session_maker, pairs[0])

@@ -95,6 +95,55 @@ export type AgentPermissions = {
   setup_pending?: boolean;
 };
 
+export type AvailabilityEvidence = {
+  kind?: string;
+  state: string;
+  code?: string;
+  checked_at: string | null;
+  expires_at: string | null;
+  action: string;
+};
+export type EmployeeChannel = {
+  id: string;
+  provider: "telegram" | "slack";
+  name: string;
+  enabled: boolean;
+  revision: number;
+  workspace_id: string;
+  credential_fields: string[];
+  credentials_configured: boolean;
+  verified: boolean;
+  identity: {
+    username?: string;
+    bot_id?: string;
+    app_id?: string;
+    team_id?: string;
+  };
+  availability: AvailabilityEvidence;
+};
+export type EmployeeAccess = {
+  id: string;
+  channel_id: string;
+  agent_id: string;
+  employee_id: string;
+  external_user_id: string | null;
+  external_scope: string;
+  state: "pending" | "active" | "disabled";
+  revision: number;
+};
+export type AgentAvailability = {
+  status: string;
+  checks: AvailabilityEvidence[];
+  update_available: boolean;
+  pending_blockers: string[];
+  accesses: {
+    access_id: string;
+    provider: string;
+    status: string;
+    channel: AvailabilityEvidence;
+  }[];
+};
+
 export type Budget = {
   employee_id: string;
   employee_name: string;
