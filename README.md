@@ -397,8 +397,10 @@ No public callback, OAuth wizard, group channel or Slack Connect access is added
 
 Socket Mode persists event admission before acknowledging each envelope. Retried
 events with different envelope IDs share one persisted event and run. Bot echoes,
-subtypes, shared conversations and workspace mismatches are ignored. `/register
-<invitation-token>` requests a pending identity; the admin must approve it. Replies
+subtypes, shared conversations and workspace mismatches are ignored. A private
+text message `register <invitation-token>` requests a pending identity; the admin
+must approve it. `agent help` and `agent status` are private text commands too;
+Slack slash commands are not registered by this app. Replies
 use the original DM and the same shared durable outbox as Telegram. Slack SDK HTTP
 automatic retries are disabled for sends; explicit rate limits are deferred and
 ambiguous results stay uncertain. Token-bearing SDK protocol logs are suppressed.
@@ -423,6 +425,13 @@ allowance admission. Native providers configured outside Talos have no portable
 safe probe contract in this release: their explicit test returns
 `native_safe_probe_unavailable`, rather than starting an ordinary agent chat.
 Their actual completed conversations can still verify recent model availability.
+
+In an agent's settings, **Access & availability** brings these admin controls
+together: save write-only channel credentials, check a channel, register or invite
+an employee, approve or revoke their identity, and copy platform instructions.
+Employees receive Telegram/Slack links only. The screen distinguishes expiring
+availability evidence from recorded delivery acceptance. Channel credentials are
+excluded from the tool connection picker.
 
 `POST /api/v1/channels/{id}/check` queues a connector-owned check of bot/app identity,
 scopes and transport, including Slack token pairing. Disabled Telegram channels

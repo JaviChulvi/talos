@@ -300,7 +300,11 @@ def _commit_metadata(session: Session):
 
 @router.get("", response_model=list[ConnectionResponse])
 def connections(session: Database):
-    return session.scalars(select(Connection).order_by(Connection.name, Connection.id)).all()
+    return session.scalars(
+        select(Connection)
+        .where(Connection.purpose == "tools")
+        .order_by(Connection.name, Connection.id)
+    ).all()
 
 
 @router.post("", response_model=ConnectionResponse, status_code=201)

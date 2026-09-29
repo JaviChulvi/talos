@@ -1,4 +1,5 @@
 import { AgentBudget } from "@/components/employee-budget";
+import { AgentHandoff } from "@/components/agent-handoff";
 import {
   useEffect,
   useRef,
@@ -1345,9 +1346,10 @@ export function AgentWorkspace({
                     onValueChange={setAgentView}
                     className="pb-8"
                   >
-                    <TabsList className="mb-7 w-full sm:w-72">
+                    <TabsList className="mb-7 w-full sm:w-auto">
                       <TabsTrigger value="settings">Settings</TabsTrigger>
                       <TabsTrigger value="permissions">Permissions</TabsTrigger>
+                      <TabsTrigger value="handoff">Access & availability</TabsTrigger>
                     </TabsList>
                     <TabsContent value="settings">
                       {settingsActive && (
@@ -1588,6 +1590,9 @@ export function AgentWorkspace({
                           Assign an employee to manage it through a role.
                         </p>
                       )}
+                    </TabsContent>
+                    <TabsContent value="handoff">
+                      {settingsActive && <AgentHandoff key={selected.id} agent={selected} disabled={writesDisabled} />}
                     </TabsContent>
                   </Tabs>
                 </>

@@ -67,6 +67,9 @@ def test_channel_secrets_are_write_only_and_cannot_be_assigned(client, channel_s
     assert response.status_code == 200 and response.json()["credentials_configured"]
     assert not response.json()["verified"] and secret not in response.text
     assert secret not in client.get("/api/v1/channels").text
+    assert channel["connection_id"] not in {
+        row["id"] for row in client.get("/api/v1/connections").json()
+    }
     assert client.delete(f"/api/v1/connections/{channel['connection_id']}").status_code == 409
     result = client.put(
         f"/api/v1/employees/{employee['id']}",

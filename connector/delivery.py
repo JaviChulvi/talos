@@ -100,8 +100,11 @@ def ingest(
             return inbox
         if message.lstrip().startswith("/"):
             inbox.code = "command"
+            status_command = "agent status" if channel.provider == "slack" else "/status"
+            help_command = "agent help" if channel.provider == "slack" else "/help"
             response = (
-                "Escribe un mensaje de texto para hablar con tu agente. /status muestra su estado."
+                "Escribe un mensaje de texto para hablar con tu agente. "
+                f"{status_command} muestra su estado."
                 if command in ("/help", "/start")
                 else (
                     "Agente disponible."
@@ -109,7 +112,7 @@ def ingest(
                     else "Agente no disponible."
                 )
                 if command == "/status"
-                else "Comando no disponible. Usa /help o escribe un mensaje de texto."
+                else f"Comando no disponible. Usa {help_command} o escribe un mensaje de texto."
             )
         elif not message.strip() or len(message.strip()) > 4000 or "\x00" in message:
             inbox.code = "invalid_message"

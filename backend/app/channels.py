@@ -50,6 +50,8 @@ class AccessInput(BaseModel):
 
 
 def channel_response(session: Session, channel: EmployeeChannel) -> dict:
+    from backend.app.readiness import channel_status
+
     connection = session.get(Connection, channel.connection_id)
     return {
         "id": channel.id,
@@ -68,6 +70,7 @@ def channel_response(session: Session, channel: EmployeeChannel) -> dict:
         ),
         "identity": channel.identity,
         "verified_at": channel.verified_at,
+        "availability": channel_status(session, channel),
     }
 
 

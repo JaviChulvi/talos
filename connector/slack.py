@@ -145,6 +145,14 @@ class Slack:
             or not isinstance(event.get("text"), str)
         ):
             return
+        text = event["text"].strip()
+        # Slack slash commands do not arrive through message.im. These narrow
+        # private-message commands work with the internal Socket Mode manifest.
+        registration = re.fullmatch(r"register ([A-Za-z0-9_-]{20,64})", text)
+        if registration:
+            text = f"/register {registration[1]}"
+        elif text in ("agent help", "agent status"):
+            text = "/help" if text == "agent help" else "/status"
         return ingest(
             session,
             channel.id,
@@ -153,7 +161,7 @@ class Slack:
             event["user"],
             channel.workspace_id,
             event["channel"],
-            event["text"],
+            text,
         )
 
     async def connect(self, sessions, channel, *, verified=None):
