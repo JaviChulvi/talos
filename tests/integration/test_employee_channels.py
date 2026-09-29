@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 
 from backend.app.channels import claim_invitation
 from backend.app.connections import Connection
-from backend.app.models import AccessInvitation, EmployeeAccess, EmployeeChannel
+from backend.app.models import AccessInvitation, Employee, EmployeeAccess, EmployeeChannel
 
 # ruff: noqa: F401, F811
 from tests.integration.test_lifecycle import (
@@ -157,6 +157,39 @@ def test_known_identity_cannot_be_replaced_by_an_invitation(client, session_make
 def test_duplicate_channel_is_conflict(client, channel_setup):
     response = client.post("/api/v1/channels", json={"provider": "telegram", "name": "Again"})
     assert response.status_code == 409
+
+
+def test_duplicate_invitation_claim_keeps_outer_transaction_usable(
+    client, session_maker, channel_setup
+):
+    channel, agent_id, employee = channel_setup
+    access = client.post("/api/v1/employee-accesses", json=access_body(channel_setup)).json()
+    token = client.post(f"/api/v1/employee-accesses/{access['id']}/invitation").json()["token"]
+    with session_maker.begin() as session:
+        other = Employee(name="Another employee", role_id=UUID(employee["role_id"]))
+        session.add(other)
+        session.flush()
+        session.add(
+            EmployeeAccess(
+                channel_id=UUID(channel["id"]),
+                employee_id=other.id,
+                agent_id=agent_id,
+                external_user_id="123456789",
+                state="disabled",
+            )
+        )
+    with session_maker.begin() as session:
+        revision = session.get(EmployeeAccess, UUID(access["id"])).revision
+        for _ in range(2):
+            with pytest.raises(HTTPException) as error:
+                claim_invitation(session, UUID(channel["id"]), token, "123456789", "")
+            assert error.value.status_code == 403
+            row = session.get(EmployeeAccess, UUID(access["id"]))
+            assert row.external_user_id is None and row.revision == revision
+        # The caller can persist progress after rejecting this event.
+        session.get(EmployeeChannel, UUID(channel["id"])).name = "Progress committed"
+        assert session.scalar(select(AccessInvitation)).consumed_at is None
+    assert client.get("/api/v1/channels").json()[0]["name"] == "Progress committed"
 
 
 def test_rotation_invalidates_channel_identity(client, session_maker, channel_setup):
