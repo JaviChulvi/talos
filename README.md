@@ -97,6 +97,14 @@ Native instances keep internal Docker bridges. A shared Squid proxy allows publi
 
 ## Operations and diagnostics
 
+`GET /api/v1/agents/{id}/availability` reads durable runtime/model/setup/connection
+evidence, including when it was checked and expires. It never probes a service or
+makes a model request. A ready container alone is not a verified available agent.
+Configuration changes and new incarnations invalidate previous evidence; pending
+role edits are shown separately from the currently applied configuration.
+`GET /api/v1/status` reports recent worker/gateway heartbeats rather than assuming
+configured services are alive. Unknown or expired evidence is explicit.
+
 Create/start/stop/delete/dashboard return HTTP 202 and an operation ID. **Queued means accepted**, not completed. They require `Idempotency-Key`; replaying a key returns its existing operation, while conflicting work or a changed request returns HTTP 409. Inspect `GET /api/v1/operations/{id}` for the result.
 
 | Request | Purpose |

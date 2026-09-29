@@ -4,6 +4,7 @@ import signal
 
 from sqlalchemy.exc import OperationalError
 
+from backend.app.availability import heartbeat
 from backend.app.config import get_settings
 from worker.diagnostics import DiagnosticManager
 from worker.lifecycle import Worker, configure_inference, connect_runtime, worker_lock
@@ -23,6 +24,10 @@ async def run():
         await asyncio.to_thread(worker.recover)
         await asyncio.to_thread(worker.process_one)
 
+    def report_alive():
+        with worker.sessions.begin() as session:
+            heartbeat(session, "worker")
+
     try:
         while not stop.is_set():
             delay = get_settings().lifecycle_poll_seconds
@@ -35,6 +40,7 @@ async def run():
                         worker.sessions, connect_runtime, configure=configure_inference
                     )
                 await diagnostics.tick()
+                await asyncio.to_thread(report_alive)
                 if task is None or task.done():
                     if task is not None:
                         completed, task = task, None

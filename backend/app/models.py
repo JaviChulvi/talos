@@ -28,6 +28,28 @@ HERMES_RELEASE = "hermes-0.21.5"
 RUNTIME_RELEASES = {"openclaw": RUNTIME_RELEASE, "hermes": HERMES_RELEASE}
 
 
+class ServiceHeartbeat(Base):
+    __tablename__ = "service_heartbeats"
+
+    service: Mapped[str] = mapped_column(String(32), primary_key=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class AvailabilityCheck(Base):
+    __tablename__ = "availability_checks"
+    __table_args__ = (
+        CheckConstraint("state IN ('ok','blocked','unknown','checking','not_applicable')"),
+    )
+
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(40), primary_key=True)
+    state: Mapped[str] = mapped_column(String(20))
+    code: Mapped[str] = mapped_column(String(80))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Setup(Base):
     __tablename__ = "setups"
 

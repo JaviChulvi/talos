@@ -23,6 +23,7 @@ from docker.errors import APIError, NotFound
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 
+from backend.app.availability import record_check
 from backend.app.config import get_settings
 from backend.app.db import session_factory
 from backend.app.diagnostics import mark_runs_stopped
@@ -682,6 +683,13 @@ class Worker:
                 ):
                     current.observed_state = "degraded" if error_message else "ready"
                     current.last_error = error_message
+                    record_check(
+                        session,
+                        current,
+                        "runtime",
+                        "blocked" if error_message else "ok",
+                        "runtime_unavailable" if error_message else "runtime_connected",
+                    )
 
     def execute(self, operation: Operation):
         with self.sessions() as session:
@@ -846,11 +854,7 @@ class Worker:
             # Once the stop boundary is durable, an interrupted predecessor may
             # have lost its config volume, or its successor may not have one yet.
             # Let apply_setup prepare after prepare_volumes on those retries.
-            if (
-                has_setup
-                and agent.current_incarnation_id
-                and operation.step != "applying_setup"
-            ):
+            if has_setup and agent.current_incarnation_id and operation.step != "applying_setup":
                 with self.sessions() as session:
                     previous = session.get(WorkloadIncarnation, agent.current_incarnation_id)
                 if previous and previous.revoked_at is None and previous.config_volume:
@@ -1018,6 +1022,9 @@ class Worker:
             current = session.get(Operation, operation.id)
             current.status, current.step, current.error = "succeeded", "complete", None
             current.heartbeat_at = datetime.now(UTC)
+
+            if observed == "ready":
+                record_check(session, agent, "runtime", "ok", "runtime_connected")
 
     def delete_resources(self, agent_id: UUID):
         state, name = self.names(agent_id)
