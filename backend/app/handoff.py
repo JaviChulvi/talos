@@ -120,7 +120,8 @@ def record_acceptance(session, inbox, outbox):
             DeliveryChallenge.access_revision == inbox.access_revision,
             DeliveryChallenge.accepted_at.is_not(None),
             DeliveryChallenge.receipt_at.is_(None),
-            DeliveryChallenge.accepted_at <= run.created_at,
+            # The employee can reply before our confirmation send is acknowledged.
+            DeliveryChallenge.consumed_at <= run.created_at,
             DeliveryChallenge.fingerprint == run.availability_fingerprint,
         )
         .with_for_update()

@@ -242,3 +242,55 @@ def test_pending_access_cannot_create_delivery_challenge(client, ready_accesses)
     path = f"/api/v1/employee-accesses/{pairs[0][0]['id']}"
     client.post(path + "/disable")
     assert client.post(path + "/challenge").status_code == 409
+
+
+@pytest.mark.parametrize("provider", [0, 1])
+def test_reply_before_confirmation_acknowledgment_verifies_delivery(
+    client, session_maker, ready_accesses, provider
+):
+    _, pairs = ready_accesses
+    pair = pairs[provider]
+    request = challenge(client, pair)
+    receive(session_maker, pair, "/verify " + request["token"])
+    turns = []
+
+    async def confirmation_send(*_):
+        # The provider has delivered confirmation; its HTTP acknowledgment is pending.
+        turn = receive(session_maker, pair, "Immediate employee reply", 2)
+        turns.append(turn)
+        await DiagnosticManager(session_maker, AsyncMock(return_value=FakeDriver()))._execute(
+            turn.run_id
+        )
+        assert proof(client, pair)["transport_accepted_at"] is None
+        return "confirmation-provider-id"
+
+    transport = AsyncMock()
+    transport.send.side_effect = confirmation_send
+    asyncio.run(Delivery(session_maker).send_one(UUID(pair[1]["id"]), transport))
+    with session_maker() as session:
+        row = session.get(DeliveryChallenge, UUID(request["id"]))
+        turn = session.get(Run, turns[0].run_id)
+        assert row.consumed_at <= turn.created_at < row.accepted_at
+    assert proof(client, pair)["verified_at"] is None
+    send(session_maker, pair)
+    evidence = proof(client, pair)
+    assert evidence["verified_at"] and evidence["current"]
+    assert evidence["receipt"]["run_id"] == str(turns[0].run_id)
+
+
+@pytest.mark.parametrize("provider", [0, 1])
+def test_reply_admitted_before_challenge_claim_does_not_verify_delivery(
+    client, session_maker, ready_accesses, provider
+):
+    _, pairs = ready_accesses
+    pair = pairs[provider]
+    request = challenge(client, pair)
+    turn = receive(session_maker, pair, "Earlier conversation")
+    receive(session_maker, pair, "/verify " + request["token"], 2)
+    send(session_maker, pair)
+    assert proof(client, pair)["transport_state"] == "accepted"
+    asyncio.run(
+        DiagnosticManager(session_maker, AsyncMock(return_value=FakeDriver()))._execute(turn.run_id)
+    )
+    send(session_maker, pair)
+    assert proof(client, pair)["verified_at"] is None
