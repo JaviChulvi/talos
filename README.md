@@ -385,6 +385,24 @@ does not imply that the employee read the response. The connector has no Docker
 socket, publishes no endpoint, and reads channel credential versions from the
 existing secret volume. Slack reuses this admission and delivery path in the next PR.
 
+Install an internal Slack app from `deploy/slack-manifest.yaml`. Generate an
+app-level token with `connections:write`, install the bot in the workspace, and
+save its bot and app tokens together in the Slack channel. Bot scopes are
+`im:history`, `chat:write` and `users:read`: the latter is used only for `bots.info`
+to match the bot's app ID against the authenticated Socket Mode hello. The channel
+also validates the configured workspace, granted scopes and a single active
+Socket Mode connection before admitting messages. Different-app token pairs are
+blocked. The app uses the Messages tab; employees initiate private conversations.
+No public callback, OAuth wizard, group channel or Slack Connect access is added.
+
+Socket Mode persists event admission before acknowledging each envelope. Retried
+events with different envelope IDs share one persisted event and run. Bot echoes,
+subtypes, shared conversations and workspace mismatches are ignored. `/register
+<invitation-token>` requests a pending identity; the admin must approve it. Replies
+use the original DM and the same shared durable outbox as Telegram. Slack SDK HTTP
+automatic retries are disabled for sends; explicit rate limits are deferred and
+ambiguous results stay uncertain. Token-bearing SDK protocol logs are suppressed.
+
 Employee turns share the existing single active run admission with administrator
 turns. Telegram, Slack and administrator conversations use independent native
 sessions; the legacy administrator history is preserved. Revocation, reassignment

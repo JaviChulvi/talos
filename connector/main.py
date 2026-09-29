@@ -13,6 +13,7 @@ from backend.app.connections import Connection, ConnectionBindingError, load_bou
 from backend.app.db import get_engine, session_factory
 from backend.app.models import ChannelCursor, EmployeeChannel
 from connector.delivery import Delivery, TransportError
+from connector.slack import Slack
 from connector.telegram import Telegram
 
 
@@ -28,9 +29,7 @@ class Connector:
             return [
                 (channel, session.get(Connection, channel.connection_id))
                 for channel in session.scalars(
-                    select(EmployeeChannel).where(
-                        EmployeeChannel.enabled.is_(True), EmployeeChannel.provider == "telegram"
-                    )
+                    select(EmployeeChannel).where(EmployeeChannel.enabled.is_(True))
                 )
             ]
 
@@ -74,10 +73,15 @@ class Connector:
                 {
                     "channel": {
                         "version_id": str(version),
-                        "fields": ["bot_token"],
+                        "fields": ["bot_token"]
+                        if channel.provider == "telegram"
+                        else ["bot_token", "app_token"],
                     }
                 }
             )["channel"]
+            if channel.provider == "slack":
+                await self.consume_slack(channel, version, secrets)
+                return
             transport = Telegram(secrets["bot_token"])
             while True:
                 try:
@@ -143,6 +147,55 @@ class Connector:
             if transport:
                 await transport.close()
 
+    async def consume_slack(self, channel, version, secrets):
+        delay = 1
+        while True:
+            transport = Slack(secrets["bot_token"], secrets["app_token"])
+            try:
+                identity = await transport.verify(channel.workspace_id)
+                if not self.report(channel.id, channel.revision, version, "checking", "connecting"):
+                    return
+                await transport.connect(
+                    self.sessions,
+                    channel,
+                    verified=lambda identity=identity: self.report(
+                        channel.id, channel.revision, version, "ok", "socket_active", identity
+                    ),
+                )
+                self.transports[channel.id] = transport
+                while True:
+                    if not await transport.connected():
+                        raise TransportError("socket_disconnected")
+                    if not self.report(
+                        channel.id, channel.revision, version, "ok", "socket_active"
+                    ):
+                        return
+                    delay = 1
+                    await asyncio.sleep(5)
+            except TransportError as error:
+                state = (
+                    "blocked"
+                    if error.code
+                    in (
+                        "invalid_credentials",
+                        "invalid_token_type",
+                        "missing_scope",
+                        "permission_denied",
+                        "app_token_mismatch",
+                        "workspace_mismatch",
+                        "app_uninstalled",
+                        "consumer_conflict",
+                    )
+                    else "unknown"
+                )
+                if not self.report(channel.id, channel.revision, version, state, error.code):
+                    return
+            finally:
+                self.transports.pop(channel.id, None)
+                await transport.close()
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)
+
     async def tick(self):
         configurations = {
             channel.id: (channel, connection.current_version_id)
@@ -167,10 +220,14 @@ class Connector:
                     version,
                     asyncio.create_task(self.consume(channel, version)),
                 )
-        for identifier, transport in list(self.transports.items()):
-            await self.delivery.send_one(identifier, transport)
         with self.sessions.begin() as session:
             heartbeat(session, "connector")
+        await asyncio.gather(
+            *(
+                self.delivery.send_one(identifier, transport)
+                for identifier, transport in list(self.transports.items())
+            )
+        )
 
     async def close(self):
         for _, _, task in self.tasks.values():
