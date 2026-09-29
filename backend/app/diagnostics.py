@@ -1,7 +1,7 @@
 """Durable conversation requests; only the worker talks to agent runtimes."""
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -10,11 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.agents import Database, IdempotencyKey, request_hash
+from backend.app.channels import authorized_access
 from backend.app.inference import config_response
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     ACTIVE_RUN_STATUSES,
     Agent,
+    EmployeeAccess,
+    EmployeeChannel,
     InferenceConfig,
     Operation,
     Run,
@@ -37,6 +40,9 @@ class RunResponse(BaseModel):
     agent_id: UUID
     incarnation_id: UUID
     message: str
+    source: str
+    access_id: UUID | None
+    employee_id: UUID | None
     status: str
     model_id: str
     inference: dict
@@ -70,70 +76,154 @@ def replay_run(session: Session, agent_id: UUID, key: str, digest: str) -> Run |
     return run
 
 
+def admit_run(
+    session: Session,
+    agent_id: UUID,
+    body: DiagnosticRequest,
+    idempotency_key: str,
+    *,
+    access_id: UUID | None = None,
+    expected_channel_revision: int | None = None,
+) -> Run:
+    """The caller owns the transaction, so channel receipt and admission can commit together."""
+    # Lifecycle admission takes this same lock, so a stop/delete closes
+    # admission atomically with its desired-state update.
+    agent = session.scalar(select(Agent).where(Agent.id == agent_id).with_for_update())
+    access = None
+    channel = None
+    if access_id is not None:
+        access = session.get(
+            EmployeeAccess, access_id, with_for_update=True, populate_existing=True
+        )
+        if agent is None or not authorized_access(
+            session, access, agent, channel_revision=expected_channel_revision
+        ):
+            raise HTTPException(403, "Employee access is inactive or changed")
+        channel = session.get(EmployeeChannel, access.channel_id)
+    digest = request_hash(
+        body.model_dump()
+        if access is None
+        else {
+            "message": body.message,
+            "access_id": str(access.id),
+            "revision": access.revision,
+            "channel_revision": channel.revision,
+        }
+    )
+    replay = replay_run(session, agent_id, idempotency_key, digest)
+    if replay:
+        return replay
+    if agent is None or agent.observed_state == "deleted":
+        raise HTTPException(404, "Agent not found")
+    if (
+        agent.desired_state != "running"
+        or agent.observed_state != "ready"
+        or agent.current_incarnation_id is None
+    ):
+        raise HTTPException(409, "Agent must be running and ready")
+    if session.scalar(
+        select(Operation.id).where(
+            Operation.agent_id == agent_id, Operation.status.in_(ACTIVE_OPERATION_STATUSES)
+        )
+    ):
+        raise HTTPException(409, "Agent has an active lifecycle operation")
+    if session.scalar(
+        select(Run.id).where(Run.agent_id == agent_id, Run.status.in_(ACTIVE_RUN_STATUSES))
+    ):
+        raise HTTPException(409, "Agent has an active or unresolved diagnostic run")
+    native = agent.runtime_mode == "native"
+    config = agent.inference_override or config_response(session.get(InferenceConfig, 1))
+    managed = not native and agent.model_route != "fixture"
+    if managed and config["model_id"] != "fixture" and not config["capabilities"]:
+        raise HTTPException(409, "Apply the model selection once to load its capabilities")
+    run = Run(
+        agent_id=agent_id,
+        incarnation_id=agent.current_incarnation_id,
+        message=body.message,
+        source="employee" if access else "admin",
+        employee_id=agent.employee_id,
+        access_id=access.id if access else None,
+        access_revision=access.revision if access else None,
+        channel_revision=channel.revision if channel else None,
+        session_key=f"agent:main:employee:{channel.provider}:{access.id}:{access.revision}:{agent.id}"
+        if access
+        else None,
+        model_id="native" if native else config["model_id"] if managed else "fixture",
+        inference={
+            "settings": config["settings"],
+            "capabilities": config["capabilities"],
+            "source": "agent" if agent.inference_override else "workspace",
+        }
+        if managed
+        else {"source": "native"}
+        if native
+        else {},
+        idempotency_key=idempotency_key,
+        request_hash=digest,
+    )
+    session.add(run)
+    session.flush()
+    append_event(session, run, "queued", {})
+    return run
+
+
+def admit_employee_run(
+    session: Session,
+    access_id: UUID,
+    message: str,
+    idempotency_key: str,
+    *,
+    channel_revision: int,
+) -> Run:
+    access = session.get(EmployeeAccess, access_id)
+    if access is None:
+        raise HTTPException(403, "Employee access is inactive or changed")
+    return admit_run(
+        session,
+        access.agent_id,
+        DiagnosticRequest(message=message),
+        idempotency_key,
+        access_id=access_id,
+        expected_channel_revision=channel_revision,
+    )
+
+
+def authorized_run(session: Session, run: Run, agent: Agent) -> bool:
+    if run.source != "employee":
+        return True
+    if run.employee_id != agent.employee_id:
+        return False
+    access = session.get(EmployeeAccess, run.access_id, populate_existing=True)
+    return authorized_access(
+        session,
+        access,
+        agent,
+        access_revision=run.access_revision,
+        channel_revision=run.channel_revision,
+    )
+
+
 @router.post("/agents/{agent_id}/diagnostic-runs", status_code=202, response_model=RunResponse)
 def create_run(
     agent_id: UUID, body: DiagnosticRequest, idempotency_key: IdempotencyKey, session: Database
 ):
-    digest = request_hash(body.model_dump())
     with session.begin():
-        # Lifecycle admission takes this same lock, so a stop/delete closes
-        # admission atomically with its desired-state update.
-        agent = session.scalar(select(Agent).where(Agent.id == agent_id).with_for_update())
-        replay = replay_run(session, agent_id, idempotency_key, digest)
-        if replay:
-            return replay
-        if agent is None or agent.observed_state == "deleted":
-            raise HTTPException(404, "Agent not found")
-        if (
-            agent.desired_state != "running"
-            or agent.observed_state != "ready"
-            or agent.current_incarnation_id is None
-        ):
-            raise HTTPException(409, "Agent must be running and ready")
-        if session.scalar(
-            select(Operation.id).where(
-                Operation.agent_id == agent_id, Operation.status.in_(ACTIVE_OPERATION_STATUSES)
-            )
-        ):
-            raise HTTPException(409, "Agent has an active lifecycle operation")
-        if session.scalar(
-            select(Run.id).where(Run.agent_id == agent_id, Run.status.in_(ACTIVE_RUN_STATUSES))
-        ):
-            raise HTTPException(409, "Agent has an active or unresolved diagnostic run")
-        native = agent.runtime_mode == "native"
-        config = agent.inference_override or config_response(session.get(InferenceConfig, 1))
-        managed = not native and agent.model_route != "fixture"
-        if managed and config["model_id"] != "fixture" and not config["capabilities"]:
-            raise HTTPException(409, "Apply the model selection once to load its capabilities")
-        run = Run(
-            agent_id=agent_id,
-            incarnation_id=agent.current_incarnation_id,
-            message=body.message,
-            model_id="native" if native else config["model_id"] if managed else "fixture",
-            inference={
-                "settings": config["settings"],
-                "capabilities": config["capabilities"],
-                "source": "agent" if agent.inference_override else "workspace",
-            }
-            if managed
-            else {"source": "native"}
-            if native
-            else {},
-            idempotency_key=idempotency_key,
-            request_hash=digest,
-        )
-        session.add(run)
-        session.flush()
-        append_event(session, run, "queued", {})
-        return run
+        return admit_run(session, agent_id, body, idempotency_key)
 
 
 @router.get("/agents/{agent_id}/runs", response_model=list[RunResponse])
-def list_runs(agent_id: UUID, session: Database):
+def list_runs(
+    agent_id: UUID,
+    session: Database,
+    source: Literal["admin", "employee", "probe", "all"] = "admin",
+):
     if session.get(Agent, agent_id) is None:
         raise HTTPException(404, "Agent not found")
     return session.scalars(
-        select(Run).where(Run.agent_id == agent_id).order_by(Run.created_at.desc()).limit(20)
+        select(Run)
+        .where(Run.agent_id == agent_id, Run.source == source if source != "all" else True)
+        .order_by(Run.created_at.desc())
+        .limit(20)
     ).all()
 
 

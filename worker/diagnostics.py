@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
 from backend.app.config import get_settings
-from backend.app.diagnostics import append_event
+from backend.app.diagnostics import append_event, authorized_run
 from backend.app.models import ACTIVE_RUN_STATUSES, Agent, Run
 from worker.openclaw import GatewayError
 from worker.runtime import runtime_error_message
@@ -108,6 +108,11 @@ class DiagnosticManager:
                 run.status = "interrupted"
                 append_event(session, run, "interrupted", {"reason": "runtime_changed"})
                 return None
+            if not authorized_run(session, run, agent):
+                run.status = "interrupted"
+                run.error = "Employee access changed before dispatch"
+                append_event(session, run, "interrupted", {"reason": "access_changed"})
+                return None
             run.status = "dispatching"
             append_event(session, run, "dispatching", {})
             return run
@@ -130,6 +135,11 @@ class DiagnosticManager:
             ):
                 run.status = "interrupted"
                 append_event(session, run, "interrupted", {"reason": "runtime_changed"})
+                return False
+            if not authorized_run(session, run, agent):
+                run.status = "interrupted"
+                run.error = "Employee access changed before dispatch"
+                append_event(session, run, "interrupted", {"reason": "access_changed"})
                 return False
             return True
 
@@ -215,7 +225,7 @@ class DiagnosticManager:
             # The dispatching state is committed before any possible send.
             # Even a timeout while sending is uncertain, never a retry signal.
             sent = True
-            session_key = f"agent:main:talos:{run.agent_id}"
+            session_key = run.session_key or f"agent:main:talos:{run.agent_id}"
             acknowledgment = await client.send(session_key, run.message, str(run.id))
             upstream_id = acknowledgment.get("runId")
             if not isinstance(upstream_id, str) or not 1 <= len(upstream_id) <= 128:

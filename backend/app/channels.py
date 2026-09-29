@@ -324,3 +324,34 @@ def claim_invitation(
             raise
         raise HTTPException(403, "Identity already belongs to another access") from error
     return access
+
+
+def authorized_access(
+    session: Session,
+    access: EmployeeAccess | None,
+    agent: Agent,
+    *,
+    access_revision: int | None = None,
+    channel_revision: int | None = None,
+) -> bool:
+    """Revalidate saved identity and destination before dispatch and before delivery."""
+    if (
+        access is None
+        or access.state != "active"
+        or access.external_user_id is None
+        or access.agent_id != agent.id
+        or access.employee_id != agent.employee_id
+        or agent.runtime_mode != "native"
+        or agent.desired_state == "deleted"
+        or (access_revision is not None and access_revision != access.revision)
+    ):
+        return False
+    channel = session.get(EmployeeChannel, access.channel_id, populate_existing=True)
+    connection = session.get(Connection, channel.connection_id, populate_existing=True)
+    return bool(
+        channel.enabled
+        and connection.current_version_id
+        and channel.verified_version_id == connection.current_version_id
+        and access.external_scope == channel.workspace_id
+        and (channel_revision is None or channel.revision == channel_revision)
+    )
