@@ -45,6 +45,7 @@ def desired_application(session: Session, agent: Agent, *, lock: bool = True) ->
     )
     role = session.get(Role, employee.role_id, with_for_update=lock, populate_existing=True)
     setup = None
+    connections = {}
     grants = sorted(role.connector_grants or [])
     if role.setup_revision_id:
         revision = session.get(SetupRevision, role.setup_revision_id)
@@ -66,10 +67,28 @@ def desired_application(session: Session, agent: Agent, *, lock: bool = True) ->
             "artifact_hash": revision.artifact_hash,
             "manifest": manifest,
         }
-        if manifest["connection_slots"]:
-            raise HTTPException(
-                409, "This setup needs account connections before it can be applied"
+        from backend.app.connections import ConnectionBindingError, resolve_bindings
+
+        slots = {
+            value["slot"]
+            for connector in manifest["connectors"]
+            if connector["id"] in grants and connector.get("enabled", True)
+            for section in ("env", "headers")
+            for value in connector.get(section, {}).values()
+            if isinstance(value, dict)
+        }
+        needed = {
+            **manifest,
+            "connection_slots": [
+                slot for slot in manifest["connection_slots"] if slot["id"] in slots
+            ],
+        }
+        try:
+            connections = resolve_bindings(
+                session, needed, role.connection_bindings, employee.connection_overrides, lock=lock
             )
+        except ConnectionBindingError as error:
+            raise HTTPException(409, str(error)) from None
     elif grants:
         raise HTTPException(409, "Choose a setup before granting its connectors")
     return normalize_application(
@@ -85,6 +104,7 @@ def desired_application(session: Session, agent: Agent, *, lock: bool = True) ->
                 else None,
                 "connector_grants": grants,
             },
+            "connections": connections,
             "setup": setup,
             "connector_grants": grants,
             "permissions": compile_permissions(role.capabilities, agent.runtime_kind),

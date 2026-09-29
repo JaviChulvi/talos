@@ -23,6 +23,7 @@ class RoleInput(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     setup_revision_id: UUID | None = None
     connector_grants: list[str] = Field(default_factory=list)
+    connection_bindings: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("capabilities")
     @classmethod
@@ -43,6 +44,7 @@ class EmployeeInput(BaseModel):
     name: str = Field(min_length=1, max_length=160, pattern=r"^[^\x00]*$")
     email: str | None = Field(default=None, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     role_id: UUID
+    connection_overrides: dict[str, str] = Field(default_factory=dict)
 
 
 class EmployeeResponse(EmployeeInput):
@@ -60,14 +62,28 @@ def roles(session: Database):
     return session.scalars(select(Role).order_by(Role.name, Role.id)).all()
 
 
+def validate_bindings(bindings: dict, session: Database):
+    from backend.app.connections import ConnectionBindingError, validate_connection_bindings
+
+    try:
+        validate_connection_bindings(session, bindings)
+    except ConnectionBindingError as error:
+        raise HTTPException(400, str(error)) from None
+
+
 def validate_role_setup(body: RoleInput, session: Database):
+    validate_bindings(body.connection_bindings, session)
     if body.setup_revision_id is None:
-        if body.connector_grants:
+        if body.connector_grants or body.connection_bindings:
             raise HTTPException(400, "Choose a setup before granting connectors")
         return
     revision = session.get(SetupRevision, body.setup_revision_id, with_for_update=True)
     if revision is None:
         raise HTTPException(400, "Setup revision not found")
+    if set(body.connection_bindings) - {
+        slot["id"] for slot in revision.manifest["connection_slots"]
+    }:
+        raise HTTPException(400, "Connection slot is not in the selected setup")
     if set(body.connector_grants) - {c["id"] for c in revision.manifest["connectors"]}:
         raise HTTPException(400, "Connector is not in the selected setup")
 
@@ -95,6 +111,7 @@ def update_role(role_id: UUID, body: RoleInput, session: Database):
         role.capabilities != body.capabilities
         or role.setup_revision_id != body.setup_revision_id
         or role.connector_grants != body.connector_grants
+        or role.connection_bindings != body.connection_bindings
     ):
         role.revision += 1
     for key, value in body.model_dump().items():
@@ -131,6 +148,7 @@ def create_employee(body: EmployeeInput, session: Database):
     # Hold the role row until the FK is committed, serializing concurrent deletion.
     if session.get(Role, body.role_id, with_for_update=True) is None:
         raise HTTPException(404, "Role not found")
+    validate_bindings(body.connection_overrides, session)
     employee = Employee(**body.model_dump())
     session.add(employee)
     session.commit()
@@ -144,6 +162,7 @@ def update_employee(employee_id: UUID, body: EmployeeInput, session: Database):
         raise HTTPException(404, "Employee not found")
     if session.get(Role, body.role_id, with_for_update=True) is None:
         raise HTTPException(404, "Role not found")
+    validate_bindings(body.connection_overrides, session)
     for key, value in body.model_dump().items():
         setattr(employee, key, value)
     session.commit()
