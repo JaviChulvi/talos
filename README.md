@@ -369,6 +369,22 @@ it remains pending until the admin calls `POST /{id}/approve`. `POST /{id}/disab
 revokes access. No employee login or public Talos API is introduced. Messaging
 transport and guided handoff are supplied by the following stacked PRs.
 
+The `connector` service receives private Telegram text messages by long polling.
+Enable the configured channel after saving its bot token. It verifies `getMe`
+and refuses a conflicting webhook or polling consumer. The employee starts the
+bot using an invitation (`/start <token>`), or their approved numeric user ID.
+Only `/help` and `/status` are handled as employee commands; native administrative
+commands never reach the agent. Groups, bot messages, forwards and edits are ignored.
+
+The sanitized inbox and run admission commit together; the polling offset advances
+only after persistence. Responses use a durable outbox, with separate send intent
+for each text part. Explicit rate limiting is retried after the provider delay.
+An ambiguous send or connector restart during sending is marked uncertain without
+blind retries. Access is checked again before each response. Provider acceptance
+does not imply that the employee read the response. The connector has no Docker
+socket, publishes no endpoint, and reads channel credential versions from the
+existing secret volume. Slack reuses this admission and delivery path in the next PR.
+
 Employee turns share the existing single active run admission with administrator
 turns. Telegram, Slack and administrator conversations use independent native
 sessions; the legacy administrator history is preserved. Revocation, reassignment

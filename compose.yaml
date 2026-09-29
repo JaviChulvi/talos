@@ -89,6 +89,24 @@ services:
     volumes: ["/var/run/docker.sock:/var/run/docker.sock", "worker-state:/var/lib/talos", "setup-artifacts:/var/lib/talos-setups", "connection-secrets:/var/lib/talos-connections:ro"]
     depends_on:
       migrate: {condition: service_completed_successfully}
+  connector:
+    <<: *platform
+    restart: unless-stopped
+    command: ["python", "-m", "connector.main"]
+    networks: [control, egress]
+    environment:
+      <<: *environment
+      HTTPS_PROXY: http://egress:3128
+      HTTP_PROXY: http://egress:3128
+      NO_PROXY: db
+    volumes: ["connection-secrets:/var/lib/talos-connections:ro"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      egress: {condition: service_started}
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]
+    mem_limit: 256m
+    pids_limit: 64
   gateway:
     <<: *platform
     networks: [control, inference-egress]
