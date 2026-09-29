@@ -8,6 +8,7 @@ from backend.app.availability import heartbeat
 from backend.app.config import get_settings
 from worker.diagnostics import DiagnosticManager
 from worker.lifecycle import Worker, configure_inference, connect_runtime, worker_lock
+from worker.readiness import Readiness
 
 
 async def run():
@@ -37,7 +38,10 @@ async def run():
                     # before it can dispatch their persisted diagnostic queue.
                     await asyncio.to_thread(worker.recover, yield_to_operations=False)
                     diagnostics = DiagnosticManager(
-                        worker.sessions, connect_runtime, configure=configure_inference
+                        worker.sessions,
+                        connect_runtime,
+                        configure=configure_inference,
+                        probe=Readiness(worker).execute,
                     )
                 await diagnostics.tick()
                 await asyncio.to_thread(report_alive)

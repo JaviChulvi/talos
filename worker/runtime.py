@@ -17,6 +17,10 @@ class OwnershipError(RuntimeError):
 class RuntimeReadinessError(RuntimeError):
     """An operator-safe readiness diagnosis, never a raw native log line."""
 
+    def __init__(self, message, *, code="native"):
+        super().__init__(message)
+        self.code = code
+
 
 def runtime_error_message(detail) -> str | None:
     """Classify bounded native diagnostics; no part of the input is returned."""

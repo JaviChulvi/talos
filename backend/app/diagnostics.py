@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.agents import Database, IdempotencyKey, request_hash
+from backend.app.availability import agent_fingerprint
 from backend.app.channels import authorized_access
 from backend.app.inference import config_response
 from backend.app.models import (
@@ -141,6 +142,7 @@ def admit_run(
         incarnation_id=agent.current_incarnation_id,
         message=body.message,
         source="employee" if access else "admin",
+        availability_fingerprint=agent_fingerprint(session, agent),
         employee_id=agent.employee_id,
         access_id=access.id if access else None,
         access_revision=access.revision if access else None,
