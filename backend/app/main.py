@@ -13,6 +13,7 @@ from backend.app.administration import router as administration_router
 from backend.app.agents import router as agents_router
 from backend.app.availability import platform_status
 from backend.app.availability import router as availability_router
+from backend.app.channels import router as channels_router
 from backend.app.config import get_settings
 from backend.app.connections import router as connections_router
 from backend.app.db import Database, get_engine
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(agents_router)
     app.include_router(availability_router)
     app.include_router(connections_router)
+    app.include_router(channels_router)
     app.include_router(diagnostics_router)
     app.include_router(inference_router)
     app.include_router(setups_router)

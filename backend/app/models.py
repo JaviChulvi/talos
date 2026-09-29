@@ -35,6 +35,57 @@ class ServiceHeartbeat(Base):
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class EmployeeChannel(Base):
+    __tablename__ = "employee_channels"
+    __table_args__ = (
+        CheckConstraint("provider IN ('telegram','slack')"),
+        CheckConstraint("revision > 0"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    provider: Mapped[str] = mapped_column(String(20), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    connection_id: Mapped[UUID] = mapped_column(ForeignKey("connections.id"), unique=True)
+    workspace_id: Mapped[str] = mapped_column(String(40), default="")
+    verified_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("connection_versions.id"))
+    identity: Mapped[dict] = mapped_column(JSON, default=dict)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EmployeeAccess(Base):
+    __tablename__ = "employee_accesses"
+    __table_args__ = (
+        UniqueConstraint("channel_id", "employee_id"),
+        UniqueConstraint("channel_id", "external_scope", "external_user_id"),
+        CheckConstraint("state IN ('pending','active','disabled')"),
+        CheckConstraint("revision > 0"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    channel_id: Mapped[UUID] = mapped_column(ForeignKey("employee_channels.id"), index=True)
+    employee_id: Mapped[UUID] = mapped_column(ForeignKey("employees.id"), index=True)
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
+    external_scope: Mapped[str] = mapped_column(String(40), default="")
+    external_user_id: Mapped[str | None] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(20), default="pending")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AccessInvitation(Base):
+    __tablename__ = "access_invitations"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    access_id: Mapped[UUID] = mapped_column(ForeignKey("employee_accesses.id"), index=True)
+    access_revision: Mapped[int] = mapped_column(Integer)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class AvailabilityCheck(Base):
     __tablename__ = "availability_checks"
     __table_args__ = (

@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -26,7 +27,14 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from backend.app.config import get_settings
 from backend.app.db import Base, Database
-from backend.app.models import ACTIVE_OPERATION_STATUSES, Agent, Employee, Operation, Role
+from backend.app.models import (
+    ACTIVE_OPERATION_STATUSES,
+    Agent,
+    Employee,
+    EmployeeChannel,
+    Operation,
+    Role,
+)
 
 router = APIRouter(prefix="/api/v1/connections", tags=["connections"])
 _FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
@@ -34,11 +42,13 @@ _FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,79}$")
 
 class Connection(Base):
     __tablename__ = "connections"
+    __table_args__ = (CheckConstraint("purpose IN ('tools','channel')"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120), unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
     fields: Mapped[list] = mapped_column(JSON, default=list)
+    purpose: Mapped[str] = mapped_column(String(20), default="tools")
     current_version: Mapped[int] = mapped_column(Integer, default=0)
     current_version_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("connection_versions.id", use_alter=True, name="fk_connection_current_version")
@@ -150,8 +160,11 @@ def validate_connection_bindings(session: Session, bindings: dict | None) -> Non
             identifier = UUID(str(connection_id))
         except (ValueError, TypeError, AttributeError):
             raise ConnectionBindingError("Connection binding is invalid") from None
-        if session.get(Connection, identifier, with_for_update=True) is None:
+        connection = session.get(Connection, identifier, with_for_update=True)
+        if connection is None:
             raise ConnectionBindingError("Connection binding does not exist")
+        if connection.purpose != "tools":
+            raise ConnectionBindingError("Employee channel credentials cannot be given to agents")
 
 
 def resolve_bindings(
@@ -188,6 +201,8 @@ def resolve_bindings(
         connection = locked[identifiers[slot_id]]
         if connection is None or connection.current_version_id is None:
             raise ConnectionBindingError(f"Credentials required for slot {slot_id}")
+        if connection.purpose != "tools":
+            raise ConnectionBindingError("Employee channel credentials cannot be given to agents")
         version = session.get(ConnectionVersion, connection.current_version_id)
         required_fields = sorted(set(slot["fields"]))
         if (
@@ -235,6 +250,10 @@ def _references(value, identifier: str) -> bool:
 
 
 def connection_is_referenced(session: Session, connection_id: UUID) -> bool:
+    if session.scalar(
+        select(EmployeeChannel.id).where(EmployeeChannel.connection_id == connection_id)
+    ):
+        return True
     identifier = str(connection_id)
     # JSON ownership is intentionally inspected in Python for portable backend semantics.
     # All writers of these fields hold the connection row lock until commit.
@@ -300,6 +319,8 @@ def get_connection(connection_id: UUID, session: Database):
 @router.put("/{connection_id}", response_model=ConnectionResponse)
 def update_connection(connection_id: UUID, body: ConnectionInput, session: Database):
     connection = _connection(session, connection_id, lock=True)
+    if connection.purpose == "channel" and body.fields != connection.fields:
+        raise HTTPException(409, "Employee channel credential fields cannot change")
     if body.fields != connection.fields and connection.current_version_id is not None:
         raise HTTPException(409, "Credential fields cannot change after credentials are stored")
     for key, value in body.model_dump().items():
@@ -327,6 +348,15 @@ def rotate_credentials(connection_id: UUID, body: CredentialsInput, session: Dat
         session.flush()
         connection.current_version = version.version
         connection.current_version_id = version.id
+        if connection.purpose == "channel":
+            channel = session.scalar(
+                select(EmployeeChannel).where(EmployeeChannel.connection_id == connection.id)
+            )
+            if channel is not None:
+                channel.revision += 1
+                channel.verified_version_id = None
+                channel.verified_at = None
+                channel.identity = {}
         session.commit()
     except Exception:
         session.rollback()
