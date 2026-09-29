@@ -310,9 +310,17 @@ def claim_invitation(
     validate_identity(channel, scope, user_id)
     if access.external_user_id is not None and access.external_user_id != user_id:
         raise HTTPException(403, "Invitation belongs to another identity")
-    access.external_user_id = user_id
-    access.external_scope = scope
-    access.revision += 1
-    invitation.consumed_at = now
-    session.flush()
+    try:
+        # A competing identity claim must not roll back the connector's inbox
+        # and cursor transaction, including when two invitations race.
+        with session.begin_nested():
+            access.external_user_id = user_id
+            access.external_scope = scope
+            access.revision += 1
+            invitation.consumed_at = now
+            session.flush()
+    except IntegrityError as error:
+        if getattr(error.orig, "sqlstate", None) != "23505":
+            raise
+        raise HTTPException(403, "Identity already belongs to another access") from error
     return access
