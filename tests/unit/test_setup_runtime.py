@@ -79,6 +79,23 @@ def test_unknown_grant_is_rejected_before_application():
         _request(app, "hermes", SimpleNamespace(attrs={}))
 
 
+@pytest.mark.parametrize("kind", ["openclaw", "hermes"])
+def test_server_name_collisions_follow_each_native_runtime(kind):
+    app = application(kind)
+    identifiers = ["customer-support-production-a", "customer-support-production-b"]
+    app["connector_grants"] = identifiers
+    app["setup"]["manifest"]["connectors"] = [
+        {"id": identifier, "tools": ["lookup"], "enabled": True}
+        for identifier in identifiers
+    ]
+    if kind == "openclaw":
+        with pytest.raises(RuntimeReadinessError, match="collide"):
+            _request(app, kind, SimpleNamespace(attrs={}))
+    else:
+        request = _request(app, kind, SimpleNamespace(attrs={}))
+        assert request["grants"] == identifiers
+
+
 def test_embedded_native_helper_compiles():
     compile(_HELPER, "native setup helper", "exec")
 
