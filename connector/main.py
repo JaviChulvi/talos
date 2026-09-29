@@ -23,6 +23,8 @@ class Connector:
         self.delivery = Delivery(sessions)
         self.tasks = {}
         self.transports = {}
+        self.check_task = None
+        self.checking = set()
 
     def configurations(self):
         with self.sessions() as session:
@@ -199,11 +201,17 @@ class Connector:
             delay = min(delay * 2, 30)
 
     async def tick(self):
-        await self.process_check()
+        if self.check_task is not None and self.check_task.done():
+            self.check_task.result()
+            self.check_task = None
+        if self.check_task is None:
+            self.check_task = asyncio.create_task(self.process_check())
+            # Let the check claim its channel before reconciling consumers.
+            await asyncio.sleep(0)
         configurations = {
             channel.id: (channel, connection.current_version_id)
             for channel, connection in self.configurations()
-            if connection.current_version_id
+            if connection.current_version_id and channel.id not in self.checking
         }
         for identifier, (revision, version, task) in list(self.tasks.items()):
             desired = configurations.get(identifier)
@@ -229,6 +237,7 @@ class Connector:
             *(
                 self.delivery.send_one(identifier, transport)
                 for identifier, transport in list(self.transports.items())
+                if identifier not in self.checking
             )
         )
 
@@ -254,14 +263,14 @@ class Connector:
             channel = session.get(EmployeeChannel, probe.channel_id)
             probe.status = "running"
         # A single owner replaces its existing consumer while checking a channel.
+        self.checking.add(channel.id)
         existing = self.tasks.pop(channel.id, None)
-        if existing:
-            existing[2].cancel()
-            with suppress(asyncio.CancelledError):
-                await existing[2]
         transport = None
         code, status = "channel_changed", "stale"
         try:
+            if existing:
+                existing[2].cancel()
+                await asyncio.gather(existing[2], return_exceptions=True)
             if not self.report(
                 channel.id,
                 probe.revision,
@@ -361,11 +370,15 @@ class Connector:
                 )
                 row.status, row.code = ("stale", "channel_changed") if changed else (status, code)
                 row.completed_at = datetime.now(UTC)
+            self.checking.discard(channel.id)
 
     async def close(self):
-        for _, _, task in self.tasks.values():
+        tasks = [task for _, _, task in self.tasks.values()]
+        if self.check_task is not None:
+            tasks.append(self.check_task)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*(task for _, _, task in self.tasks.values()), return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def run():
