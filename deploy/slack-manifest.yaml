@@ -1,0 +1,26 @@
+display_information:
+  name: Talos
+  description: Private conversations with your assigned agent
+  background_color: "#18181b"
+features:
+  bot_user:
+    display_name: Talos
+    always_online: false
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+oauth_config:
+  scopes:
+    bot:
+      - im:history
+      - chat:write
+      # bots.info verifies that the bot token and Socket Mode app token match.
+      - users:read
+settings:
+  socket_mode_enabled: true
+  event_subscriptions:
+    bot_events:
+      - message.im
+  org_deploy_enabled: false
+  token_rotation_enabled: false
