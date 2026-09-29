@@ -85,7 +85,7 @@ def desired_application(session: Session, agent: Agent, *, lock: bool = True) ->
         }
         try:
             connections = resolve_bindings(
-                session, needed, role.connection_bindings, employee.connection_overrides
+                session, needed, role.connection_bindings, employee.connection_overrides, lock=lock
             )
         except ConnectionBindingError as error:
             raise HTTPException(409, str(error)) from None

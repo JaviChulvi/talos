@@ -159,6 +159,8 @@ def resolve_bindings(
     manifest: dict,
     role_bindings: dict | None,
     employee_overrides: dict | None,
+    *,
+    lock: bool = True,
 ) -> dict:
     """Snapshot exact versions for requested slots; an invalid override never falls back."""
     resolved = {}
@@ -177,7 +179,7 @@ def resolve_bindings(
     # Consistent lock ordering also covers two agents with reversed employee overrides.
     locked = {
         identifier: session.get(
-            Connection, identifier, with_for_update=True, populate_existing=True
+            Connection, identifier, with_for_update=lock, populate_existing=True
         )
         for identifier in sorted(set(identifiers.values()))
     }
