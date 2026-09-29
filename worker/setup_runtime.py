@@ -104,7 +104,10 @@ def _request(application, runtime_kind, image):
         for t in c["tools"]
     ]
     servers = [
-        connector_name(c["id"])[:30] for c in manifest.get("connectors", []) if c["id"] in grants
+        connector_name(c["id"])[:30]
+        if runtime_kind == "openclaw"
+        else connector_name(c["id"])
+        for c in manifest.get("connectors", []) if c["id"] in grants
     ]
     if len(set(names)) != len(names) or len(set(servers)) != len(servers):
         raise RuntimeReadinessError("Setup connector names collide after native normalization.")
