@@ -86,6 +86,58 @@ class AccessInvitation(Base):
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ChannelCursor(Base):
+    __tablename__ = "channel_cursors"
+
+    channel_id: Mapped[UUID] = mapped_column(ForeignKey("employee_channels.id"), primary_key=True)
+    credential_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("connection_versions.id"))
+    provider_identity: Mapped[str] = mapped_column(String(80), default="")
+    offset: Mapped[int] = mapped_column(BigInteger, default=0)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    state: Mapped[str] = mapped_column(String(20), default="unknown")
+    code: Mapped[str] = mapped_column(String(80), default="not_checked")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ChannelInbox(Base):
+    __tablename__ = "channel_inbox"
+    __table_args__ = (UniqueConstraint("channel_id", "event_id"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    channel_id: Mapped[UUID] = mapped_column(ForeignKey("employee_channels.id"), index=True)
+    channel_revision: Mapped[int] = mapped_column(Integer)
+    event_id: Mapped[str] = mapped_column(String(160))
+    external_user_id: Mapped[str] = mapped_column(String(40))
+    external_scope: Mapped[str] = mapped_column(String(40), default="")
+    destination: Mapped[str] = mapped_column(String(80))
+    access_id: Mapped[UUID | None] = mapped_column(ForeignKey("employee_accesses.id"))
+    access_revision: Mapped[int | None] = mapped_column(Integer)
+    run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id"))
+    code: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChannelOutbox(Base):
+    __tablename__ = "channel_outbox"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('waiting','pending','sending','sent','uncertain','failed','blocked')"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    inbox_id: Mapped[UUID] = mapped_column(ForeignKey("channel_inbox.id"), unique=True)
+    state: Mapped[str] = mapped_column(String(20))
+    parts: Mapped[list] = mapped_column(JSON, default=list)
+    next_part: Mapped[int] = mapped_column(Integer, default=0)
+    provider_ids: Mapped[list] = mapped_column(JSON, default=list)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    code: Mapped[str | None] = mapped_column(String(80))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AvailabilityCheck(Base):
     __tablename__ = "availability_checks"
     __table_args__ = (

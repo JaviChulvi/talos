@@ -15,6 +15,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY backend/ backend/
 COPY worker/ worker/
 COPY gateway/ gateway/
+COPY connector/ connector/
 COPY alembic.ini ./
 COPY --from=frontend /build/frontend/dist frontend/dist/
 RUN useradd --uid 10001 --create-home talos \
