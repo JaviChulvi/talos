@@ -46,6 +46,15 @@ def request_agent_check(agent_id: UUID, body: ProbeInput, key: IdempotencyKey, s
             run.session_key = f"agent:main:probe:{agent_id}:{run.id}"
             run.inference = {**run.inference, "probe": body.kind}
             agent = session.get(Agent, agent_id)
+            if body.kind == "model" and agent.runtime_mode == "managed":
+                settings = run.inference.get("settings", {})
+                run.inference = {
+                    **run.inference,
+                    "settings": {
+                        **settings,
+                        "max_output_tokens": min(settings.get("max_output_tokens", 16), 16),
+                    },
+                }
             record_check(
                 session,
                 agent,

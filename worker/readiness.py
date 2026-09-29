@@ -76,7 +76,11 @@ class Readiness:
             if agent.runtime_mode == "native"
             else "/v1/chat/completions"
         )
-        model = agent.inference_override["model_id"] if agent.inference_override else "default"
+        model = (
+            agent.inference_override["model_id"]
+            if agent.runtime_mode == "native" and agent.inference_override
+            else "default"
+        )
         try:
             async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
                 response = await client.post(
@@ -116,12 +120,12 @@ class Readiness:
             current = session.get(Run, run.id, with_for_update=True)
             if current.status not in ("dispatching", "running", "cancel_requested"):
                 return
-            if current.cancel_requested:
+            if current.cancel_requested and not uncertain:
                 current.status, current.output = "cancelled", "check_cancelled"
                 append_event(session, current, "cancelled", {})
                 return
             stale = stale or agent_fingerprint(session, agent) != run.availability_fingerprint
-            current.status = "interrupted" if stale else "unknown" if uncertain else "completed"
+            current.status = "unknown" if uncertain else "interrupted" if stale else "completed"
             current.output = "Configuration changed" if stale else code
             append_event(session, current, current.status, {"code": code})
             if not stale:
