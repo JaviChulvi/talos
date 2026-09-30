@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
@@ -23,6 +22,7 @@ from backend.app.connections import (
 from backend.app.db import get_db
 from backend.app.main import create_app
 from backend.app.models import Agent, Employee, Operation, Role, Setup, SetupRevision
+from tests.admin_client import administrator_client
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
@@ -77,7 +77,7 @@ def client(session_maker, tmp_path, monkeypatch):
             yield session
 
     app.dependency_overrides[get_db] = database
-    with TestClient(app) as client:
+    with administrator_client(app, session_maker) as client:
         yield client
 
 

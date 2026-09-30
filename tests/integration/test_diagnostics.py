@@ -18,6 +18,7 @@ from backend.app.agents import get_db
 from backend.app.diagnostics import mark_runs_stopped
 from backend.app.main import create_app
 from backend.app.models import Agent, Operation, Run, WorkloadIncarnation
+from tests.admin_client import administrator_client
 from worker.diagnostics import DiagnosticManager
 from worker.openclaw import DeliveryUncertain
 
@@ -65,7 +66,7 @@ def client(sessions):
             yield session
 
     app.dependency_overrides[get_db] = database
-    with TestClient(app) as client:
+    with administrator_client(app, sessions) as client:
         yield client
 
 

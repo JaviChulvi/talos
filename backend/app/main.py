@@ -1,7 +1,7 @@
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,6 +11,8 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from backend.app.administration import router as administration_router
 from backend.app.agents import router as agents_router
+from backend.app.auth import require_admin
+from backend.app.auth import router as auth_router
 from backend.app.availability import platform_status
 from backend.app.availability import router as availability_router
 from backend.app.channels import router as channels_router
@@ -38,8 +40,13 @@ def database_ready() -> bool:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="Talos", version="0.1.0")
+    app = FastAPI(title="Talos", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+    management = APIRouter(dependencies=[Depends(require_admin)])
+
+    @app.exception_handler(SQLAlchemyError)
+    async def database_error(request: Request, error: SQLAlchemyError):
+        return JSONResponse({"detail": "Service unavailable"}, status_code=503)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError):
@@ -55,18 +62,27 @@ def create_app() -> FastAPI:
         )
 
     @app.middleware("http")
-    async def local_browser_requests(request: Request, call_next):
+    async def browser_requests(request: Request, call_next):
         origin = request.headers.get("origin")
-        if request.method not in {"GET", "HEAD", "OPTIONS"} and origin:
-            from urllib.parse import urlsplit
-
-            parsed = urlsplit(origin)
-            if parsed.scheme not in {"http", "https"} or parsed.hostname not in {
-                "localhost",
-                "127.0.0.1",
-            }:
+        if request.url.path.startswith("/api/") and request.method not in {
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        }:
+            if origin is not None and origin not in settings.allowed_origins:
                 return JSONResponse({"detail": "Untrusted browser origin"}, status_code=403)
-        return await call_next(request)
+            if request.headers.get("x-talos-request") != "1":
+                return JSONResponse({"detail": "Expected Talos request header"}, status_code=403)
+            if (
+                request.url.path == "/api/v1/auth/login"
+                and request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                != "application/json"
+            ):
+                return JSONResponse({"detail": "Expected JSON request"}, status_code=415)
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/health/live")
     def live():
@@ -79,7 +95,7 @@ def create_app() -> FastAPI:
             {"status": "ready" if ok else "unavailable"}, status_code=200 if ok else 503
         )
 
-    @app.get("/api/v1/status")
+    @management.get("/api/v1/status")
     def status(session: Database):
         ok = database_ready()
         try:
@@ -97,17 +113,19 @@ def create_app() -> FastAPI:
             "version": "0.1.0",
         }
 
-    app.include_router(administration_router)
-    app.include_router(handoff_router)
-    app.include_router(agents_router)
-    app.include_router(availability_router)
-    app.include_router(connections_router)
-    app.include_router(channels_router)
-    app.include_router(diagnostics_router)
-    app.include_router(inference_router)
-    app.include_router(readiness_router)
-    app.include_router(setups_router)
-    app.include_router(usage_router)
+    management.include_router(administration_router)
+    management.include_router(handoff_router)
+    management.include_router(agents_router)
+    management.include_router(availability_router)
+    management.include_router(connections_router)
+    management.include_router(channels_router)
+    management.include_router(diagnostics_router)
+    management.include_router(inference_router)
+    management.include_router(readiness_router)
+    management.include_router(setups_router)
+    management.include_router(usage_router)
+    app.include_router(auth_router)
+    app.include_router(management)
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     def missing_api(path: str):

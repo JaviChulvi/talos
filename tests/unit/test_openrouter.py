@@ -490,7 +490,11 @@ def provider_settings(monkeypatch, tmp_path):
         "AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(transport), **kwargs),
     )
-    with TestClient(create_app()) as client:
+    from backend.app.auth import require_admin
+
+    app = create_app()
+    app.dependency_overrides[require_admin] = lambda: None
+    with TestClient(app, headers={"X-Talos-Request": "1"}) as client:
         yield client, path, state
 
 

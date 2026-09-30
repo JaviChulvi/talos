@@ -3,10 +3,10 @@ import json
 import zipfile
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from backend.app.config import get_settings
+from tests.admin_client import administrator_client
 from tests.integration import test_agents
 from tests.unit.test_setup_bundles import bundle_fixture
 
@@ -22,7 +22,8 @@ def client(database_engine, tmp_path, monkeypatch):
     monkeypatch.setattr(get_settings(), "setup_artifacts_dir", tmp_path / "artifacts")
     with database_engine.begin() as connection:
         connection.execute(text("TRUNCATE setups CASCADE"))
-    with TestClient(api_for(sessionmaker(database_engine, expire_on_commit=False))) as client:
+    sessions = sessionmaker(database_engine, expire_on_commit=False)
+    with administrator_client(api_for(sessions), sessions) as client:
         yield client
 
 

@@ -69,6 +69,11 @@ services:
       db: {condition: service_healthy}
   api:
     <<: *platform
+    environment:
+      <<: *environment
+      TALOS_ALLOWED_HOSTS: ${TALOS_ALLOWED_HOSTS:-["127.0.0.1","localhost"]}
+      TALOS_ALLOWED_ORIGINS: ${TALOS_ALLOWED_ORIGINS:-["http://127.0.0.1:${TALOS_PORT:-8000}","http://localhost:${TALOS_PORT:-8000}"]}
+      TALOS_ADMIN_COOKIE_SECURE: ${TALOS_ADMIN_COOKIE_SECURE:-true}
     networks: [control, ingress]
     volumes: ["provider-secrets:/var/lib/talos-provider", "setup-artifacts:/var/lib/talos-setups", "connection-secrets:/var/lib/talos-connections"]
     ports: ["127.0.0.1:${TALOS_PORT:-8000}:8000"]
