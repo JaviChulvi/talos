@@ -52,8 +52,10 @@ docker compose exec api python -m backend.app.auth reset-password
 Reset changes the password and revokes all administrator sessions in one transaction.
 These commands require trusted host access; there is no web registration/reset endpoint.
 All management API reads and mutations now require an administrator session. Before
-bootstrap they remain locked. This API stack level requires the following dashboard
-UI level for interactive browser login; the old dashboard cannot access management data.
+bootstrap they remain locked. The dashboard shows setup instructions until bootstrap, then a password-only login form.
+Sign out revokes the browser session and clears displayed/cached management data across
+open tabs. Session status is checked every 15 seconds and when a tab becomes visible;
+management 401 responses clear the view immediately.
 
 The authentication API has three routes: `GET /api/v1/auth/session` returns only
 `setup_required` and `authenticated`; `POST /api/v1/auth/login` accepts
