@@ -76,7 +76,9 @@ export function AdminAuth({
     setBusy(true);
     setError(null);
     try {
-      await api("/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+      await api("/auth/login", {
+        method: "POST", body: JSON.stringify({ password }), signal: AbortSignal.timeout(8000),
+      });
       setPassword("");
       await check();
     } catch (cause) {
@@ -90,7 +92,7 @@ export function AdminAuth({
     setBusy(true);
     setError(null);
     try {
-      await api("/auth/logout", { method: "POST" });
+      await api("/auth/logout", { method: "POST", signal: AbortSignal.timeout(8000) });
       clear();
       try {
         localStorage.setItem(LOGOUT_KEY, crypto.randomUUID());
