@@ -7,6 +7,7 @@ import hashlib
 import math
 import secrets
 import sys
+import warnings
 from datetime import UTC, datetime, timedelta
 
 from cryptography.exceptions import InvalidKey
@@ -202,10 +203,13 @@ def main() -> int:
         print("Run in an interactive terminal so the password can be hidden", file=sys.stderr)
         return 1
     try:
-        password = getpass.getpass("New admin password: ")
-        validate_password(password)
-        if password != getpass.getpass("Repeat password: "):
-            raise ValueError("Passwords do not match")
+        with warnings.catch_warnings():
+            # Refuse getpass's echoing fallback if terminal echo control is unavailable.
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            password = getpass.getpass("New admin password: ")
+            validate_password(password)
+            if password != getpass.getpass("Repeat password: "):
+                raise ValueError("Passwords do not match")
         with session_factory()() as session:
             if args.command == "bootstrap":
                 bootstrap(session, password)
@@ -216,6 +220,9 @@ def main() -> int:
         return 1
     except SQLAlchemyError:
         print("Database unavailable; no administrator change completed", file=sys.stderr)
+        return 1
+    except getpass.GetPassWarning:
+        print("Cannot hide password input; use an interactive terminal", file=sys.stderr)
         return 1
     except (EOFError, KeyboardInterrupt):
         print("Cancelled", file=sys.stderr)

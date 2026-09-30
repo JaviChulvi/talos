@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType, type FormEvent } from "react";
+import {
+  useCallback, useEffect, useRef, useState,
+  type ComponentType, type FormEvent,
+} from "react";
 import { api, errorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,9 +37,10 @@ export function AdminAuth({
   const check = useCallback(async () => {
     const current = ++generation.current;
     try {
-      const state = await api<Session>("/auth/session");
+      const state = await api<Session>("/auth/session", { signal: AbortSignal.timeout(8000) });
       if (current !== generation.current) return;
       if (!state.authenticated && authenticated) clear();
+      if (state.authenticated) setError(null);
       setSession(state);
     } catch (cause) {
       if (current !== generation.current) return;
@@ -105,10 +109,14 @@ export function AdminAuth({
   }
 
   if (session?.authenticated) {
-    return <>
-      {error && <Alert role="alert"><AlertDescription>{error}</AlertDescription></Alert>}
-      <Dashboard onSignOut={() => void signOut()} signingOut={busy} />
-    </>;
+    return (
+      <>
+        {error && (
+          <Alert role="alert"><AlertDescription>{error}</AlertDescription></Alert>
+        )}
+        <Dashboard onSignOut={() => void signOut()} signingOut={busy} />
+      </>
+    );
   }
 
   return (
@@ -123,7 +131,7 @@ export function AdminAuth({
         {error && <Alert role="alert"><AlertDescription>{error}</AlertDescription></Alert>}
         {session?.setup_required ? <>
           <p className="text-sm text-muted-foreground">Create the admin account from a terminal on the Talos host, then return here.</p>
-          <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>docker compose exec api python -m backend.app.auth bootstrap</code></pre>
+          <pre className="whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs"><code>docker compose exec api python -m backend.app.auth bootstrap</code></pre>
           <Button variant="outline" onClick={() => void check()}>Check again</Button>
         </> : session && <form onSubmit={(event) => void signIn(event)} className="space-y-4">
           <input type="hidden" name="username" value="admin" autoComplete="username" />
@@ -134,7 +142,7 @@ export function AdminAuth({
           </div>
           <Button className="w-full" type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</Button>
           <p className="text-sm text-muted-foreground">Forgot your password? Run this on the Talos host:</p>
-          <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>docker compose exec api python -m backend.app.auth reset-password</code></pre>
+          <pre className="whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs"><code>docker compose exec api python -m backend.app.auth reset-password</code></pre>
         </form>}
       </section>
     </main>

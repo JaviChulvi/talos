@@ -86,3 +86,27 @@ behavior, finalize evidence and limitations. Keep this checkpoint updated per le
 - Local browser proof uses disposable DB on port 55439 and API preview port 18004.
 - Remaining: publish UI draft; final process restart/cooldown/reset/expiry browser proof,
   complete docs, final regression checks, adjacent/full stack links, cleanup.
+
+### Final verification layer
+
+- UI: `74d20f5`, draft https://github.com/JaviChulvi/talos/pull/49.
+- Actual API subprocess restart proved both session and cooldown persistence. A real
+  PostgreSQL trigger failure proved reset rolls back both password and session deletion.
+- Full suite: 417 passed, 20 optional skips (68.83s). Native container acceptance is
+  unverified because Docker is stopped; independent worker/gateway/Slack/Telegram suite passed.
+- Real browser verified reset clears both tabs and 128-character Unicode login works.
+  Manually advanced stored expiry cleared private views. Actual disposable-DB outage
+  returned 503 and cleared management UI, then DB was restored. Hidden host recovery
+  prompts verified. This is local acceptance only; no real employee messages/provider charges.
+- Final fixes: refuse getpass echo fallback; bound session status fetch to 8 seconds;
+  clear outage error after revalidation; wrap host commands for smaller screens.
+- README now reflects authentication, first boot, upgrades, local HTTP, HTTPS proxy,
+  origin/Host configuration, recovery and focused process verification.
+- Pending: final UI rerun/build; PR4 publication; full/adjacent stack links; exact PR
+  base/head/diff audit and test-process cleanup.
+
+- Final UI lint/typecheck/build, Ruff check and changed-Python formatting passed.
+  Global Ruff format check still flags seven files identical to origin/main; none were
+  modified by this feature. Existing Vite >500KB bundle warning remains.
+- Final browser rerun passed after rebuilding: no pre-auth management requests, Unicode
+  login, and outage recovery clears its error. Two-tab logout took 142ms in local proof.
