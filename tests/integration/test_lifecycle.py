@@ -701,7 +701,7 @@ def test_dashboard_handoff_rewrites_both_addresses_without_changing_agent_state(
             }
         },
     )
-    monkeypatch.setattr(worker, "ui_proxy", lambda _: proxy)
+    monkeypatch.setattr(worker, "ui_proxy", lambda _, **kwargs: proxy)
     response = client.post(
         f"/api/v1/agents/{agent_id}/dashboard", headers={"Idempotency-Key": "open"}
     )

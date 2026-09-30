@@ -77,12 +77,15 @@ localhost/127.0.0.1 origins using `TALOS_PORT`. For Vite development, add
 `http://127.0.0.1:5173` to `TALOS_ALLOWED_ORIGINS` explicitly. API docs are disabled.
 
 For an HTTPS reverse proxy, keep the API on loopback, terminate TLS at the proxy, set
-`TALOS_ADMIN_COOKIE_SECURE=true`, `TALOS_ALLOWED_HOSTS=["talos.example.com"]`, and
+`TALOS_ADMIN_COOKIE_SECURE=true`, `TALOS_ALLOWED_HOSTS=["talos.example.com","127.0.0.1"]`, and
 `TALOS_ALLOWED_ORIGINS=["https://talos.example.com"]`. Pass the public Host and browser
 Origin unchanged. The API uses those configured values, never `X-Forwarded-*`, for
 browser admission/cookie settings. Configure the proxy's request logging to exclude
 Cookie/Set-Cookie and bodies. Native runtime UI relays retain their separate loopback
-access and runtime authentication; administrator login does not publish those relays.
+access and runtime authentication. Their HTTP/WebSocket relay removes the Talos admin
+cookie in both directions while preserving native cookies. Worker recovery replaces
+older TCP relays on the same port without restarting the native agent. Keep the loopback
+host in the allowlist for Compose's readiness check.
 
 Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus Python 3 to read the runtime pin. Allow disk space for the pinned runtime image and persistent volumes; each agent has a 2 GiB memory limit. Run these commands from the repository root:
 
