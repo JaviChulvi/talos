@@ -381,7 +381,8 @@ Backups are manual. After stopping agents, stop API/worker/gateway writes, then 
 
 For updates, retain those backups, keep the Compose project and installation identifiers unchanged, check out a reviewed commit, pull its approved runtime digest, and rerun `docker compose up --build -d`. Migrations run before services start. When upgrading an existing local HTTP installation,
 add `TALOS_ADMIN_COOKIE_SECURE=false` to its `.env` explicitly, bootstrap the administrator
-after migration, and sign in. Existing agent/employee data is retained; the first
+after migration, hard-refresh the dashboard to load the login UI, and sign in.
+Existing agent/employee data is retained; the first
 administrator bootstrap does not alter it. Reset requires host access and never deletes
 agents, credentials, conversations, or usage.
 

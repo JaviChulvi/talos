@@ -58,8 +58,8 @@ the old dashboard until UI level is installed. All four remain draft; no deploy/
 
 ## Remaining work
 
-Complete UI and final verification levels, open/link/attach remaining draft PRs, verify browser
-behavior, finalize evidence and limitations. Keep this checkpoint updated per level.
+None. The full feature, documentation and draft stack are complete. See the delivery
+audit below for evidence and the optional checks that could not run.
 
 ### API layer
 
@@ -103,8 +103,8 @@ behavior, finalize evidence and limitations. Keep this checkpoint updated per le
 - README now reflects authentication, first boot, upgrades, local HTTP, HTTPS proxy,
   origin/Host configuration, recovery and focused process verification.
 - All final build/browser checks passed. All four drafts open; live GitHub audit confirmed
-  correct preceding-branch bases and only incremental commits/files. Linking descriptions
-  and stopping test services are the final delivery steps.
+  correct preceding-branch bases and only incremental commits/files. All descriptions
+  linked; proof session revoked and disposable API/PostgreSQL processes stopped.
 
 - Final UI lint/typecheck/build, Ruff check and changed-Python formatting passed.
   Global Ruff format check still flags seven files identical to origin/main; none were
@@ -148,3 +148,6 @@ Requirement evidence:
 Final results: 417 passed / 20 optional skipped; frontend lint/typecheck/build, Ruff check,
 changed-file formatting, Compose config and git diff whitespace checks passed. Seven global
 formatting failures are byte-identical to main. Existing Vite bundle-size warning retained.
+
+- Cleanup verified: API process exited cleanly, disposable PostgreSQL stopped, proof
+  browser tab closed. Worktree retained for review/follow-up. Primary checkout preserved.
