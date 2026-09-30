@@ -151,3 +151,24 @@ formatting failures are byte-identical to main. Existing Vite bundle-size warnin
 
 - Cleanup verified: API process exited cleanly, disposable PostgreSQL stopped, proof
   browser tab closed. Worktree retained for review/follow-up. Primary checkout preserved.
+
+## Review fixes (2026-10-01)
+
+- PR #48: `c75b7d8` filters the Talos administrator cookie from native HTTP/WebSocket
+  requests and responses, preserving native cookies, uploads, frames and rejection status.
+  Worker recovery upgrades legacy relays on their existing ports without restarting agents;
+  failed creation/start retries retain the port, and Stop never starts a relay. HTTPS host
+  documentation retains `127.0.0.1` for Compose readiness. Nine focused relay/health checks
+  passed, plus 78 administrator/lifecycle/native checks with one optional skip.
+- PR #49: `7c40d96` bounds login and logout to eight seconds. Actual browser requests held
+  pending returned error/retry controls after 8.4 seconds for both actions.
+- PR #50: additive merges carry both owning-PR fixes into the final stack without rewriting
+  existing commits. Final suite: 424 passed / 20 optional skips in 67.91 seconds. Frontend
+  lint/typecheck/build, Ruff, changed-file formatting, Node syntax, Compose and whitespace
+  checks passed. The existing bundle warning remains; native Docker acceptance is unavailable
+  because its daemon is stopped.
+- The original cookie leak was reproduced in a browser and then checked through the actual
+  Node relay with a local native-service fixture: admin cookie absent upstream, native cookie
+  present/renewed, malicious native Set-Cookie unable to overwrite the admin cookie.
+- Independent security investigation and candidate review completed; upgrade retry and Stop
+  regressions found in the first candidate were corrected and covered before publication.
