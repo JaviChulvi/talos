@@ -102,11 +102,49 @@ behavior, finalize evidence and limitations. Keep this checkpoint updated per le
   clear outage error after revalidation; wrap host commands for smaller screens.
 - README now reflects authentication, first boot, upgrades, local HTTP, HTTPS proxy,
   origin/Host configuration, recovery and focused process verification.
-- Pending: final UI rerun/build; PR4 publication; full/adjacent stack links; exact PR
-  base/head/diff audit and test-process cleanup.
+- All final build/browser checks passed. All four drafts open; live GitHub audit confirmed
+  correct preceding-branch bases and only incremental commits/files. Linking descriptions
+  and stopping test services are the final delivery steps.
 
 - Final UI lint/typecheck/build, Ruff check and changed-Python formatting passed.
   Global Ruff format check still flags seven files identical to origin/main; none were
   modified by this feature. Existing Vite >500KB bundle warning remains.
 - Final browser rerun passed after rebuilding: no pre-auth management requests, Unicode
   login, and outage recovery clears its error. Two-tab logout took 142ms in local proof.
+
+## Delivery and completion audit
+
+| Level | Branch | Functional commit | Draft PR | Base |
+| --- | --- | --- | --- | --- |
+| 1 | feat/admin-auth-storage | 836d27c | https://github.com/JaviChulvi/talos/pull/47 | main |
+| 2 | feat/admin-auth-api | 72c8453 | https://github.com/JaviChulvi/talos/pull/48 | feat/admin-auth-storage |
+| 3 | feat/admin-auth-ui | 74d20f5 | https://github.com/JaviChulvi/talos/pull/49 | feat/admin-auth-api |
+| 4 | feat/admin-auth-verification | 9f5009f | https://github.com/JaviChulvi/talos/pull/50 | feat/admin-auth-ui |
+
+The final checkpoint-only commit follows the functional head above. All PRs are attached
+to this chat. First PR describes the full stack; adjacent drafts are linked in descriptions.
+No PR was merged and no production deployment performed.
+
+Requirement evidence:
+- Singleton/concurrent bootstrap: real PostgreSQL tests in test_admin_auth.py; id=1 DB check.
+- Exact password limits/Unicode/spaces, salts and safe prompts: test_admin_password.py,
+  real interactive CLI bootstrap/reset and browser 128-codepoint Unicode login.
+- Atomic reset/revocation/race/rollback: tests in test_admin_auth.py, including DB trigger failure.
+- Cookies/fixed expiry/no renewal/logout/invalid sessions: test_admin_auth.py; actual browser reload
+  and forced stored-expiry proof. Eight-hour duration verified from timestamps, not an eight-hour wait.
+- API process and cooldown persistence: test_admin_auth_process.py restarts actual Uvicorn processes.
+- Concurrent cooldown: eight concurrent wrong logins yield four 401s/four 429s; stored counter=5.
+- Every management read/mutation: route enumeration test covers all dashboard API operations.
+  No management SSE/WebSocket; exports/assets are finite byte Responses, also authenticated.
+- DB denial: injected DB failure test plus actual disposable-DB outage returned 503; UI cleared.
+- Browser mutation protections: tests cover login/logout/agent requests with rejected origins
+  and missing header; actual configured-origin browser login succeeded. Forwarded headers unused.
+- Gate/cache/cross-tab/expiry/reset: browser automation against compiled production UI, synthetic
+  private role record and operation cache; only auth status fetched before login.
+- Service independence: full existing worker/gateway/Telegram/Slack suite passed; native Docker
+  acceptance remains an explicitly unverified optional check while Docker daemon is stopped.
+- Docs: README setup/login/reset, local HTTP and HTTPS proxy config, upgrade and verification.
+
+Final results: 417 passed / 20 optional skipped; frontend lint/typecheck/build, Ruff check,
+changed-file formatting, Compose config and git diff whitespace checks passed. Seven global
+formatting failures are byte-identical to main. Existing Vite bundle-size warning retained.
