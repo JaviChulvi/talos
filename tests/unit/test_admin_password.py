@@ -32,3 +32,20 @@ def test_commands_use_hidden_confirmation_and_safe_output(monkeypatch, capsys):
     output = capsys.readouterr()
     assert "do not match" in output.err
     assert "secret" not in output.err + output.out
+
+
+def test_commands_refuse_echoing_getpass_fallback(monkeypatch, capsys):
+    import warnings
+
+    from backend.app import auth
+
+    monkeypatch.setattr("sys.argv", ["auth", "reset-password"])
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+    def cannot_hide(prompt):
+        warnings.warn("Terminal cannot hide input", auth.getpass.GetPassWarning, stacklevel=2)
+        raise AssertionError("Echoing fallback must never run")
+
+    monkeypatch.setattr(auth.getpass, "getpass", cannot_hide)
+    assert auth.main() == 1
+    assert "Cannot hide password input" in capsys.readouterr().err

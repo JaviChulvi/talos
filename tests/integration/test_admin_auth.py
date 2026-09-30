@@ -72,6 +72,42 @@ def test_reset_requires_bootstrap(auth_sessions):
         reset_password(session, PASSWORD)
 
 
+def test_failed_reset_rolls_back_password_and_session_deletion(auth_sessions):
+    from sqlalchemy.exc import SQLAlchemyError
+
+    with auth_sessions() as session:
+        bootstrap(session, PASSWORD)
+        session.add(
+            AdministratorSession(
+                token_hash="c" * 64, expires_at=datetime.now(UTC) + timedelta(hours=8)
+            )
+        )
+        session.commit()
+    with auth_sessions.begin() as session:
+        session.execute(
+            text("""
+            CREATE FUNCTION reject_session_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN RAISE EXCEPTION 'simulated reset failure'; END; $$
+        """)
+        )
+        session.execute(
+            text("""
+            CREATE TRIGGER reject_session_delete BEFORE DELETE ON administrator_sessions
+            FOR EACH ROW EXECUTE FUNCTION reject_session_delete()
+        """)
+        )
+    try:
+        with pytest.raises(SQLAlchemyError), auth_sessions() as session:
+            reset_password(session, "replacement password")
+        with auth_sessions() as session:
+            assert verify_password(PASSWORD, session.get(Administrator, 1).password_hash)
+            assert session.get(AdministratorSession, "c" * 64) is not None
+    finally:
+        with auth_sessions.begin() as session:
+            session.execute(text("DROP TRIGGER reject_session_delete ON administrator_sessions"))
+            session.execute(text("DROP FUNCTION reject_session_delete()"))
+
+
 @pytest.fixture
 def auth_app(auth_sessions, monkeypatch):
     from backend.app.config import get_settings
