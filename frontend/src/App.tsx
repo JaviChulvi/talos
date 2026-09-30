@@ -22,6 +22,8 @@ import { Connections } from "@/components/connections";
 import { Administration } from "@/components/administration";
 import { Usage } from "@/components/usage";
 import { AgentWorkspace } from "@/components/agent-workspace";
+import { AdminAuth } from "@/components/admin-auth";
+import { apiResponse } from "@/lib/api";
 
 type Status = {
   status: string;
@@ -109,6 +111,10 @@ function pageFromHash(hash: string) {
 }
 
 export default function App() {
+  return <AdminAuth dashboard={Dashboard} />;
+}
+
+function Dashboard({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: boolean }) {
   const [operationIds, setOperationIds] = useState(() =>
     readIds("talos.operationIds"),
   );
@@ -142,7 +148,7 @@ export default function App() {
     request.current = controller;
     const timeout = window.setTimeout(() => controller.abort(), 8000);
     try {
-      const response = await fetch("/api/v1/status", {
+      const response = await apiResponse("/status", {
         signal: controller.signal,
         cache: "no-store",
       });
@@ -197,6 +203,8 @@ export default function App() {
         version={status?.version}
         operationIds={operationIds}
         onOperation={recordOperation}
+        onSignOut={onSignOut}
+        signingOut={signingOut}
       >
         <div hidden={page !== "roles"}>
           <Administration

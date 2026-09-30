@@ -7,15 +7,30 @@ export class ApiError extends Error {
   }
 }
 
+export async function apiResponse(
+  path: string,
+  options: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(options.headers);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  headers.set("X-Talos-Request", "1");
+  const response = await fetch(`/api/v1${path}`, {
+    ...options,
+    cache: "no-store",
+    credentials: "same-origin",
+    headers,
+  });
+  if (response.status === 401 && !path.startsWith("/auth/")) {
+    window.dispatchEvent(new Event("talos:unauthenticated"));
+  }
+  return response;
+}
+
 export async function api<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
-    cache: "no-store",
-    ...options,
-    headers: { "Content-Type": "application/json", ...options.headers },
-  });
+  const response = await apiResponse(path, options);
   const data: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const detail =
