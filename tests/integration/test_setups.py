@@ -1,9 +1,12 @@
+import asyncio
 import io
 import json
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from backend.app.config import get_settings
 from tests.admin_client import administrator_client
@@ -110,3 +113,68 @@ def test_draft_export_and_explicit_asset_removal(client):
     assert client.post(path + "/revisions").status_code == 201
     manifest["assets"] = {"unowned/file": "0" * 64}
     assert client.put(path + "/draft", json={"manifest": manifest}).status_code == 422
+
+
+def test_import_processing_does_not_block_other_api_requests(client, database_engine, monkeypatch):
+    from backend.app import setups
+
+    entered, release = Event(), Event()
+    read_bundle = setups.read_bundle
+
+    def slow_bundle(*args, **kwargs):
+        entered.set()
+        assert release.wait(10), "Import was never released"
+        return read_bundle(*args, **kwargs)
+
+    def sql_off_event_loop(*_):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        pytest.fail("Import or response serialization ran SQL on the API event loop")
+
+    monkeypatch.setattr(setups, "read_bundle", slow_bundle)
+    event.listen(database_engine, "before_cursor_execute", sql_off_event_loop)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            importing = executor.submit(upload, client, *bundle_fixture())
+            try:
+                assert entered.wait(5), "Import did not start"
+                health = executor.submit(client.get, "/health/live")
+                assert health.result(timeout=2).status_code == 200
+                assert not importing.done()
+            finally:
+                release.set()
+            assert importing.result(timeout=5).status_code == 201
+    finally:
+        event.remove(database_engine, "before_cursor_execute", sql_off_event_loop)
+
+
+def test_failed_import_commit_preserves_existing_draft(client, monkeypatch):
+    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.orm import Session
+
+    from backend.app.models import Setup
+
+    setup = client.post("/api/v1/setups", json={"name": "Original draft"}).json()
+    commit = Session.commit
+
+    def fail_import(session):
+        if any(isinstance(row, Setup) for row in session.dirty):
+            raise SQLAlchemyError("private database details")
+        return commit(session)
+
+    monkeypatch.setattr(Session, "commit", fail_import)
+    result = upload(client, *bundle_fixture(), setup_id=setup["id"])
+    assert result.status_code == 503 and "private database details" not in result.text
+    restored = client.get(f"/api/v1/setups/{setup['id']}").json()
+    assert restored["draft_manifest"] == setup["draft_manifest"]
+    assert restored["draft_artifact_hash"] is None
+
+
+def test_import_size_limit_rejects_before_processing(client, monkeypatch):
+    from backend.app import setups
+
+    monkeypatch.setattr(setups, "MAX_ARCHIVE_BYTES", 1)
+    assert upload(client, *bundle_fixture()).status_code == 413
+    assert client.get("/api/v1/setups").json() == []

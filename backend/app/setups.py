@@ -19,6 +19,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
+from starlette.concurrency import run_in_threadpool
 
 from backend.app.config import get_settings
 from backend.app.db import Database
@@ -502,8 +503,13 @@ async def import_setup(
         content.extend(chunk)
         if len(content) > MAX_ARCHIVE_BYTES:
             raise HTTPException(413, "Bundle exceeds its upload size limit")
+    # Keep archive processing, durable storage and the SQL transaction off the event loop.
+    return await run_in_threadpool(import_bundle, bytes(content), session, setup_id, name)
+
+
+def import_bundle(content: bytes, session, setup_id: UUID | None, name: str):
     try:
-        manifest, files = read_bundle(bytes(content))
+        manifest, files = read_bundle(content)
         metadata = SetupInput(name=name)
         setup = _setup(session, setup_id, lock=True) if setup_id else Setup(**metadata.model_dump())
         save_draft(setup, manifest, files)
@@ -513,7 +519,8 @@ async def import_setup(
         raise _bad_bundle(error) from None
     session.add(setup)
     session.commit()
-    return setup
+    # Materialize lazy relationships and refreshed SQL defaults in this thread too.
+    return SetupResponse.model_validate(setup)
 
 
 @router.get("/runtime-targets")
