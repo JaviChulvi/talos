@@ -28,6 +28,27 @@ HERMES_RELEASE = "hermes-0.21.5"
 RUNTIME_RELEASES = {"openclaw": RUNTIME_RELEASE, "hermes": HERMES_RELEASE}
 
 
+class Administrator(Base):
+    __tablename__ = "administrator"
+    __table_args__ = (
+        CheckConstraint("id = 1"),
+        CheckConstraint("failed_attempts BETWEEN 0 AND 5"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    password_hash: Mapped[str] = mapped_column(Text)
+    failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AdministratorSession(Base):
+    __tablename__ = "administrator_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    administrator_id: Mapped[int] = mapped_column(ForeignKey("administrator.id"), default=1)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ServiceHeartbeat(Base):
     __tablename__ = "service_heartbeats"
 

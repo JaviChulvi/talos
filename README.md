@@ -33,6 +33,27 @@ This prototype is for one organization with trusted host administrators. Keep th
 
 ## Run locally
 
+### Administrator host commands (storage layer)
+
+After migrations complete, create the single built-in `admin` from the Talos host:
+
+```sh
+docker compose exec api python -m backend.app.auth bootstrap
+```
+
+Both prompts hide input. Choose 15–128 characters; spaces and Unicode are preserved
+exactly. The database stores a salted scrypt hash. Bootstrap never overwrites an
+existing administrator. For recovery or ordinary password rotation:
+
+```sh
+docker compose exec api python -m backend.app.auth reset-password
+```
+
+Reset changes the password and revokes all administrator sessions in one transaction.
+These commands require trusted host access; there is no web registration/reset endpoint.
+This storage-only stack level does not yet secure the dashboard/API; install the full
+administrator authentication stack before relying on browser authentication.
+
 Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus Python 3 to read the runtime pin. Allow disk space for the pinned runtime image and persistent volumes; each agent has a 2 GiB memory limit. Run these commands from the repository root:
 
 ```sh
