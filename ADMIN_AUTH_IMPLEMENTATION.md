@@ -58,5 +58,18 @@ the old dashboard until UI level is installed. All four remain draft; no deploy/
 
 ## Remaining work
 
-Complete all four levels, run checks at each level, open/link/attach draft PRs, verify browser
+Complete UI and final verification levels, open/link/attach remaining draft PRs, verify browser
 behavior, finalize evidence and limitations. Keep this checkpoint updated per level.
+
+### API layer
+
+- Storage: `836d27c`, draft https://github.com/JaviChulvi/talos/pull/47.
+- API implemented; shared dependency protects every management route. Admission read
+  ends before existing explicit business transactions. Three public auth endpoints only.
+- 414 tests passed / 20 optional skips against disposable PostgreSQL; Ruff check, changed
+  Python formatting, frontend lint/typecheck and Compose config passed. Native Docker
+  acceptance unavailable because daemon is stopped; worker/gateway/adapter suite passed.
+- Cookie Secure defaults true; `.env.example` explicitly selects local HTTP. Browser
+  mutations require X-Talos-Request and exact configured Origin when present.
+- Focused rerun checks fresh application instances for session/cooldown persistence.
+- API level deliberately locks old UI until the next stack level.

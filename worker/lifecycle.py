@@ -23,6 +23,7 @@ from docker.errors import APIError, NotFound
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 
+from backend.app.auth import COOKIE
 from backend.app.availability import record_check
 from backend.app.config import get_settings
 from backend.app.db import session_factory
@@ -329,20 +330,51 @@ class Worker:
             raise OwnershipError("Runtime image does not match the approved digest")
         return container
 
-    def ui_proxy(self, incarnation: WorkloadIncarnation, *, ensure=False):
-        """A fixed TCP relay publishes the UI without giving the agent an external bridge."""
+    def ui_proxy(self, incarnation: WorkloadIncarnation, *, ensure=False, upgrade=False):
+        """Publish the native UI while keeping Talos's administrator cookie out."""
         name = incarnation.container_name + "-ui"
+        previous_name = name + "-previous"
+        command = [
+            Path(__file__).with_name("ui_proxy.cjs").read_text(),
+            incarnation.container_name,
+            "9119" if incarnation.runtime_release == HERMES_RELEASE else "18789",
+            COOKIE,
+        ]
+        published_port = 20000 + secrets.randbelow(40000)
         labels = {
             **self.labels(incarnation.agent_id),
             "io.talos.incarnation": str(incarnation.id),
             "io.talos.role": "ui-proxy",
         }
+        previous = None
         try:
-            proxy = self.client.containers.get(name)
+            try:
+                proxy = self.client.containers.get(name)
+            except NotFound:
+                proxy = self.client.containers.get(previous_name)
             require_labels(proxy.labels, labels)
             if proxy.attrs["Config"]["Image"] != IMAGE:
                 raise OwnershipError("UI relay image changed")
+            if (ensure or upgrade) and proxy.attrs["Config"].get("Cmd") != command:
+                binding = proxy.attrs["HostConfig"]["PortBindings"]["18789/tcp"]
+                if len(binding) != 1 or binding[0]["HostIp"] != "127.0.0.1":
+                    raise OwnershipError("Native UI must be published on loopback only")
+                published_port = int(binding[0]["HostPort"])
+                labels["io.talos.ui-upgraded"] = "true"
+                # Keep the stopped relay's port until its replacement exists, so retry
+                # never restarts unsafe forwarding or changes the native allowed origin.
+                if proxy.status in {"running", "restarting", "paused"}:
+                    proxy.stop(timeout=5)
+                if proxy.name != previous_name:
+                    proxy.rename(previous_name)
+                previous = proxy
+                ensure = True
+                proxy = None
+            elif upgrade and proxy.status == "created" and proxy.labels.get("io.talos.ui-upgraded"):
+                ensure = True
         except NotFound:
+            proxy = None
+        if proxy is None:
             if not ensure:
                 return None
             networks = self.client.networks.list(
@@ -361,16 +393,8 @@ class Worker:
                 labels=labels,
                 network=networks[0].name,
                 entrypoint=["node", "-e"],
-                command=[
-                    "const net=require('net');net.createServer(down=>{"
-                    "const up=net.connect(Number(process.argv[2]),process.argv[1]);"
-                    "down.on('error',()=>up.destroy());up.on('error',()=>down.destroy());"
-                    "down.on('close',()=>up.destroy());up.on('close',()=>down.destroy());"
-                    "down.pipe(up);up.pipe(down);}).listen(18789,'0.0.0.0');",
-                    incarnation.container_name,
-                    "9119" if incarnation.runtime_release == HERMES_RELEASE else "18789",
-                ],
-                ports={"18789/tcp": ("127.0.0.1", 20000 + secrets.randbelow(40000))},
+                command=command,
+                ports={"18789/tcp": ("127.0.0.1", published_port)},
                 user="1000:1000",
                 read_only=True,
                 cap_drop=["ALL"],
@@ -379,6 +403,8 @@ class Worker:
                 pids_limit=32,
                 healthcheck={"test": ["NONE"]},
             )
+            if previous is not None:
+                previous.remove()
         if ensure:
             network = self.client.networks.get(self.names(incarnation.agent_id)[1])
             network.reload()
@@ -389,7 +415,7 @@ class Worker:
                     proxy.start()
                 except APIError:
                     # A host-port collision on a new relay must choose a fresh port on retry.
-                    if proxy.status == "created":
+                    if proxy.status == "created" and not proxy.labels.get("io.talos.ui-upgraded"):
                         proxy.remove(force=True)
                     raise
             proxy.reload()
@@ -640,7 +666,7 @@ class Worker:
                 if container.status != "running":
                     raise RuntimeError("Runtime is not running")
                 if incarnation.model_route == "native":
-                    proxy = self.ui_proxy(incarnation)
+                    proxy = self.ui_proxy(incarnation, upgrade=True)
                     if proxy is None or proxy.status != "running":
                         raise RuntimeError("UI relay is not running")
                 if (
@@ -774,7 +800,7 @@ class Worker:
             with self.sessions() as session:
                 incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
             container = self.owned_container(incarnation)
-            proxy = self.ui_proxy(incarnation)
+            proxy = self.ui_proxy(incarnation, upgrade=True)
             if proxy is None or proxy.status != "running":
                 raise RuntimeError("UI relay is unavailable; stop and start the agent")
             bindings = proxy.attrs["NetworkSettings"]["Ports"]["18789/tcp"]

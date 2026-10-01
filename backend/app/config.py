@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     database_password: str | None = None
     static_dir: Path = Path("frontend/dist")
     allowed_hosts: list[str] = ["127.0.0.1", "localhost", "testserver"]
+    allowed_origins: list[str] = ["http://127.0.0.1:8000", "http://localhost:8000"]
+    admin_cookie_secure: bool = True
     openrouter_app_key_file: Path = Path("/var/lib/talos-provider/openrouter.key")
     setup_artifacts_dir: Path = Path("/var/lib/talos-setups")
     connection_secrets_dir: Path = Path("/var/lib/talos-connections")

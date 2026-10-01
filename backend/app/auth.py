@@ -3,17 +3,141 @@
 import argparse
 import base64
 import getpass
+import hashlib
+import math
 import secrets
 import sys
+from datetime import UTC, datetime, timedelta
 
 from cryptography.exceptions import InvalidKey
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
-from sqlalchemy import delete
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from backend.app.db import session_factory
+from backend.app.config import get_settings
+from backend.app.db import Database, session_factory
 from backend.app.models import Administrator, AdministratorSession
+
+COOKIE = "talos_admin"
+SESSION_SECONDS = 8 * 60 * 60
+COOLDOWN_SECONDS = 60
+router = APIRouter(prefix="/api/v1/auth")
+
+
+def token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def current_session(request: Request, session: Session) -> AdministratorSession | None:
+    token = request.cookies.get(COOKIE)
+    if not token or len(token) > 128:
+        return None
+    return session.scalar(
+        select(AdministratorSession)
+        .join(Administrator)
+        .where(
+            AdministratorSession.token_hash == token_digest(token),
+            AdministratorSession.expires_at > datetime.now(UTC),
+        )
+    )
+
+
+def require_admin(request: Request, session: Database) -> None:
+    if current_session(request, session) is None:
+        raise HTTPException(401, "Sign in required")
+    # End the admission read before handlers start their own explicit transactions.
+    session.rollback()
+
+
+@router.get("/session")
+def session_status(request: Request, response: Response, session: Database):
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "setup_required": session.get(Administrator, 1) is None,
+        "authenticated": current_session(request, session) is not None,
+    }
+
+
+class LoginInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Short guesses must count as failed attempts too; setup alone enforces minimum length.
+    password: SecretStr = Field(max_length=128)
+
+
+@router.post("/login", status_code=204)
+def login(body: LoginInput, request: Request, response: Response, session: Database):
+    admin = session.get(Administrator, 1, with_for_update=True)
+    if admin is None:
+        raise HTTPException(401, "Administrator setup required")
+    now = datetime.now(UTC)
+    if admin.cooldown_until and admin.cooldown_until > now:
+        raise HTTPException(
+            429,
+            "Too many attempts; try again shortly",
+            headers={"Retry-After": str(math.ceil((admin.cooldown_until - now).total_seconds()))},
+        )
+    if admin.cooldown_until:
+        admin.failed_attempts = 0
+        admin.cooldown_until = None
+    if not verify_password(body.password.get_secret_value(), admin.password_hash):
+        admin.failed_attempts += 1
+        if admin.failed_attempts == 5:
+            admin.cooldown_until = now + timedelta(seconds=COOLDOWN_SECONDS)
+        session.commit()  # Persist before raising: request rollback must not undo throttling.
+        if admin.cooldown_until:
+            raise HTTPException(
+                429, "Too many attempts; try again shortly", headers={"Retry-After": "60"}
+            )
+        raise HTTPException(401, "Incorrect password")
+    admin.failed_attempts = 0
+    admin.cooldown_until = None
+    # Replace this browser's previous session; cleanup needs no extra service.
+    old_token = request.cookies.get(COOKIE, "")
+    session.execute(
+        delete(AdministratorSession).where(
+            (AdministratorSession.expires_at <= now)
+            | (AdministratorSession.token_hash == token_digest(old_token))
+        )
+    )
+    token = secrets.token_urlsafe(32)
+    session.add(
+        AdministratorSession(
+            token_hash=token_digest(token), expires_at=now + timedelta(seconds=SESSION_SECONDS)
+        )
+    )
+    session.commit()
+    response.headers["Cache-Control"] = "no-store"
+    response.set_cookie(
+        COOKIE,
+        token,
+        max_age=SESSION_SECONDS,
+        expires=now + timedelta(seconds=SESSION_SECONDS),
+        httponly=True,
+        secure=get_settings().admin_cookie_secure,
+        samesite="strict",
+        path="/",
+    )
+
+
+@router.post("/logout", status_code=204)
+def logout(request: Request, response: Response, session: Database):
+    session.execute(
+        delete(AdministratorSession).where(
+            AdministratorSession.token_hash == token_digest(request.cookies.get(COOKIE, ""))
+        )
+    )
+    session.commit()
+    response.delete_cookie(
+        COOKIE,
+        path="/",
+        httponly=True,
+        secure=get_settings().admin_cookie_secure,
+        samesite="strict",
+    )
+    response.headers["Cache-Control"] = "no-store"
 
 
 def validate_password(password: str) -> None:

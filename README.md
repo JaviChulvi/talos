@@ -33,7 +33,7 @@ This prototype is for one organization with trusted host administrators. Keep th
 
 ## Run locally
 
-### Administrator host commands (storage layer)
+### Administrator setup and recovery
 
 After migrations complete, create the single built-in `admin` from the Talos host:
 
@@ -51,8 +51,41 @@ docker compose exec api python -m backend.app.auth reset-password
 
 Reset changes the password and revokes all administrator sessions in one transaction.
 These commands require trusted host access; there is no web registration/reset endpoint.
-This storage-only stack level does not yet secure the dashboard/API; install the full
-administrator authentication stack before relying on browser authentication.
+All management API reads and mutations now require an administrator session. Before
+bootstrap they remain locked. This API stack level requires the following dashboard
+UI level for interactive browser login; the old dashboard cannot access management data.
+
+The authentication API has three routes: `GET /api/v1/auth/session` returns only
+`setup_required` and `authenticated`; `POST /api/v1/auth/login` accepts
+`{"password":"…"}` and sets a cookie; `POST /api/v1/auth/logout` revokes the current
+session and clears the cookie. Tokens are never returned in response bodies.
+Every mutation, including login/logout, requires `X-Talos-Request: 1`. Login also
+requires `Content-Type: application/json`. When present, `Origin` must exactly match
+`TALOS_ALLOWED_ORIGINS`; no CORS or forwarded-header trust is enabled. Header-bearing
+non-browser clients can omit Origin. ZIP imports retain their existing content type.
+
+Sessions use random tokens stored only as hashes, an HttpOnly/SameSite=Strict cookie,
+and a fixed eight-hour expiry that survives API restarts without renewal. Logout revokes
+one browser session; password reset revokes every session. After five failed attempts,
+login is blocked for 60 seconds, including across API restarts. Attempts are serialized
+in PostgreSQL; successful login clears the counter. Password hashing uses the existing
+cryptography implementation of scrypt (`N=131072,r=8,p=1`) with random salts.
+
+The default cookie requires HTTPS. For local loopback HTTP, explicitly set
+`TALOS_ADMIN_COOKIE_SECURE=false` as in `.env.example`. Compose configures exact
+localhost/127.0.0.1 origins using `TALOS_PORT`. For Vite development, add
+`http://127.0.0.1:5173` to `TALOS_ALLOWED_ORIGINS` explicitly. API docs are disabled.
+
+For an HTTPS reverse proxy, keep the API on loopback, terminate TLS at the proxy, set
+`TALOS_ADMIN_COOKIE_SECURE=true`, `TALOS_ALLOWED_HOSTS=["talos.example.com","127.0.0.1"]`, and
+`TALOS_ALLOWED_ORIGINS=["https://talos.example.com"]`. Pass the public Host and browser
+Origin unchanged. The API uses those configured values, never `X-Forwarded-*`, for
+browser admission/cookie settings. Configure the proxy's request logging to exclude
+Cookie/Set-Cookie and bodies. Native runtime UI relays retain their separate loopback
+access and runtime authentication. Their HTTP/WebSocket relay removes the Talos admin
+cookie in both directions while preserving native cookies. Worker recovery replaces
+older TCP relays on the same port without restarting the native agent. Keep the loopback
+host in the allowlist for Compose's readiness check.
 
 Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus Python 3 to read the runtime pin. Allow disk space for the pinned runtime image and persistent volumes; each agent has a 2 GiB memory limit. Run these commands from the repository root:
 

@@ -7,13 +7,13 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agents import get_db
 from backend.app.main import create_app
 from backend.app.models import Agent, Operation
+from tests.admin_client import administrator_client
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
@@ -67,7 +67,7 @@ def api_for(session_maker):
 
 @pytest.fixture
 def client(session_maker):
-    with TestClient(api_for(session_maker)) as client:
+    with administrator_client(api_for(session_maker), session_maker) as client:
         yield client
 
 
@@ -203,7 +203,7 @@ def test_create_replay_validation_and_restart_persistence(client, session_maker)
             == 422
         )
     assert len(client.get("/api/v1/agents").json()) == 1
-    with TestClient(api_for(session_maker)) as restarted:
+    with administrator_client(api_for(session_maker), session_maker) as restarted:
         assert restarted.get(f"/api/v1/operations/{operation['id']}").json() == operation
         assert create(restarted).json() == operation
 
