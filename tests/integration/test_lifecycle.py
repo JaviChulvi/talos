@@ -874,3 +874,97 @@ def test_gateway_lease_cleanup_requires_confirmed_stop(client, worker, session_m
         container.attrs["Config"]["Hostname"],
         worker.labels(UUID(agent_id)),
     )
+
+
+@pytest.mark.parametrize("suffix", ["-init", "-permissions", "-setup", "-model", "-capture"])
+@pytest.mark.parametrize("action", ["start", "delete"])
+def test_replacement_and_deletion_remove_orphaned_helpers(
+    client, worker, session_maker, suffix, action
+):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    with session_maker.begin() as session:
+        agent = session.get(Agent, UUID(agent_id))
+        agent.observed_state = "degraded"
+        incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+    helper = worker.client.containers.create(
+        name=incarnation.config_volume + suffix, labels=worker.labels(UUID(agent_id))
+    )
+    # Docker refuses to delete even a stopped helper's mounted volumes.
+    for name in (incarnation.config_volume, worker.names(UUID(agent_id))[0]):
+        volume = worker.client.volumes.get(name)
+        remove = volume.remove
+
+        def remove_unmounted(*, remove=remove):
+            assert helper.name not in worker.client.containers.items
+            remove()
+
+        volume.remove = remove_unmounted
+    path = f"/api/v1/agents/{agent_id}"
+    response = (
+        client.post(path + "/start", headers={"Idempotency-Key": "replace"})
+        if action == "start"
+        else client.delete(path, headers={"Idempotency-Key": "delete"})
+    )
+    worker.process_one()
+    result = client.get("/api/v1/operations/" + response.json()["id"]).json()
+    assert result["status"] == "succeeded", result
+    assert helper.name not in worker.client.containers.items
+
+
+@pytest.mark.parametrize("suffix", ["-setup", "-model", "-capture"])
+def test_helper_cleanup_preserves_foreign_containers(client, worker, session_maker, suffix):
+    from worker.runtime import OwnershipError
+
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    with session_maker() as session:
+        incarnation = session.get(Agent, UUID(agent_id)).current_incarnation
+    helper = worker.client.containers.create(
+        name=incarnation.config_volume + suffix, labels={"owner": "someone-else"}
+    )
+    with pytest.raises(OwnershipError):
+        worker.remove_config(incarnation)
+    assert worker.client.containers.get(helper.name) is helper
+    assert worker.client.volumes.get(incarnation.config_volume)
+
+
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_replacement_releases_old_run_only_after_runtime_stops(
+    client, worker, session_maker, monkeypatch, stop_fails
+):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    turn = client.post(
+        f"/api/v1/agents/{agent_id}/diagnostic-runs",
+        json={"message": "old turn"},
+        headers={"Idempotency-Key": "old-turn"},
+    ).json()
+    with session_maker.begin() as session:
+        session.get(Run, UUID(turn["id"])).status = "unknown"
+        agent = session.get(Agent, UUID(agent_id))
+        agent.observed_state = "degraded"
+        old = agent.current_incarnation_id
+    if stop_fails:
+        monkeypatch.setattr(worker, "stop_incarnation", Mock(side_effect=RuntimeError("busy")))
+    restart = client.post(
+        f"/api/v1/agents/{agent_id}/start", headers={"Idempotency-Key": "restart"}
+    ).json()
+    worker.process_one()
+    result = client.get("/api/v1/operations/" + restart["id"]).json()
+    with session_maker() as session:
+        agent = session.get(Agent, UUID(agent_id))
+        run = session.get(Run, UUID(turn["id"]))
+        if stop_fails:
+            assert result["status"] == "retry_wait"
+            assert agent.current_incarnation_id == old
+            assert run.status == "unknown"
+            return
+        assert result["status"] == "succeeded"
+        assert agent.current_incarnation_id != old
+        assert run.status == "interrupted"
+    assert client.post(
+        f"/api/v1/agents/{agent_id}/diagnostic-runs",
+        json={"message": "new turn"},
+        headers={"Idempotency-Key": "new-turn"},
+    ).status_code == 202

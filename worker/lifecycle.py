@@ -55,7 +55,7 @@ from worker.runtime import (
     runtime_error_message,
 )
 from worker.setup_capture import SetupCaptureError, capture_setup
-from worker.setup_runtime import apply_setup, prepare_setup, verify_setup
+from worker.setup_runtime import SETUP_HELPER_LOCK, apply_setup, prepare_setup, verify_setup
 
 MAX_ATTEMPTS = 5
 
@@ -453,14 +453,16 @@ class Worker:
 
     def remove_config(self, incarnation: WorkloadIncarnation):
         labels = self.labels(incarnation.agent_id)
-        for suffix in ("-init", "-permissions"):
-            try:
-                initializer = self.client.containers.get(incarnation.config_volume + suffix)
-            except NotFound:
-                continue
-            require_labels(initializer.labels, labels)
-            initializer.remove(force=True)
-        self.remove_volume(incarnation.config_volume, labels)
+        # Explicit readiness probes share the setup helper with lifecycle work.
+        with SETUP_HELPER_LOCK:
+            for suffix in ("-init", "-permissions", "-setup", "-model", "-capture"):
+                try:
+                    helper = self.client.containers.get(incarnation.config_volume + suffix)
+                except NotFound:
+                    continue
+                require_labels(helper.labels, labels)
+                helper.remove(force=True)
+            self.remove_volume(incarnation.config_volume, labels)
 
     def remove_volume(self, name, labels):
         try:
@@ -495,6 +497,8 @@ class Worker:
             self.stop_incarnation(previous, remove=True)
         with self.sessions.begin() as session:
             agent = session.get(Agent, operation.agent_id, with_for_update=True)
+            # All predecessors are stopped; their runs cannot survive replacement.
+            mark_runs_stopped(session, agent.id)
             incarnation = WorkloadIncarnation(
                 id=uuid4(),
                 agent_id=agent.id,
