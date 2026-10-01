@@ -435,7 +435,7 @@ function ChannelHandoff({
   onNotice: (message: string) => void;
 }) {
   const [tokens, setTokens] = useState<Record<string, string>>({});
-  const [workspace, setWorkspace] = useState("");
+  const [workspace, setWorkspace] = useState<string | null>(null);
   const [userId, setUserId] = useState("");
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [busy, setBusy] = useState(false);
@@ -488,7 +488,7 @@ function ChannelHandoff({
           body: JSON.stringify({
             provider,
             name: title,
-            workspace_id: provider === "slack" ? workspace : "",
+            workspace_id: provider === "slack" ? (workspace ?? "") : "",
           }),
         }));
       onChange(); // Preserve a created channel if saving its credentials fails.
@@ -578,7 +578,7 @@ function ChannelHandoff({
               <Label htmlFor="slack-workspace">Workspace ID</Label>
               <Input
                 id="slack-workspace"
-                value={workspace}
+                value={workspace ?? ""}
                 onChange={(event) => setWorkspace(event.target.value)}
                 required
                 pattern="T[A-Z0-9]+"
@@ -694,10 +694,53 @@ function ChannelHandoff({
               "Check could not complete. Review credentials and channel configuration.")}
         </p>
       )}
-      {channel?.workspace_id && (
-        <p className="text-xs text-muted-foreground">
-          Workspace {channel.workspace_id}
-        </p>
+      {channel?.provider === "slack" && (
+        <form
+          className="space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void action(async () => {
+              await api(`/channels/${channel.id}`, {
+                method: "PUT",
+                body: JSON.stringify({
+                  name: channel.name,
+                  enabled: false,
+                  workspace_id: workspace ?? channel.workspace_id,
+                }),
+              });
+              setInvitation(null);
+              setProbe(null);
+              onNotice(
+                "Workspace saved. Check and enable the channel, then save and approve employee identities again.",
+              );
+            });
+          }}
+        >
+          <Label htmlFor="slack-workspace-edit">Workspace ID</Label>
+          <Input
+            id="slack-workspace-edit"
+            value={workspace ?? channel.workspace_id}
+            onChange={(event) => setWorkspace(event.target.value)}
+            required
+            pattern="T[A-Z0-9]{2,39}"
+            disabled={disabled || busy}
+          />
+          <p className="text-xs text-muted-foreground">
+            Changing the workspace disables Slack for every employee until the
+            channel is checked and their identities are approved again.
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={
+              disabled ||
+              busy ||
+              (workspace ?? channel.workspace_id).trim() === channel.workspace_id
+            }
+          >
+            Save workspace
+          </Button>
+        </form>
       )}
       {channel && (
         <div className="space-y-3 border-t pt-4">

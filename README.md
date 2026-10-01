@@ -448,6 +448,13 @@ does not imply that the employee read the response. The connector has no Docker
 socket, publishes no endpoint, and reads channel credential versions from the
 existing secret volume. Slack reuses this admission and delivery path.
 
+Correct a Slack workspace ID with **Save workspace** in Access & availability,
+or `PUT /api/v1/channels/{id}` with `name`, `enabled`, and `workspace_id`.
+A changed workspace always disables the channel, clears verification, and makes
+employee accesses pending with outstanding invitations invalidated. Check and
+enable the channel, then save and approve identities in the corrected workspace.
+Existing credentials are retained; rotate them if they belong to another workspace.
+
 Install an internal Slack app from `deploy/slack-manifest.yaml`. Generate an
 app-level token with `connections:write`, install the bot in the workspace, and
 save its bot and app tokens together in the Slack channel. Bot scopes are

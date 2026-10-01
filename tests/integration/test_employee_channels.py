@@ -224,3 +224,75 @@ def test_access_requires_the_employees_own_native_agent(client, channel_setup):
     body = {**access_body(channel_setup, "123456789"), "agent_id": other["id"]}
     assert body["employee_id"] == employee["id"]
     assert client.post("/api/v1/employee-accesses", json=body).status_code == 409
+
+
+@pytest.mark.parametrize("approve", [False, True])
+def test_workspace_correction_invalidates_verification_access_and_invitations(
+    client, session_maker, channel_setup, approve
+):
+    channel = client.post(
+        "/api/v1/channels",
+        json={"provider": "slack", "name": "Slack", "workspace_id": "TWRONG"},
+    ).json()
+    path = f"/api/v1/channels/{channel['id']}"
+    configured = client.put(
+        path + "/credentials", json={"values": {"app_token": "xapp-test", "bot_token": "xoxb-test"}}
+    ).json()
+    body = {
+        **access_body(channel_setup),
+        "channel_id": channel["id"],
+        "external_scope": "TWRONG",
+        "external_user_id": "U12345",
+    }
+    access = client.post("/api/v1/employee-accesses", json=body).json()
+    access_path = f"/api/v1/employee-accesses/{access['id']}"
+    invitation = client.post(access_path + "/invitation").json()["token"]
+    if approve:
+        client.post(access_path + "/approve")
+    before = client.get("/api/v1/employee-accesses").json()[0]
+    with session_maker.begin() as session:
+        row = session.get(EmployeeChannel, UUID(channel["id"]))
+        row.enabled = True
+        row.verified_version_id = UUID(configured["credential_version_id"])
+        row.verified_at = datetime.now(UTC)
+        row.identity = {"team_id": "TWRONG"}
+    corrected = client.put(
+        path, json={"name": "Slack", "enabled": True, "workspace_id": "TCORRECT"}
+    )
+    assert corrected.status_code == 200
+    result = corrected.json()
+    assert result["workspace_id"] == "TCORRECT"
+    assert not result["enabled"] and not result["verified"]
+    assert result["verified_at"] is None and result["identity"] == {}
+    assert result["revision"] > configured["revision"]
+    assert result["credential_version_id"] == configured["credential_version_id"]
+    current = client.get("/api/v1/employee-accesses").json()[0]
+    assert current["state"] == "pending" and current["revision"] > before["revision"]
+    assert client.post(access_path + "/approve").status_code == 422
+    with session_maker.begin() as session:
+        with pytest.raises(HTTPException):
+            claim_invitation(session, UUID(channel["id"]), invitation, "U12345", "TCORRECT")
+    body["external_scope"] = "TCORRECT"
+    assert client.put(access_path, json=body).status_code == 200
+    assert client.post(access_path + "/approve").json()["state"] == "active"
+
+
+def test_workspace_edits_validate_provider_and_preserve_existing_update_requests(
+    client, channel_setup
+):
+    telegram, _, _ = channel_setup
+    path = f"/api/v1/channels/{telegram['id']}"
+    assert client.put(
+        path, json={"name": "Staff", "enabled": False, "workspace_id": "T12345"}
+    ).status_code == 422
+    slack = client.post(
+        "/api/v1/channels", json={"provider": "slack", "name": "Slack", "workspace_id": "T12345"}
+    ).json()
+    path = f"/api/v1/channels/{slack['id']}"
+    for workspace in ("", "invalid", "T1"):
+        assert client.put(
+            path, json={"name": "Slack", "enabled": False, "workspace_id": workspace}
+        ).status_code == 422
+    updated = client.put(path, json={"name": "Renamed", "enabled": True}).json()
+    assert updated["workspace_id"] == "T12345" and updated["enabled"]
+    assert updated["revision"] == slack["revision"] + 1
