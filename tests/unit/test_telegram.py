@@ -84,3 +84,17 @@ def test_unicode_response_parts_stay_under_limit():
     parts = split_response(value)
     assert "".join(parts) == value
     assert all(len(part.encode("utf-16-le")) <= 6000 for part in parts)
+
+
+@pytest.mark.parametrize("char", ["a", "🌍"])
+@pytest.mark.parametrize("length", [23999, 24000, 24001])
+def test_long_response_is_bounded_and_truncation_is_explicit(char, length):
+    value = char * length
+    parts = split_response(value)
+    delivered = "".join(parts)
+    assert len(delivered) <= 24000
+    assert all(len(part.encode("utf-16-le")) <= 6000 for part in parts)
+    if length <= 24000:
+        assert delivered == value
+    else:
+        assert delivered.endswith("[Respuesta recortada. Pide al agente una respuesta más breve.]")

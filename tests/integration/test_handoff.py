@@ -193,6 +193,44 @@ def test_partial_reply_waits_for_all_parts(client, session_maker, ready_accesses
     assert proof(client, pair)["receipt"]["accepted_parts"] == 2
 
 
+@pytest.mark.parametrize("provider", [0, 1])
+@pytest.mark.parametrize("length", [24000, 24001])
+def test_bounded_reply_receipt_requires_complete_output(
+    client, session_maker, ready_accesses, provider, length
+):
+    _, pairs = ready_accesses
+    pair = pairs[provider]
+    request = challenge(client, pair)
+    receive(session_maker, pair, ("/verify " if provider == 0 else "verify ") + request["token"])
+    send(session_maker, pair)
+    inbox = receive(session_maker, pair, "Give a long reply", 2)
+    asyncio.run(
+        DiagnosticManager(session_maker, AsyncMock(return_value=FakeDriver()))._execute(
+            inbox.run_id
+        )
+    )
+    with session_maker.begin() as session:
+        session.get(Run, inbox.run_id).output = "a" * length
+    # A rate limit must not lose the fact that the eventual response is incomplete.
+    send(session_maker, pair, TransportError("rate_limited", retry_after=1))
+    delivered = []
+    for _ in range(17):
+        with session_maker.begin() as session:
+            outbox = session.scalar(select(ChannelOutbox).where(ChannelOutbox.inbox_id == inbox.id))
+            if outbox.state == "sent":
+                break
+            outbox.retry_at = datetime.now(UTC) - timedelta(seconds=1)
+        transport = send(session_maker, pair)
+        delivered.append(transport.send.call_args.args[1])
+    else:
+        pytest.fail("Bounded response did not finish delivery")
+    truncated = length > 24000
+    assert outbox.code == ("response_truncated" if truncated else "provider_accepted")
+    assert (proof(client, pair)["verified_at"] is None) is truncated
+    assert ("Respuesta recortada" in "".join(delivered)) is truncated
+    assert outbox.next_part == len(outbox.parts) == len(delivered)
+
+
 @pytest.mark.parametrize("case", ["empty", "failed", "unknown", "admin", "uncertain_send"])
 def test_only_confirmed_employee_replies_complete_handoff(
     client, session_maker, ready_accesses, case

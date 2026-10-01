@@ -448,6 +448,11 @@ does not imply that the employee read the response. The connector has no Docker
 socket, publishes no endpoint, and reads channel credential versions from the
 existing secret volume. Slack reuses this admission and delivery path.
 
+Channel replies are limited to 24,000 characters, split into provider-sized parts.
+Longer replies include an explicit truncation notice within that limit. Their delivery
+code is `response_truncated`; accepting the shortened reply does not verify complete
+response delivery. The full answer remains in the saved run.
+
 Correct a Slack workspace ID with **Save workspace** in Access & availability,
 or `PUT /api/v1/channels/{id}` with `name`, `enabled`, and `workspace_id`.
 A changed workspace always disables the channel, clears verification, and makes
