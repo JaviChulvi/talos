@@ -38,6 +38,7 @@ class ChannelChange(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
     enabled: bool
+    workspace_id: str | None = Field(default=None, pattern=r"^(T[A-Z0-9]{2,39})?$")
 
 
 class AccessInput(BaseModel):
@@ -165,7 +166,22 @@ def create_channel(body: ChannelInput, session: Database):
 def change_channel(channel_id: UUID, body: ChannelChange, session: Database):
     channel = channel_row(session, channel_id, lock=True)
     channel.name = body.name
-    if channel.enabled != body.enabled:
+    if body.workspace_id is not None and body.workspace_id != channel.workspace_id:
+        if not body.workspace_id or channel.provider != "slack":
+            raise HTTPException(422, "Only Slack uses a nonempty workspace ID")
+        channel.workspace_id = body.workspace_id
+        channel.verified_version_id = None
+        channel.verified_at = None
+        channel.identity = {}
+        channel.revision += 1
+        # Workspace-local identities and outstanding invitations need fresh approval.
+        session.execute(
+            update(EmployeeAccess)
+            .where(EmployeeAccess.channel_id == channel.id)
+            .values(state="pending", revision=EmployeeAccess.revision + 1)
+        )
+        channel.enabled = False
+    elif channel.enabled != body.enabled:
         channel.enabled = body.enabled
         channel.revision += 1
     commit(session)

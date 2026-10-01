@@ -19,7 +19,7 @@ from .runtime import STATE_PATH, OwnershipError, RuntimeReadinessError, require_
 
 BEGIN = "<!-- TALOS SETUP BEGIN -->"
 END = "<!-- TALOS SETUP END -->"
-_HELPER_LOCK = RLock()
+SETUP_HELPER_LOCK = RLock()
 
 
 def application_fingerprint(application):
@@ -175,7 +175,7 @@ def verify_setup(
 def _run(client, state, incarnation, labels, request, mode, files=None, network=None):
     # Recovery, lifecycle and explicit probes share the same deterministic helper
     # name and input volume. Never remove an in-process verification helper.
-    with _HELPER_LOCK:
+    with SETUP_HELPER_LOCK:
         return _run_locked(client, state, incarnation, labels, request, mode, files, network)
 
 
