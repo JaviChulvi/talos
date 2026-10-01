@@ -2,7 +2,7 @@
 
 A self-hosted control plane for personal employee agents. The goal is to let companies manage agent integrations, permissions, credentials, spending, and offboarding.
 
-**Current status: local prototype.** Talos creates and manages native OpenClaw and Hermes instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. Employee roles, Talos-routed spend reporting, and employee monthly allowances are available. Administrator authentication is future work. Employees access their assigned agents through approved private Telegram or Slack identities.
+**Current status: local prototype.** Talos creates and manages native OpenClaw and Hermes instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. Employee roles, Talos-routed spend reporting, and employee monthly allowances are available. A single built-in administrator secures the dashboard and management API, with host-only setup and recovery. Employees access their assigned agents through approved private Telegram or Slack identities.
 
 ## What works
 
@@ -15,7 +15,7 @@ A self-hosted control plane for personal employee agents. The goal is to let com
 - Per-incarnation gateway credentials, checked against the current agent state and revocation/expiry on each fake-model request. Database failures deny access.
 - Diagnostic delivery uncertainty is retained explicitly; messages are never automatically resent after a lost acknowledgment.
 
-This prototype is for one organization with trusted host administrators. Keep the unauthenticated dashboard/API local. Agent containers have no Docker socket; only the trusted worker controls Docker. Native UI relays publish a random host-loopback port, and native agents use a shared outbound HTTP proxy. Managed agents retain their existing closed network. Containers share a host kernel, and Foundation does not establish the later enterprise permission or hostile-tenant isolation guarantees.
+This prototype is for one organization with trusted host administrators. The dashboard/API binds to loopback by default; shared-host access uses an explicitly configured HTTPS reverse proxy and administrator login. Agent containers have no Docker socket; only the trusted worker controls Docker. Native UI relays publish a random host-loopback port, and native agents use a shared outbound HTTP proxy. Managed agents retain their existing closed network. Containers share a host kernel, and Foundation does not establish the later enterprise permission or hostile-tenant isolation guarantees.
 
 ## Stack and layout
 
@@ -33,7 +33,69 @@ This prototype is for one organization with trusted host administrators. Keep th
 
 ## Run locally
 
-### Administrator setup and recovery
+Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus Python 3 to read the runtime pin. Allow disk space for the pinned runtime image and persistent volumes; each agent has a 2 GiB memory limit. Run these commands from the repository root:
+
+```sh
+cp .env.example .env
+```
+
+Edit the example database password in `.env` **before the first startup**. `POSTGRES_PASSWORD` initializes a new database; editing `.env` later does not change an existing database's password. For an initialized database, rotate the PostgreSQL role password and update `.env` together.
+
+```sh
+docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
+docker compose build native-runtime hermes-runtime
+docker compose up --build -d
+docker compose ps
+```
+
+Create the administrator with `docker compose exec api python -m backend.app.auth bootstrap`, then open [http://127.0.0.1:8000](http://127.0.0.1:8000) and sign in with that password. PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the pinned upstream image for managed agents and the locally built native image for native agents. Each native incarnation records and launches the immutable local image ID. Both runtimes are installed by the build command above. Rebuild the corresponding target (`native-runtime` for OpenClaw, `hermes-runtime` for Hermes) when its pin or dependencies change; stop/start applies the new image.
+
+For a remote Linux development host, keep that binding and use a tunnel:
+
+```sh
+ssh -N -L 8000:127.0.0.1:8000 user@your-host
+```
+
+In the dashboard, click **New agent**, choose **OpenClaw** or **Hermes**, wait for **Stopped**, start it, and wait for **Ready**. Open the agent’s **Settings** tab and click **Open OpenClaw** or **Open Hermes** to open its native interface. For Hermes, choose a dashboard password of at least 12 characters when creating the agent, then sign in as `talos`. Configure your chosen model provider there; OpenRouter is optional. The instance starts without provider credentials, but an agent conversation still needs a usable model. Native provider credentials belong to that instance's private state. Alternatively, select OpenRouter in Talos and configure the shared key in Settings. After configuring a provider, use the agent’s Chat tab to converse directly in Talos; Settings retains access to the full native workspace.
+
+The OpenClaw UI link expires after ten minutes and is single-use. After pairing, OpenClaw stores a device credential in your browser; revoke devices in OpenClaw when necessary. Do not share pairing links. Stop/start retains configuration, workspace, channel credentials, and paired devices while replacing the container and its gateway token. Keep the seeded gateway token and allowed-origin environment references when editing OpenClaw's gateway configuration.
+
+Hermes uses its upstream password authentication and host-scoped session cookies. Each agent gets a distinct `<agent-id>.localhost` hostname so two Hermes instances can be used in the same browser. Keep the chosen password in your password manager. Talos stores a salted scrypt hash, never the plaintext password. Hermes owns subsequent native configuration changes; Talos has no Hermes password-reset flow. Stop/start preserves the private data volume and invalidates the previous dashboard session, so sign in again. The bundled s6 supervisor manages the dashboard and native gateway services; no model key is required to open setup.
+
+On a remote Docker host, the UI also needs a tunnel for its assigned port. Obtain it with `docker port <native-container-name>-ui 18789/tcp`, then add `ssh -N -L <port>:127.0.0.1:<port> user@your-host` before opening the native UI. For Hermes, open the generated `.localhost` URL after tunneling; modern browsers resolve it to loopback. The port changes on stop/start. The Talos tunnel alone does not forward this separate UI port.
+
+For the existing diagnostic/conversation flow, choose **OpenClaw** and check **Use Talos-managed conversations** when creating an agent. Hermes supports native mode only. Send a short synthetic message; include `[slow]` with the simulator to exercise cancellation. Existing agents keep managed mode. A start request on an already-ready agent is rejected: stop it first.
+
+### Native tools and connectivity
+
+The OpenClaw native image extends the pinned upstream image with `@openclaw/parallel-plugin@2026.9.6`, installed from its lockfile. The `parallel-free` search provider requires no API key; external service availability and limits still apply. Tool calls through a paid model can still cost money. `web_fetch` uses the outbound proxy, and shell/file tools run as the unprivileged container user against the private workspace.
+
+Hermes extends the pinned official image with browser dependencies, with its bundled Parallel key-free search selected at first boot. Search still depends on the external service's availability and limits. Native shell and file tools run as UID 10000 in `/opt/data/workspace`; `/opt/data` persists across starts. No OpenRouter account is required to provision either runtime.
+
+Telegram, Slack, and other integrations use the selected runtime's own plugins and account setup. They are not preconnected. Install/configure the required native plugin and supply your own account credentials. HTTP(S) clients must honor the supplied proxy variables or their integration's explicit proxy setting; raw TCP/UDP, inbound webhooks, LAN services, and tools requiring host privileges are not enabled by this setup. Telegram polling and Slack Socket Mode avoid public inbound ports, but channel-specific proxy support and credentials must be checked during setup. No external messages are sent by Talos provisioning.
+
+Both native images include Chromium. Hermes also bundles pinned `agent-browser`
+and `browser-use` CLIs so the first browser call does not install dependencies.
+Browsers use Talos's public-only Squid proxy, including loopback destinations;
+agents remain on internal Docker networks. The OpenClaw image carries a narrow
+patch to skip local DNS preflight for explicitly proxy-routed browser profiles.
+The proxy resolves names and denies private/metadata addresses and non-web ports.
+Direct browser profiles retain upstream DNS validation.
+
+Chromium runs without its nested process sandbox, as required by the existing
+Docker seccomp/no-new-privileges policy; the unprivileged container, dropped
+capabilities, read-only root filesystem, and restricted egress remain its boundary.
+OpenClaw's seeded `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork` is needed
+to admit an explicit browser proxy; it does **not** grant private-network access
+through Squid. Keep the proxy and `--proxy-bypass-list=<-loopback>` together.
+Rebuild both native images to install the browser dependencies. Existing OpenClaw
+configurations are user-owned and are not overwritten: copy the `browser` block
+from `worker/runtime.py:native_config` into their native settings when opting in.
+Host package installation and Docker-backed nested sandboxes remain unavailable.
+
+Native instances keep internal Docker bridges. A shared Squid proxy allows public HTTP on port 80 and HTTPS CONNECT on port 443, denying private, loopback, link-local, and reserved destinations after DNS resolution. A separate small TCP relay per instance forwards only to that instance's UI and publishes only on `127.0.0.1`. Neither the relay nor the proxy mounts agent state or credentials. These are container/network boundaries for a trusted local administrator, not enterprise tenant isolation or protection against all prompt injection. External content can influence an agent with full native tools and its configured credentials.
+
+## Administrator setup, login, and recovery
 
 After migrations complete, create the single built-in `admin` from the Talos host:
 
@@ -89,68 +151,6 @@ cookie in both directions while preserving native cookies. Worker recovery repla
 older TCP relays on the same port without restarting the native agent. Keep the loopback
 host in the allowlist for Compose's readiness check.
 
-Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus Python 3 to read the runtime pin. Allow disk space for the pinned runtime image and persistent volumes; each agent has a 2 GiB memory limit. Run these commands from the repository root:
-
-```sh
-cp .env.example .env
-```
-
-Edit the example database password in `.env` **before the first startup**. `POSTGRES_PASSWORD` initializes a new database; editing `.env` later does not change an existing database's password. For an initialized database, rotate the PostgreSQL role password and update `.env` together.
-
-```sh
-docker pull "$(python3 -c 'import json; print(json.load(open("deploy/runtimes/openclaw.json"))["image"])')"
-docker compose build native-runtime hermes-runtime
-docker compose up --build -d
-docker compose ps
-```
-
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000). PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the pinned upstream image for managed agents and the locally built native image for native agents. Each native incarnation records and launches the immutable local image ID. Both runtimes are installed by the build command above. Rebuild the corresponding target (`native-runtime` for OpenClaw, `hermes-runtime` for Hermes) when its pin or dependencies change; stop/start applies the new image.
-
-For a remote Linux development host, keep that binding and use a tunnel:
-
-```sh
-ssh -N -L 8000:127.0.0.1:8000 user@your-host
-```
-
-In the dashboard, click **New agent**, choose **OpenClaw** or **Hermes**, wait for **Stopped**, start it, and wait for **Ready**. Open the agent’s **Settings** tab and click **Open OpenClaw** or **Open Hermes** to open its native interface. For Hermes, choose a dashboard password of at least 12 characters when creating the agent, then sign in as `talos`. Configure your chosen model provider there; OpenRouter is optional. The instance starts without provider credentials, but an agent conversation still needs a usable model. Native provider credentials belong to that instance's private state. Alternatively, select OpenRouter in Talos and configure the shared key in Settings. After configuring a provider, use the agent’s Chat tab to converse directly in Talos; Settings retains access to the full native workspace.
-
-The OpenClaw UI link expires after ten minutes and is single-use. After pairing, OpenClaw stores a device credential in your browser; revoke devices in OpenClaw when necessary. Do not share pairing links. Stop/start retains configuration, workspace, channel credentials, and paired devices while replacing the container and its gateway token. Keep the seeded gateway token and allowed-origin environment references when editing OpenClaw's gateway configuration.
-
-Hermes uses its upstream password authentication and host-scoped session cookies. Each agent gets a distinct `<agent-id>.localhost` hostname so two Hermes instances can be used in the same browser. Keep the chosen password in your password manager. Talos stores a salted scrypt hash, never the plaintext password. Hermes owns subsequent native configuration changes; Talos has no password-reset flow. Stop/start preserves the private data volume and invalidates the previous dashboard session, so sign in again. The bundled s6 supervisor manages the dashboard and native gateway services; no model key is required to open setup.
-
-On a remote Docker host, the UI also needs a tunnel for its assigned port. Obtain it with `docker port <native-container-name>-ui 18789/tcp`, then add `ssh -N -L <port>:127.0.0.1:<port> user@your-host` before opening the native UI. For Hermes, open the generated `.localhost` URL after tunneling; modern browsers resolve it to loopback. The port changes on stop/start. The Talos tunnel alone does not forward this separate UI port.
-
-For the existing diagnostic/conversation flow, choose **OpenClaw** and check **Use Talos-managed conversations** when creating an agent. Hermes supports native mode only. Send a short synthetic message; include `[slow]` with the simulator to exercise cancellation. Existing agents keep managed mode. A start request on an already-ready agent is rejected: stop it first.
-
-### Native tools and connectivity
-
-The OpenClaw native image extends the pinned upstream image with `@openclaw/parallel-plugin@2026.9.6`, installed from its lockfile. The `parallel-free` search provider requires no API key; external service availability and limits still apply. Tool calls through a paid model can still cost money. `web_fetch` uses the outbound proxy, and shell/file tools run as the unprivileged container user against the private workspace.
-
-Hermes extends the pinned official image with browser dependencies, with its bundled Parallel key-free search selected at first boot. Search still depends on the external service's availability and limits. Native shell and file tools run as UID 10000 in `/opt/data/workspace`; `/opt/data` persists across starts. No OpenRouter account is required to provision either runtime.
-
-Telegram, Slack, and other integrations use the selected runtime's own plugins and account setup. They are not preconnected. Install/configure the required native plugin and supply your own account credentials. HTTP(S) clients must honor the supplied proxy variables or their integration's explicit proxy setting; raw TCP/UDP, inbound webhooks, LAN services, and tools requiring host privileges are not enabled by this setup. Telegram polling and Slack Socket Mode avoid public inbound ports, but channel-specific proxy support and credentials must be checked during setup. No external messages are sent by Talos provisioning.
-
-Both native images include Chromium. Hermes also bundles pinned `agent-browser`
-and `browser-use` CLIs so the first browser call does not install dependencies.
-Browsers use Talos's public-only Squid proxy, including loopback destinations;
-agents remain on internal Docker networks. The OpenClaw image carries a narrow
-patch to skip local DNS preflight for explicitly proxy-routed browser profiles.
-The proxy resolves names and denies private/metadata addresses and non-web ports.
-Direct browser profiles retain upstream DNS validation.
-
-Chromium runs without its nested process sandbox, as required by the existing
-Docker seccomp/no-new-privileges policy; the unprivileged container, dropped
-capabilities, read-only root filesystem, and restricted egress remain its boundary.
-OpenClaw's seeded `browser.ssrfPolicy.dangerouslyAllowPrivateNetwork` is needed
-to admit an explicit browser proxy; it does **not** grant private-network access
-through Squid. Keep the proxy and `--proxy-bypass-list=<-loopback>` together.
-Rebuild both native images to install the browser dependencies. Existing OpenClaw
-configurations are user-owned and are not overwritten: copy the `browser` block
-from `worker/runtime.py:native_config` into their native settings when opting in.
-Host package installation and Docker-backed nested sandboxes remain unavailable.
-
-Native instances keep internal Docker bridges. A shared Squid proxy allows public HTTP on port 80 and HTTPS CONNECT on port 443, denying private, loopback, link-local, and reserved destinations after DNS resolution. A separate small TCP relay per instance forwards only to that instance's UI and publishes only on `127.0.0.1`. Neither the relay nor the proxy mounts agent state or credentials. These are container/network boundaries for a trusted local administrator, not enterprise tenant isolation or protection against all prompt injection. External content can influence an agent with full native tools and its configured credentials.
-
 ## Operations and diagnostics
 
 `GET /api/v1/agents/{id}/availability` reads durable runtime/model/setup/connection
@@ -178,7 +178,7 @@ Create/start/stop/delete/dashboard return HTTP 202 and an operation ID. **Queued
 
 Every agent has a Chat tab in Talos. Native chat uses the runtime’s own model, tools, and persistent Talos conversation; configure providers in the native workspace under Settings. OpenClaw uses its gateway protocol; Hermes uses its structured native CLI inside the owned container. The latest 20 Talos messages are loaded from the server on reload. Conversations started separately in the native dashboard or channels remain separate. Interactive native approvals and setup are available in the full runtime interface. Only one unresolved diagnostic is admitted per managed agent. Messages are limited to 4,000 characters; event pages contain up to 100 records. Cancellation remains a request until confirmed by the runtime. **Unknown** means delivery or completion could not be confirmed; stop the agent, wait for the stop operation, then start it before sending another message. Restarting a worker never retries an uncertain message.
 
-Stop closes gateway admission and preserves private agent state. A subsequent start creates a fresh container and credentials over the existing state volume. Gateway credentials expire after 30 days; stop/start renews them. Delete removes that agent's labeled resources and private credentials while retaining database history. Diagnostic input and output are stored in PostgreSQL; use synthetic data here. The dashboard remembers recent operation/run IDs in browser storage; full history browsing is deferred.
+Stop closes gateway admission and preserves private agent state. A subsequent start creates a fresh container and credentials over the existing state volume. Gateway credentials expire after 30 days; stop/start renews them. Delete removes that agent's labeled resources and private credentials while retaining database history. Diagnostic input and output are stored in PostgreSQL; use synthetic data here. The dashboard remembers recent operation IDs in browser storage and clears them on logout; full history browsing is deferred.
 
 ## Local checks
 
@@ -195,7 +195,7 @@ pnpm --dir frontend typecheck
 pnpm --dir frontend build
 ```
 
-Run `pnpm --dir frontend dev` for hot reload while Compose is running. Vite binds to loopback and uses `TALOS_PORT` from the root `.env` file or environment for API requests (8000 by default). UI verification is manual. There are no GitHub Actions workflows, browser-test dependencies, or end-to-end test suites.
+Run `pnpm --dir frontend dev` for hot reload while Compose is running. Vite binds to loopback and uses `TALOS_PORT` from the root `.env` file or environment for API requests (8000 by default). Browser verification uses the existing browser tooling; no browser-test framework is installed. Administrator API restart checks are in `tests/integration/test_admin_auth_process.py` and use real API subprocesses with a disposable PostgreSQL schema. There are no GitHub Actions workflows.
 
 The focused OpenClaw protocol check uses two real containers, synthetic model responses, and normal named volumes by default. Its trusted runner needs Docker access and removes its own runtime resources:
 
@@ -356,9 +356,9 @@ connection. Streaming errors and truncated responses fail explicitly; the gatewa
 does not retry potentially billed requests. Provider-side cancellation and billing
 vary, so cancelling cannot undo charges already incurred.
 
-The picker is part of the existing **local-only, unauthenticated** operator UI.
-Do not expose it publicly; employee accounts and authorization remain future work.
-Subscription sharing, spending budgets, and API fallback are not included. The protocol proof covers the real pinned OpenClaw container with a
+The picker is part of the **administrator-authenticated** dashboard. Employees access
+their assigned agents through approved Telegram/Slack identities. Native subscription
+sharing and API fallback are not included. The protocol proof covers the real pinned OpenClaw container with a
 controlled upstream transport, including model changes, provider failures and
 cancellation. To opt into one paid DeepSeek V4 Flash check as well, run
 the verifier with your key mounted read-only (never pass the key value on the
@@ -382,7 +382,14 @@ makes a short request with provider defaults (and therefore no fixed token budge
 
 Backups are manual. After stopping agents, stop API/worker/gateway writes, then take a consistent PostgreSQL backup and volume snapshots. Preserve the `worker-state` volume, each agent's state/config volumes, `.env`, the checked-out commit, and runtime digest alongside the database. Default platform volume names are `talos_postgres-data` and `talos_worker-state`; dynamic agent resources carry `io.talos.project`, `io.talos.installation`, and `io.talos.agent` labels. Protect these backups: worker-state and configuration volumes contain workload credentials. A database dump alone cannot restore the installation.
 
-For updates, retain those backups, keep the Compose project and installation identifiers unchanged, check out a reviewed commit, pull its approved runtime digest, and rerun `docker compose up --build -d`. Migrations run before services start. Do not edit runtime pins without validating the corresponding lifecycle, authentication, and driver contracts. Automated rollback, runtime upgrades, and backup/restore orchestration are not implemented; restore the matching database, volumes, and code together if rollback is needed.
+For updates, retain those backups, keep the Compose project and installation identifiers unchanged, check out a reviewed commit, pull its approved runtime digest, and rerun `docker compose up --build -d`. Migrations run before services start. When upgrading an existing local HTTP installation,
+add `TALOS_ADMIN_COOKIE_SECURE=false` to its `.env` explicitly, bootstrap the administrator
+after migration, hard-refresh the dashboard to load the login UI, and sign in.
+Existing agent/employee data is retained; the first
+administrator bootstrap does not alter it. Reset requires host access and never deletes
+agents, credentials, conversations, or usage.
+
+Do not edit runtime pins without validating the corresponding lifecycle, authentication, and driver contracts. Automated rollback, runtime upgrades, and backup/restore orchestration are not implemented; restore the matching database, volumes, and code together if rollback is needed.
 
 ## Troubleshooting
 
