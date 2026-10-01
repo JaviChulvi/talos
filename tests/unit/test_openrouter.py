@@ -119,7 +119,77 @@ def test_native_reset_preserves_admitted_request_unless_token_revoked(monkeypatc
     else:
         assert result.status_code == 200
         assert ("[DONE]" in result.text) is not revoke
+        assert ("inference_error" in result.text) is revoke
         assert state["closed"]
+
+
+@pytest.mark.parametrize(
+    "failure", ["truncated", "revoked", "output_limit", "read_error", "idle_timeout", "deadline"]
+)
+def test_native_stream_failures_are_explicit_and_finalize_once(
+    monkeypatch, native_accounting, failure
+):
+    from decimal import Decimal
+
+    from gateway import main
+
+    state = {"allowed": True, "closed": False, "cancelled": False, "calls": 0}
+    monkeypatch.setattr(main, "native_selection", lambda _: {"model_id": "test/model"})
+    monkeypatch.setattr(main, "validate_token", lambda _: state["allowed"])
+    monkeypatch.setattr(main, "provider_key", lambda: "synthetic")
+    monkeypatch.setattr(main.get_settings(), "inference_max_output_chars", 1000)
+    if failure == "deadline":
+        monkeypatch.setattr(main.get_settings(), "inference_timeout_seconds", 0.2)
+    wire = b'data: {"choices":[{"delta":{"content":"partial"}}],"usage":{"cost":0.25}}\n\n'
+
+    class Reply(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            try:
+                if failure == "revoked":
+                    state["allowed"] = False
+                yield wire
+                if failure == "output_limit":
+                    yield b"x" * 6001
+                elif failure == "read_error":
+                    raise httpx.ReadError("private-provider-details")
+                elif failure == "idle_timeout":
+                    raise httpx.ReadTimeout("private-provider-details")
+                elif failure == "deadline":
+                    await asyncio.Event().wait()
+            finally:
+                state["cancelled"] = True
+
+        async def aclose(self):
+            state["closed"] = True
+
+    def upstream(_):
+        state["calls"] += 1
+        return httpx.Response(200, stream=Reply())
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(transport=httpx.MockTransport(upstream), **kw),
+    )
+    result = TestClient(main.app).post(
+        "/native/v1/chat/completions", json={**BODY, "stream": True}, headers=HEADERS
+    )
+    assert result.status_code == 200
+    assert result.content.startswith(wire)
+    assert '"type": "inference_error"' in result.text
+    assert "[DONE]" not in result.text and "private-provider-details" not in result.text
+    assert state["closed"] and state["calls"] == 1
+    if failure == "deadline":
+        assert state["cancelled"]
+    assert len(native_accounting) == 1
+    assert native_accounting[0]["outcome"] == {
+        "revoked": "revoked",
+        "output_limit": "output_limit",
+        "idle_timeout": "timed_out",
+        "deadline": "timed_out",
+    }.get(failure, "failed")
+    assert native_accounting[0]["cost"] == Decimal("0.250000000000")
 
 
 @pytest.mark.parametrize("streaming", [True, False])
