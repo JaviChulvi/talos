@@ -31,7 +31,9 @@ class TransportError(Exception):
 def split_response(value: str) -> list[str]:
     # 3000 UTF-16 code units also respects Telegram's 4096-character ceiling.
     # Bound very large runtime results without streaming unlimited messages.
-    value = value[:24000]
+    if len(value) > 24000:
+        notice = "\n\n[Respuesta recortada. Pide al agente una respuesta más breve.]"
+        value = value[: 24000 - len(notice)] + notice
     parts, current, size = [], [], 0
     for char in value:
         width = 2 if ord(char) > 0xFFFF else 1

@@ -700,8 +700,12 @@ class Worker:
             except OperationalError:
                 raise
             except Exception as error:
-                error_message = f"{type(error).__name__}: runtime recovery failed"
-                logging.error("Recovery failed for agent %s: %s", agent.id, type(error).__name__)
+                error_message = (
+                    str(error)
+                    if isinstance(error, RuntimeReadinessError)
+                    else f"{type(error).__name__}: runtime recovery failed"
+                )
+                logging.error("Recovery failed for agent %s: %s", agent.id, error_message)
             with self.sessions.begin() as session:
                 current = session.get(Agent, agent.id, with_for_update=True)
                 if (

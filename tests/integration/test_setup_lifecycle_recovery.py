@@ -352,8 +352,18 @@ def test_failed_first_install_can_be_removed_with_an_empty_application(
 
 
 @pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (
+            RuntimeReadinessError("Restore edited setup files before Apply", code="edited"),
+            "Restore edited setup files before Apply",
+        ),
+        (RuntimeError("private-provider-details"), "RuntimeError: runtime recovery failed"),
+    ],
+)
 def test_recovery_checks_applied_receipt_and_grandfathers_legacy_agents(
-    client, worker, session_maker, running_role_agent, monkeypatch, legacy
+    client, worker, session_maker, running_role_agent, monkeypatch, legacy, error, expected, caplog
 ):
     running = running_role_agent
     _, network = worker.names(running.id)
@@ -363,7 +373,7 @@ def test_recovery_checks_applied_receipt_and_grandfathers_legacy_agents(
             agent = session.get(Agent, running.id)
             agent.applied_application = {**agent.applied_application, "legacy_receipt": True}
             agent.selected_application = agent.applied_application
-    inspect = Mock(side_effect=RuntimeReadinessError("Application receipt mismatch"))
+    inspect = Mock(side_effect=error)
     monkeypatch.setattr("worker.lifecycle.verify_setup", inspect)
     worker.recover(yield_to_operations=False)
     with session_maker() as session:
@@ -372,7 +382,9 @@ def test_recovery_checks_applied_receipt_and_grandfathers_legacy_agents(
         assert agent.current_incarnation_id == running.incarnation.id
         assert session.get(WorkloadIncarnation, running.incarnation.id).revoked_at is None
         if not legacy:
-            assert agent.last_error == "RuntimeReadinessError: runtime recovery failed"
+            assert agent.last_error == expected
+            assert expected in caplog.text
+    assert "private-provider-details" not in caplog.text
     assert running.container.status == "running"
     if legacy:
         inspect.assert_not_called()
@@ -390,6 +402,12 @@ def test_recovery_checks_applied_receipt_and_grandfathers_legacy_agents(
         assert inspect.call_args.kwargs == {"discover": False}
         assert inspect.call_args.args[4] == running.application
         assert not validate_token(running.token)
+        inspect.side_effect = None
+        worker.recover(yield_to_operations=False)
+        with session_maker() as session:
+            agent = session.get(Agent, running.id)
+            assert agent.observed_state == "ready" and agent.last_error is None
+        assert validate_token(running.token)
 
 
 def test_migrated_legacy_container_recreation_recovers_crash_after_create(

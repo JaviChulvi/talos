@@ -22,7 +22,13 @@ from gateway.identity import (
     selected_request,
     validate_token,
 )
-from gateway.openrouter import UsageObserver, observe_usage, provider_key, provider_key_source
+from gateway.openrouter import (
+    InferenceError,
+    UsageObserver,
+    observe_usage,
+    provider_key,
+    provider_key_source,
+)
 
 
 @asynccontextmanager
@@ -188,8 +194,7 @@ async def native_completion(request: Request):
             async with asyncio.timeout(get_settings().inference_timeout_seconds):
                 while True:
                     if not await asyncio.to_thread(validate_token, token):
-                        report["outcome"] = "revoked"
-                        return
+                        raise InferenceError("Native OpenRouter access was revoked", "revoked")
                     if not payload.get("stream") and await request.is_disconnected():
                         report["outcome"] = "cancelled"
                         return
@@ -205,17 +210,19 @@ async def native_completion(request: Request):
                     pending = None
                     size += len(chunk)
                     if size > get_settings().inference_max_output_chars * 6:
-                        report["outcome"] = "output_limit"
-                        return
+                        raise InferenceError(
+                            "OpenRouter output exceeded the size limit", "output_limit"
+                        )
                     if payload.get("stream"):
                         observer.feed(chunk)
                     yield chunk
-                if (
-                    payload.get("stream")
-                    and observer.done
-                    and report["outcome"] != "provider_error"
-                ):
+                if payload.get("stream") and report["outcome"] != "provider_error":
+                    if not observer.done:
+                        raise InferenceError("OpenRouter returned an incomplete response")
                     report["outcome"] = "completed"
+        except InferenceError as error:
+            report["outcome"] = error.outcome
+            raise
         except (asyncio.CancelledError, GeneratorExit):
             report["outcome"] = "cancelled"
             raise
@@ -232,7 +239,28 @@ async def native_completion(request: Request):
                 await finish()
 
     if payload.get("stream"):
-        return StreamingResponse(chunks(), media_type="text/event-stream")
+
+        async def events():
+            try:
+                async with aclosing(chunks()) as stream:
+                    async for part in stream:
+                        yield part
+            except (InferenceError, TimeoutError, httpx.HTTPError) as error:
+                message = (
+                    str(error)
+                    if isinstance(error, InferenceError)
+                    else "OpenRouter request timed out"
+                    if isinstance(error, (TimeoutError, httpx.TimeoutException))
+                    else "OpenRouter connection failed"
+                )
+                # End any unfinished upstream frame before the explicit error event.
+                yield (
+                    "\n\ndata: "
+                    + json.dumps({"error": {"message": message, "type": "inference_error"}})
+                    + "\n\n"
+                )
+
+        return StreamingResponse(events(), media_type="text/event-stream")
     result = bytearray()
     try:
         async with aclosing(chunks()) as stream:
@@ -244,6 +272,8 @@ async def native_completion(request: Request):
         return parsed
     except ValueError:
         raise HTTPException(502, "OpenRouter returned an incomplete response") from None
+    except InferenceError as error:
+        raise HTTPException(502, str(error)) from None
     finally:
         # A complete body may arrive before a read failure. Keep its reported charge.
         try:

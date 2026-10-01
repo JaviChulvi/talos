@@ -113,6 +113,9 @@ def record_acceptance(session, inbox, outbox):
     run = session.get(Run, inbox.run_id)
     if run.status != "completed" or run.source != "employee" or not run.output.strip():
         return
+    if "".join(outbox.parts) != run.output:
+        outbox.code = "response_truncated"
+        return
     for challenge in session.scalars(
         select(DeliveryChallenge)
         .where(
