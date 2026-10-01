@@ -437,6 +437,10 @@ export function AgentWorkspace({
   }, [selectedId, runId, selectedRun?.output, active]);
 
   async function mutate(request: Mutation) {
+    if (request.kind === "dashboard" && (!request.popup || request.popup.closed)) {
+      request.popup = window.open("about:blank", "_blank");
+      if (request.popup) request.popup.opener = null;
+    }
     setSubmitting(true);
     setActionError(null);
     try {
@@ -593,15 +597,12 @@ export function AgentWorkspace({
 
   function openNativeWorkspace() {
     if (!selected || writesDisabled || operationActive) return;
-    const popup = window.open("about:blank", "_blank");
-    if (popup) popup.opener = null;
     void mutate({
       path: `/agents/${selected.id}/dashboard`,
       method: "POST",
       key: crypto.randomUUID(),
       kind: "dashboard",
       agentId: selected.id,
-      popup,
     });
   }
 
