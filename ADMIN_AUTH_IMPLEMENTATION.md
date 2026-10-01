@@ -73,3 +73,16 @@ behavior, finalize evidence and limitations. Keep this checkpoint updated per le
   mutations require X-Talos-Request and exact configured Origin when present.
 - Focused rerun checks fresh application instances for session/cooldown persistence.
 - API level deliberately locks old UI until the next stack level.
+
+### Dashboard layer
+
+- API: `72c8453`, draft https://github.com/JaviChulvi/talos/pull/48.
+- Gate implemented with existing UI controls and one shared raw/JSON fetch path. Only
+  auth status is fetched before setup/login; all dashboard components mount afterward.
+- React/native storage events clear other tabs; operation ID cache removed on logout.
+- Frontend lint/typecheck/build passed. Real browser setup, wrong password, pre-auth
+  request isolation, login, reload persistence, cookie flags and two-tab logout verified.
+- Actual host bootstrap prompts hid the synthetic Unicode/spaced password correctly.
+- Local browser proof uses disposable DB on port 55439 and API preview port 18004.
+- Remaining: publish UI draft; final process restart/cooldown/reset/expiry browser proof,
+  complete docs, final regression checks, adjacent/full stack links, cleanup.

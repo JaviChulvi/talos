@@ -229,6 +229,8 @@ export function AgentWorkspace({
   children,
   operationIds,
   onOperation,
+  onSignOut,
+  signingOut,
 }: {
   page: string;
   connected: boolean;
@@ -236,6 +238,8 @@ export function AgentWorkspace({
   children: ReactNode;
   operationIds: Record<string, string>;
   onOperation: (agentId: string, id: string) => void;
+  onSignOut: () => void;
+  signingOut: boolean;
 }) {
   const settingsAgentId = /^agents\/([^/]+)\/settings$/.exec(page)?.[1];
   const settingsActive = !!settingsAgentId;
@@ -872,6 +876,9 @@ export function AgentWorkspace({
             ))}
           </SidebarMenu>
           <Separator />
+          <Button variant="ghost" onClick={onSignOut} disabled={signingOut}>
+            {signingOut ? "Signing out…" : "Sign out"}
+          </Button>
           <div className="px-2 pb-1 text-xs text-muted-foreground">
             <div className="flex items-center gap-2">
               <span
@@ -881,13 +888,6 @@ export function AgentWorkspace({
                 )}
               />
               {connected ? "Local workspace" : "Local API unavailable"}
-              <a
-                href="/docs"
-                aria-label="API reference"
-                className="ml-auto rounded p-1 hover:text-foreground"
-              >
-                <ExternalLink className="size-3.5" />
-              </a>
             </div>
             <p className="mt-1 pl-3.5">
               {version ? `Talos v${version}` : "Connecting…"}

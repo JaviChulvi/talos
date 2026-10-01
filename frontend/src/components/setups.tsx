@@ -10,7 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { ConnectorFields, TargetFields } from "@/components/setup-draft-fields";
-import { api, errorMessage } from "@/lib/api";
+import { apiResponse, api, errorMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -434,8 +434,8 @@ export function Setups({ setupId }: { setupId?: string }) {
     assetRequest.current = controller;
     setAsset({ path, text: "Loading…" });
     try {
-      const response = await fetch(
-        `/api/v1/setups/${selected.id}/draft/assets?path=${encodeURIComponent(path)}`,
+      const response = await apiResponse(
+        `/setups/${selected.id}/draft/assets?path=${encodeURIComponent(path)}`,
         { signal: controller.signal },
       );
       if (!response.ok)
