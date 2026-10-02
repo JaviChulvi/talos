@@ -60,7 +60,7 @@ def installer(tmp_path, monkeypatch, manifest):
     monkeypatch.setattr(host, "checked_bundle", lambda _: manifest)
     monkeypatch.setattr(host.Installation, "preflight_resources", lambda _: None)
     monkeypatch.setattr(host.Installation, "preflight_ports", lambda _: None)
-    monkeypatch.setattr(host.Installation, "record_release", lambda _: None, raising=False)
+    monkeypatch.setattr(host.Installation, "record_release", lambda _: None)
     monkeypatch.setattr(host.Installation, "ready", lambda _: None)
     monkeypatch.setattr(
         host.Installation,
@@ -181,6 +181,23 @@ def test_retry_refuses_changed_image_under_same_release_version(
     with pytest.raises(ValueError, match="manifest changed"):
         install(host.Installation(installer.directory), bundle)
     assert (installer.directory / ".env").read_bytes() == original
+
+
+def test_ready_install_retry_cannot_bypass_maintenance(installer, bundle, monkeypatch):
+    monkeypatch.setattr(
+        host.Installation, "compose", lambda *a, **kw: SimpleNamespace(stdout="exists")
+    )
+    install(installer, bundle)
+    original = installer.read("operation.json")
+    monkeypatch.setattr(
+        host.Installation, "maintenance_status", lambda _: {"maintenance": {"active": True}}
+    )
+    monkeypatch.setattr(
+        host.Installation, "compose", lambda *a, **kw: pytest.fail("Started in maintenance")
+    )
+    with pytest.raises(ValueError, match="in maintenance"):
+        install(host.Installation(installer.directory), bundle)
+    assert installer.read("operation.json") == original
 
 
 def test_developer_directory_is_never_adopted(installer, bundle):

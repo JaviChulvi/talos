@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError
 from backend.app.availability import record_check
 from backend.app.config import get_settings
 from backend.app.diagnostics import append_event, authorized_run
+from backend.app.installation import writable
 from backend.app.models import ACTIVE_RUN_STATUSES, Agent, Run
 from worker.openclaw import GatewayError
 from worker.runtime import runtime_error_message
@@ -99,6 +100,8 @@ class DiagnosticManager:
 
     def _claim(self, run_id: UUID) -> Run | None:
         with self.sessions.begin() as session:
+            if not writable(session):
+                return None
             agent_id = session.scalar(select(Run.agent_id).where(Run.id == run_id))
             agent = session.scalar(select(Agent).where(Agent.id == agent_id).with_for_update())
             run = session.scalar(select(Run).where(Run.id == run_id).with_for_update())

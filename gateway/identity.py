@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from backend.app.db import session_factory
+from backend.app.installation import writable
 from backend.app.models import Agent, Employee, InferenceCall, Run, WorkloadIncarnation
 from backend.app.usage import employee_budget
 
@@ -129,6 +130,10 @@ def admit_inference(token: str, run_id: str | None = None, native_model: str | N
     digest = hashlib.sha256(token.encode()).hexdigest()
     try:
         with session_factory().begin() as session:
+            if not writable(session):
+                raise AdmissionDenied(
+                    503, "maintenance_active", "Installation maintenance is active"
+                )
             agent = session.scalar(
                 select(Agent)
                 .join(WorkloadIncarnation, Agent.current_incarnation_id == WorkloadIncarnation.id)

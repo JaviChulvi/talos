@@ -560,12 +560,48 @@ def provider_settings(monkeypatch, tmp_path):
         "AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(transport), **kwargs),
     )
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
     from backend.app.auth import require_admin
+    from backend.app.db import get_db
+    from backend.app.models import InstallationState
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    InstallationState.__table__.create(engine)
+    state.sessions = sessionmaker(engine)
+    with state.sessions.begin() as session:
+        session.add(InstallationState(id=1))
+
+    def database():
+        with state.sessions() as session:
+            yield session
 
     app = create_app()
     app.dependency_overrides[require_admin] = lambda: None
-    with TestClient(app, headers={"X-Talos-Request": "1"}) as client:
-        yield client, path, state
+    app.dependency_overrides[get_db] = database
+    try:
+        with TestClient(app, headers={"X-Talos-Request": "1"}) as client:
+            yield client, path, state
+    finally:
+        engine.dispose()
+
+
+def test_missing_installation_state_blocks_provider_secret_mutations(provider_settings):
+    from backend.app.models import InstallationState
+
+    client, path, state = provider_settings
+    with state.sessions.begin() as session:
+        session.delete(session.get(InstallationState, 1))
+    path.write_text("existing-provider-key")
+    endpoint = "/api/v1/inference/provider"
+    assert client.put(endpoint, json={"key": "replacement-key"}).status_code == 503
+    assert client.delete(endpoint).status_code == 503
+    assert path.read_text() == "existing-provider-key"
+    assert not state.calls
 
 
 def test_app_key_save_rotate_remove_without_exposure(provider_settings, caplog):

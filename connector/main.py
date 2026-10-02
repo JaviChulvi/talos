@@ -11,6 +11,7 @@ from sqlalchemy import select, text
 from backend.app.availability import heartbeat
 from backend.app.connections import Connection, ConnectionBindingError, load_bound_secrets
 from backend.app.db import get_engine, session_factory
+from backend.app.installation import writable
 from backend.app.models import ChannelCursor, ChannelProbe, EmployeeChannel
 from connector.delivery import Delivery, TransportError
 from connector.slack import Slack
@@ -28,6 +29,8 @@ class Connector:
 
     def configurations(self):
         with self.sessions() as session:
+            if not writable(session):
+                return []
             return [
                 (channel, session.get(Connection, channel.connection_id))
                 for channel in session.scalars(
@@ -39,6 +42,8 @@ class Connector:
         self, channel_id, revision, version, state, code, identity=None, *, allow_disabled=False
     ):
         with self.sessions.begin() as session:
+            if not writable(session):
+                return False
             channel = session.get(EmployeeChannel, channel_id)
             # Same connection -> channel order as credential rotation.
             connection = session.get(
@@ -60,6 +65,9 @@ class Connector:
             cursor.credential_version_id, cursor.revision = version, revision
             cursor.state, cursor.code, cursor.checked_at = state, code, datetime.now(UTC)
             if identity:
+                if channel.enabled and channel.provider == "slack" and cursor.reconnect_required:
+                    cursor.accept_after = datetime.now(UTC)
+                    cursor.reconnect_required = False
                 if cursor.provider_identity != identity["bot_id"]:
                     cursor.offset = 0
                 cursor.provider_identity = identity["bot_id"]
@@ -98,8 +106,29 @@ class Connector:
                     while True:
                         with self.sessions() as session:
                             cursor = session.get(ChannelCursor, channel.id)
-                            offset = cursor.offset
+                            offset = -1 if cursor.reconnect_required else cursor.offset
+                            reconnect = cursor.reconnect_required
                         updates = await transport.poll(offset)
+                        if reconnect:
+                            with self.sessions.begin() as session:
+                                if not writable(session):
+                                    return
+                                cursor = session.get(
+                                    ChannelCursor, channel.id, with_for_update=True
+                                )
+                                if any(
+                                    not isinstance(update, dict)
+                                    or type(update.get("update_id")) is not int
+                                    for update in updates
+                                ):
+                                    raise TransportError("invalid_updates")
+                                cursor.offset = max(
+                                    (update["update_id"] + 1 for update in updates), default=0
+                                )
+                                cursor.accept_after = datetime.now(UTC)
+                                cursor.reconnect_required = False
+                            continue
+
                         for update in updates:
                             if (
                                 not isinstance(update, dict)
@@ -107,6 +136,8 @@ class Connector:
                             ):
                                 raise TransportError("invalid_updates")
                             with self.sessions.begin() as session:
+                                if not writable(session):
+                                    return
                                 current = session.get(
                                     EmployeeChannel, channel.id, populate_existing=True
                                 )
@@ -252,6 +283,8 @@ class Connector:
 
     async def process_check(self):
         with self.sessions.begin() as session:
+            if not writable(session):
+                return
             probe = session.scalar(
                 select(ChannelProbe)
                 .where(ChannelProbe.status == "queued")
@@ -309,8 +342,12 @@ class Connector:
             elif verified():
                 if channel.enabled:
                     with self.sessions() as session:
-                        offset = session.get(ChannelCursor, channel.id).offset
+                        cursor = session.get(ChannelCursor, channel.id)
+                        offset = -1 if cursor.reconnect_required else cursor.offset
+                        reconnect = cursor.reconnect_required
                     updates = await transport.poll(offset)
+                    if reconnect:
+                        updates = []
                     for update in updates:
                         if not isinstance(update, dict) or type(update.get("update_id")) is not int:
                             raise TransportError("invalid_updates")
