@@ -63,14 +63,14 @@ case "$security" in *rootless*) fail 'Rootless Docker is outside this beta' ;; e
 machine=$(uname -m)
 case "$(uname -s)/$machine" in
   Darwin/arm64)
-    host_os=macos; arch=arm64; docker_socket=/var/run/docker.sock.raw
+    host_os=macos; arch=arm64; docker_socket=/var/run/docker.sock.raw; worker_socket=/var/run/docker.sock
     case "$(docker info --format '{{.OperatingSystem}}')" in *Docker\ Desktop*) ;; *) fail 'This Mac requires local Docker Desktop' ;; esac ;;
   Linux/x86_64)
     [ -r /etc/os-release ] || fail 'Ubuntu 24.04 is required'
     # Operating system metadata is supplied by the host, never a downloaded release.
     . /etc/os-release
     [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 24.04 ] || fail 'This beta supports Ubuntu 24.04 x86_64 only'
-    host_os=ubuntu; arch=amd64; docker_socket=${endpoint#unix://} ;;
+    host_os=ubuntu; arch=amd64; docker_socket=${endpoint#unix://}; worker_socket=$docker_socket ;;
   *) fail 'Supported hosts: Ubuntu 24.04 x86_64 and Apple Silicon macOS with Docker Desktop' ;;
 esac
 server_arch=$(docker info --format '{{.Architecture}}')
@@ -169,7 +169,7 @@ for key in archive identity; do
   if [ "$found" = false ]; then mounts+=(-v "$parent:$parent"); mounted_dirs+=("$parent"); fi
 done
 
-args=("$command" --directory "$install_dir" --bundle /run/talos-release --platform "linux/$arch" --host-os "$host_os" --owner-uid "$(id -u)" --owner-gid "$(id -g)" --docker-socket "$docker_socket" --port "$port" --management-image "$manager")
+args=("$command" --directory "$install_dir" --bundle /run/talos-release --platform "linux/$arch" --host-os "$host_os" --owner-uid "$(id -u)" --owner-gid "$(id -g)" --docker-socket "$worker_socket" --port "$port" --management-image "$manager")
 [ -z "$domain" ] || args+=(--domain "$domain")
 [ -z "$archive" ] || args+=(--archive "$archive")
 [ -z "$identity" ] || args+=(--identity "$identity")
