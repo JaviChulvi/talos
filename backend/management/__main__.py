@@ -15,7 +15,7 @@ from backend.management.installation import Installation, checked_bundle
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
-        "command", choices=("install", "status", "doctor", "backup", "restore")
+        "command", choices=("install", "status", "doctor", "backup", "restore", "update")
     )
     result.add_argument("--directory", type=Path, required=True)
     result.add_argument("--bundle", type=Path, required=True)
@@ -131,6 +131,10 @@ def main(argv=None):
                         "Keep the old installation fenced; "
                         "explicitly reconnect each employee channel."
                     )
+                elif args.command == "update":
+                    from backend.management.update import update
+
+                    update(installation, args.bundle, args.archive, args.identity)
         return 0
     except (
         ValueError,

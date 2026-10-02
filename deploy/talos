@@ -5,7 +5,7 @@ umask 077
 fail() { printf 'Talos: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
-Usage: talos {install|status|doctor|backup|restore} [options]
+Usage: talos {install|status|doctor|backup|restore|update} [options]
   --directory PATH       Installation directory (default ~/.talos)
   --bundle PATH          Downloaded, checksum-verified release assets
   --version VERSION      Download a private release using authenticated gh
@@ -23,7 +23,7 @@ EOF
 }
 [ "$#" -gt 0 ] || { usage; exit 0; }
 command=$1; shift
-case "$command" in install|status|doctor|backup|restore) ;; -h|--help|help) usage; exit 0 ;; *) fail 'Unknown command; use --help' ;; esac
+case "$command" in install|status|doctor|backup|restore|update) ;; -h|--help|help) usage; exit 0 ;; *) fail 'Unknown command; use --help' ;; esac
 install_dir=${TALOS_DIRECTORY:-$HOME/.talos}
 bundle=; version=; archive=; identity=; domain=; port=8000
 skip_admin=false; cancel=false; source_fenced=false; acme_directory=; acme_root=
