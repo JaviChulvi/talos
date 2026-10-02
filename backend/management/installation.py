@@ -289,6 +289,10 @@ class Installation:
         for role, reference in images.items():
             values[f"TALOS_{role.upper()}_IMAGE"] = reference
         content = (bundle / "compose.release.yaml").read_text()
+        if access["mode"] == "domain":
+            from backend.management.access import configure_https
+
+            content, values = configure_https(self, content, values, bundle)
         atomic_text(
             env_path,
             "".join(f"{key}={value}\n" for key, value in values.items()),
@@ -359,8 +363,6 @@ class Installation:
         domain: str | None,
         skip_admin: bool,
     ) -> None:
-        if domain:
-            raise ValueError("Domain access is supplied by the next stack layer")
         manifest = checked_bundle(bundle)
         if platform not in manifest["images"]:
             raise ValueError("Release does not support this container architecture")
@@ -410,6 +412,10 @@ class Installation:
             )
         self.journal("install", "configure")
         self.preflight_resources()
+        if domain:
+            from backend.management.access import validate_domain
+
+            validate_domain(domain, host_os, test_acme=bool(self.read("acceptance-acme.json", {})))
         self.write_config(bundle)
         self.preflight_ports()
         self.journal("install", "migrate")
@@ -418,6 +424,15 @@ class Installation:
         self.journal("install", "start")
         self.compose("up", "-d", "--pull", "never", "--no-build")
         self.ready()
+        if domain:
+            from backend.management.access import verify_https
+
+            verify_https(
+                domain,
+                root=(self.directory / "acceptance-acme-root.pem")
+                if self.read("acceptance-acme.json", {})
+                else None,
+            )
         self.journal("install", "bootstrap")
         code = (
             "from backend.app.db import session_factory; "

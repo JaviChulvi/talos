@@ -1,0 +1,7 @@
+{
+  admin off@ACME_OPTIONS@
+}
+
+@DOMAIN@ {
+  reverse_proxy api:8000
+}
