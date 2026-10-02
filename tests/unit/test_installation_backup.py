@@ -583,3 +583,64 @@ def test_finish_resume_preserves_a_different_operations_journal(tmp_path):
     with pytest.raises(snapshots.BackupError, match="belongs to another"):
         snapshots.finish_resume(SimpleNamespace(directory=tmp_path), "completed-owner")
     assert journal.read_text() == content
+
+
+def test_standalone_sanitize_registers_connection_tables_in_fresh_process(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from backend.app.connections import Connection
+    from backend.app.db import Base
+    from backend.app.models import ChannelCursor, EmployeeChannel, InstallationState
+
+    url = "sqlite:///" + str(tmp_path / "restored.sqlite")
+    engine = create_engine(url)
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        connection = Connection(name="Restored Telegram", purpose="channel")
+        session.add(connection)
+        session.flush()
+        channel = EmployeeChannel(
+            provider="telegram", name="Employee messages", connection_id=connection.id
+        )
+        session.add_all(
+            [
+                channel,
+                InstallationState(
+                    id=1,
+                    maintenance_operation_id="restore-owner",
+                    maintenance_kind="backup",
+                    maintenance_started_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        session.commit()
+        channel_id = channel.id
+    # The schema exists, but this new interpreter has never imported the API or
+    # connection models. A newly inserted cursor forces SQLAlchemy to resolve FKs.
+    environment = dict(os.environ, TALOS_DATABASE_URL=url)
+    environment.pop("TALOS_DATABASE_PASSWORD", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "backend.management.backup",
+            "_control",
+            "sanitize",
+            "restore-owner",
+            "backup",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["maintenance"]["operation_id"] == "restore-owner"
+    with Session(engine) as session:
+        cursor = session.get(ChannelCursor, channel_id)
+        assert cursor is not None and cursor.reconnect_required
+        assert cursor.state == "restored" and cursor.offset == 0
+        assert not session.get(EmployeeChannel, channel_id).enabled

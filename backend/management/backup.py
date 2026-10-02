@@ -958,6 +958,9 @@ def sanitize_restored_database(session):
     """Preserve employee data while making restored credentials and queues inert."""
     from sqlalchemy import delete, select, update
 
+    # The management subprocess does not import API routers. Register the target
+    # tables before flushing new cursors with connection-version foreign keys.
+    from backend.app import connections  # noqa: F401
     from backend.app.models import (
         ACTIVE_OPERATION_STATUSES,
         ACTIVE_RUN_STATUSES,
