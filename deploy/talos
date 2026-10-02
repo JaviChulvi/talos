@@ -1,3 +1,186 @@
 #!/bin/bash
-set -eu
-printf '%s\n' 'Talos release candidate tooling. Installation commands arrive in the next stack layer.'
+# Bash 3 (the system shell on supported Macs); no host Python, Node or source checkout.
+set -euo pipefail
+umask 077
+fail() { printf 'Talos: %s\n' "$*" >&2; exit 1; }
+usage() {
+  cat <<'EOF'
+Usage: talos {install|status|doctor} [options]
+  --directory PATH       Installation directory (default ~/.talos)
+  --bundle PATH          Downloaded, checksum-verified release assets
+  --version VERSION      Download a private release using authenticated gh
+  --domain DOMAIN        Linux HTTPS installation (default loopback HTTP)
+  --port PORT            Local HTTP port (default 8000)
+  --archive PATH         Manual backup destination / restore source
+  --identity PATH        age recovery identity, outside installation
+  --source-fenced        Confirm the original restore source is stopped and fenced
+  --skip-admin           Leave administrator bootstrap pending (install only)
+  --cancel-maintenance   Cancel a pre-write maintenance operation (status only)
+
+Download all private release assets together, or authenticate gh for --version.
+Authenticate Docker to GHCR using its normal credential store before installation.
+EOF
+}
+[ "$#" -gt 0 ] || { usage; exit 0; }
+command=$1; shift
+case "$command" in install|status|doctor) ;; -h|--help|help) usage; exit 0 ;; *) fail 'Unknown command; use --help' ;; esac
+install_dir=${TALOS_DIRECTORY:-$HOME/.talos}
+bundle=; version=; archive=; identity=; domain=; port=8000
+skip_admin=false; cancel=false; source_fenced=false; acme_directory=; acme_root=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --directory|--bundle|--version|--domain|--port|--archive|--identity|--acme-directory|--acme-root)
+      [ "$#" -ge 2 ] || fail "Missing value for $1"
+      case "$1" in
+        --directory) install_dir=$2 ;; --bundle) bundle=$2 ;; --version) version=$2 ;;
+        --domain) domain=$2 ;; --port) port=$2 ;; --archive) archive=$2 ;; --identity) identity=$2 ;;
+        --acme-directory) acme_directory=$2 ;; --acme-root) acme_root=$2 ;;
+      esac; shift 2 ;;
+    --skip-admin) skip_admin=true; shift ;;
+    --cancel-maintenance) cancel=true; shift ;;
+    --source-fenced) source_fenced=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "Unknown option $1" ;;
+  esac
+done
+case "$install_dir" in /*) ;; *) fail '--directory must be absolute' ;; esac
+case "$install_dir" in *:*|*,*|*$'\n'*) fail 'Installation path cannot contain a colon, comma or newline' ;; esac
+case "$port" in ''|*[!0-9]*) fail 'Invalid port' ;; esac
+[ "$port" -gt 0 ] && [ "$port" -le 65535 ] || fail 'Invalid port'
+[ -z "$bundle" ] || [ -z "$version" ] || fail 'Choose --bundle or --version'
+if [ -n "$acme_directory$acme_root" ]; then
+  [ "${TALOS_ACCEPTANCE_TEST:-}" = 1 ] || fail 'ACME overrides are for isolated acceptance fixtures only'
+  [ -n "$acme_directory" ] && [ -f "$acme_root" ] || fail 'Test ACME requires directory and root certificate'
+fi
+command -v docker >/dev/null || fail 'Docker is required. Install Docker Engine or Docker Desktop first.'
+context=$(docker context show) || fail 'Docker context is unavailable'
+endpoint=$(docker context inspect "$context" --format '{{.Endpoints.docker.Host}}')
+[ -z "${DOCKER_HOST:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ] || fail 'Unset DOCKER_HOST/DOCKER_CONTEXT; select a local context with docker context use'
+case "$endpoint" in unix:///*) ;; *) fail 'Only a local Docker context is supported' ;; esac
+docker info >/dev/null 2>&1 || fail 'Docker is unavailable. Start Docker Engine or Docker Desktop.'
+security=$(docker info --format '{{json .SecurityOptions}}')
+case "$security" in *rootless*) fail 'Rootless Docker is outside this beta' ;; esac
+machine=$(uname -m)
+case "$(uname -s)/$machine" in
+  Darwin/arm64)
+    host_os=macos; arch=arm64; docker_socket=/var/run/docker.sock.raw
+    case "$(docker info --format '{{.OperatingSystem}}')" in *Docker\ Desktop*) ;; *) fail 'This Mac requires local Docker Desktop' ;; esac ;;
+  Linux/x86_64)
+    [ -r /etc/os-release ] || fail 'Ubuntu 24.04 is required'
+    # Operating system metadata is supplied by the host, never a downloaded release.
+    . /etc/os-release
+    [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 24.04 ] || fail 'This beta supports Ubuntu 24.04 x86_64 only'
+    host_os=ubuntu; arch=amd64; docker_socket=${endpoint#unix://} ;;
+  *) fail 'Supported hosts: Ubuntu 24.04 x86_64 and Apple Silicon macOS with Docker Desktop' ;;
+esac
+server_arch=$(docker info --format '{{.Architecture}}')
+case "$arch/$server_arch" in amd64/x86_64|amd64/amd64|arm64/aarch64|arm64/arm64) ;; *) fail 'Docker architecture does not match the supported host' ;; esac
+[ -z "$domain" ] || [ "$host_os" = ubuntu ] || fail 'Domain HTTPS mode is supported on Linux only'
+if [ "$command" != install ] && [ "$command" != restore ]; then
+  [ -f "$install_dir/installation.json" ] || fail 'No managed Talos installation here. Developer installations cannot be adopted.'
+fi
+mkdir -p "$install_dir"
+install_dir=$(cd "$install_dir" && pwd -P)
+[ -w "$install_dir" ] || fail 'Installation directory is not writable'
+# A host lock also serializes downloads/pulls. The container holds a second flock during mutations.
+lock=$install_dir/.talos-lock
+if ! mkdir "$lock" 2>/dev/null; then
+  owner=$(cat "$lock/pid" 2>/dev/null || true)
+  case "$owner" in ''|*[!0-9]*) fail 'Installation lock is incomplete; inspect the active operation before removing .talos-lock' ;; esac
+  if kill -0 "$owner" 2>/dev/null; then fail 'Another Talos command is running'; fi
+  rm -f "$lock/pid"; rmdir "$lock" || fail 'Stale lock contains unexpected files'
+  mkdir "$lock" || fail 'Another Talos command acquired the installation lock'
+fi
+printf '%s\n' "$$" > "$lock/pid"
+cleanup() { rm -f "$lock/pid"; rmdir "$lock" 2>/dev/null || true; }
+trap cleanup EXIT
+if [ "$command" = install ] || [ "$command" = update ]; then
+  memory=$(docker info --format '{{.MemTotal}}'); cpus=$(docker info --format '{{.NCPU}}')
+  [ "$memory" -ge 7516192768 ] && [ "$cpus" -ge 4 ] || fail 'Allocate at least 8 GB RAM and 4 CPUs to Docker'
+  free_kb=$(df -Pk "$install_dir" | awk 'END {print $4}')
+  [ "$free_kb" -ge 31457280 ] || fail 'At least 30 GiB free installation disk space is required'
+fi
+if [ -n "$version" ]; then
+  case "$version" in *[!a-zA-Z0-9.-]*|'') fail 'Invalid explicit release version' ;; esac
+  command -v gh >/dev/null || fail '--version needs authenticated GitHub CLI, or download release assets in your browser and use --bundle'
+  mkdir -p "$install_dir/.downloads"
+  bundle=$(mktemp -d "$install_dir/.downloads/release.XXXXXX")
+  gh release download "$version" --repo JaviChulvi/talos --dir "$bundle" \
+    --pattern manifest.json --pattern talos --pattern checksums.txt --pattern release.env \
+    --pattern compose.release.yaml --pattern 'images-*.txt' --pattern 'Caddyfile*' \
+    || fail 'Private release download failed. Check GitHub repository access; retry retains installation state.'
+fi
+if [ -z "$bundle" ]; then
+  if [ -f "$install_dir/bundle/manifest.json" ]; then bundle=$install_dir/bundle
+  else bundle=$(cd "$(dirname "$0")" && pwd -P); fi
+fi
+[ -d "$bundle" ] || fail 'Release bundle directory is missing'
+bundle=$(cd "$bundle" && pwd -P)
+[ -f "$bundle/checksums.txt" ] || fail 'Download all release assets; checksums.txt is missing'
+# Do not source release.env. Even an authenticated bundle is data, never shell code.
+while IFS= read -r entry || [ -n "$entry" ]; do
+  [[ "$entry" =~ ^[a-f0-9]{64}\ \ [A-Za-z0-9_.-]+$ ]] || fail 'Malformed release checksum list'
+done < "$bundle/checksums.txt"
+if command -v sha256sum >/dev/null; then
+  (cd "$bundle" && sha256sum --check --status checksums.txt) || fail 'Release checksum validation failed'
+else
+  (cd "$bundle" && shasum -a 256 --check --status checksums.txt) || fail 'Release checksum validation failed'
+fi
+for asset in manifest.json talos compose.release.yaml release.env images-amd64.txt images-arm64.txt; do
+  [ -f "$bundle/$asset" ] && [ ! -L "$bundle/$asset" ] || fail "Missing asset: $asset"
+  grep -Eq "^[a-f0-9]{64}  $asset$" "$bundle/checksums.txt" || fail "Unchecked asset: $asset"
+done
+manager=
+while IFS='=' read -r key value; do
+  case "$key/$arch" in TALOS_MANAGEMENT_AMD64/amd64|TALOS_MANAGEMENT_ARM64/arm64) manager=$value ;; esac
+done < "$bundle/release.env"
+[[ "$manager" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$ ]] || fail 'Management image must be an immutable repository digest'
+if [ "$command" = install ] || [ "$command" = update ] || [ "$command" = restore ]; then
+  while IFS= read -r reference || [ -n "$reference" ]; do
+    [[ "$reference" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$ ]] || fail 'Invalid image in release pull list'
+    docker pull --platform "linux/$arch" "$reference" || fail 'Image pull failed. Check Docker GHCR credentials and disk space, then rerun.'
+  done < "$bundle/images-$arch.txt"
+else
+  docker image inspect "$manager" >/dev/null 2>&1 || fail 'Pinned management image is unavailable locally; use the original release bundle with install to retrieve it'
+fi
+# Mount only checked assets, even when a user downloaded the release into their home directory.
+mkdir -p "$install_dir/.downloads"
+verified_bundle=$(mktemp -d "$install_dir/.downloads/verified.XXXXXX")
+cp "$bundle/checksums.txt" "$verified_bundle/checksums.txt"
+while IFS= read -r entry || [ -n "$entry" ]; do
+  asset=${entry#*  }
+  cp "$bundle/$asset" "$verified_bundle/$asset"
+done < "$bundle/checksums.txt"
+bundle=$verified_bundle
+mounts=(-v "$docker_socket:/var/run/docker.sock" -v "$install_dir:$install_dir" -v "$bundle:/run/talos-release:ro")
+mounted_dirs=("$install_dir")
+for key in archive identity; do
+  path=${!key}
+  [ -n "$path" ] || continue
+  case "$path" in /*) ;; *) fail 'Archive and identity paths must be absolute' ;; esac
+  case "$path" in *:*|*,*|*$'\n'*) fail 'Unsupported archive or identity path' ;; esac
+  parent=$(dirname "$path"); mkdir -p "$parent"; parent=$(cd "$parent" && pwd -P)
+  docker_config=${DOCKER_CONFIG:-$HOME/.docker}
+  case "$docker_config/" in "$parent/"*) fail 'Use a dedicated backup/key directory so Docker credentials stay outside containers' ;; esac
+  [ "$parent" != / ] || fail 'Use a dedicated backup/key directory'
+  printf -v "$key" '%s/%s' "$parent" "$(basename "$path")"
+  found=false
+  for mounted in "${mounted_dirs[@]}"; do [ "$parent" != "$mounted" ] || found=true; done
+  if [ "$found" = false ]; then mounts+=(-v "$parent:$parent"); mounted_dirs+=("$parent"); fi
+done
+
+args=("$command" --directory "$install_dir" --bundle /run/talos-release --platform "linux/$arch" --host-os "$host_os" --owner-uid "$(id -u)" --owner-gid "$(id -g)" --docker-socket "$docker_socket" --port "$port" --management-image "$manager")
+[ -z "$domain" ] || args+=(--domain "$domain")
+[ -z "$archive" ] || args+=(--archive "$archive")
+[ -z "$identity" ] || args+=(--identity "$identity")
+[ "$skip_admin" = false ] || args+=(--skip-admin)
+[ "$cancel" = false ] || args+=(--cancel-maintenance)
+[ "$source_fenced" = false ] || args+=(--source-fenced)
+if [ -n "$acme_directory" ]; then
+  cp "$acme_root" "$install_dir/acceptance-acme-root.pem"
+  args+=(--acme-directory "$acme_directory" --acme-root "$install_dir/acceptance-acme-root.pem")
+fi
+run_args=(run --rm); if [ -t 0 ] && [ -t 1 ]; then run_args+=(-it); fi
+# No registry configuration or credentials enter the management container.
+docker "${run_args[@]}" --pull never --network bridge --security-opt no-new-privileges \
+  "${mounts[@]}" "$manager" "${args[@]}"
