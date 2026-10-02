@@ -23,6 +23,7 @@ import { Administration } from "@/components/administration";
 import { Usage } from "@/components/usage";
 import { AgentWorkspace } from "@/components/agent-workspace";
 import { AdminAuth } from "@/components/admin-auth";
+import { Onboarding } from "@/components/onboarding";
 import { apiResponse } from "@/lib/api";
 
 type Status = {
@@ -101,6 +102,7 @@ function saveIds(key: string, ids: Record<string, string>) {
 }
 
 function pageFromHash(hash: string) {
+  if (hash === "#onboarding" || hash.startsWith("#onboarding?")) return hash.slice(1);
   if (/^#setups(?:\/[^/]+)?$/.test(hash)) return hash.slice(1);
   if (hash === "#usage" || hash.startsWith("#usage?")) return hash.slice(1);
   if (/^#agents\/[^/]+\/settings$/.test(hash)) return hash.slice(1);
@@ -206,6 +208,7 @@ function Dashboard({ onSignOut, signingOut }: { onSignOut: () => void; signingOu
         onSignOut={onSignOut}
         signingOut={signingOut}
       >
+        {page.startsWith("onboarding") && <Onboarding key={page} query={page.split("?")[1] ?? ""} />}
         <div hidden={page !== "roles"}>
           <Administration
             kind="roles"
