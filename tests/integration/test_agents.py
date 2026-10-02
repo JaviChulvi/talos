@@ -1,5 +1,6 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from pathlib import Path
 from threading import Barrier
 from uuid import UUID, uuid4
@@ -11,8 +12,10 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.agents import get_db
+from backend.app.config import get_settings
 from backend.app.main import create_app
-from backend.app.models import Agent, Operation
+from backend.app.models import Agent, Operation, WorkloadIncarnation
+from backend.app.runtime_versions import DEFAULT_RUNTIME_VERSIONS
 from tests.admin_client import administrator_client
 
 pytestmark = pytest.mark.integration
@@ -456,3 +459,104 @@ def test_employee_and_role_edits_and_deletion(client):
     assert client.put(ep, json={"name": "Alex", "role_id": str(uuid4())}).status_code == 404
     assert client.delete(ep).status_code == 204
     assert client.delete(path).status_code == 204
+
+
+@pytest.mark.parametrize("kind,version", [("openclaw", "2026.9.10"), ("hermes", "0.22.0")])
+@pytest.mark.parametrize("requested", [None, "latest", "specific"])
+def test_native_version_selection_and_replay_after_catalog_change(
+    client, session_maker, monkeypatch, kind, version, requested
+):
+    catalog = deepcopy(DEFAULT_RUNTIME_VERSIONS)
+    image = "sha256:" + "a" * 64
+    catalog[kind][version] = image
+    monkeypatch.setattr(get_settings(), "runtime_versions", catalog)
+    payload = {"display_name": "Versioned", "employee_label": "Alex", "runtime_kind": kind}
+    if kind == "hermes":
+        payload["dashboard_password"] = "synthetic-version-password"
+    if requested is not None:
+        payload["runtime_version"] = version if requested == "specific" else requested
+    response = client.post("/api/v1/agents", json=payload, headers={"Idempotency-Key": "version"})
+    assert response.status_code == 202
+    operation = response.json()
+    with session_maker() as session:
+        agent = session.get(Agent, UUID(operation["agent_id"]))
+        assert agent.runtime_release == f"{kind}-{version}"
+        assert agent.runtime_image == image
+    targets = client.get("/api/v1/setups/runtime-targets").json()
+    assert {"runtime_kind": kind, "runtime_release": f"{kind}-{version}"} in targets
+    # A timed-out create must recover the admitted selection even after removal.
+    monkeypatch.setattr(get_settings(), "runtime_versions", deepcopy(DEFAULT_RUNTIME_VERSIONS))
+    assert (
+        client.post("/api/v1/agents", json=payload, headers={"Idempotency-Key": "version"}).json()
+        == operation
+    )
+    assert len(client.get("/api/v1/agents").json()) == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"runtime_version": "2026.9.99"},
+        {"runtime_version": "v2026.9.6"},
+        {"runtime_version": "2026.9.6", "runtime_mode": "managed"},
+        {"runtime_image": "unapproved-image:latest"},
+    ],
+)
+def test_unapproved_version_or_caller_image_is_rejected(client, extra):
+    response = client.post(
+        "/api/v1/agents",
+        json={"display_name": "Rejected", "employee_label": "Alex", **extra},
+        headers={"Idempotency-Key": "bad-version"},
+    )
+    assert response.status_code == 422
+    assert client.get("/api/v1/agents").json() == []
+
+
+def test_explicit_bundled_version_does_not_float_to_latest(client, session_maker, monkeypatch):
+    catalog = deepcopy(DEFAULT_RUNTIME_VERSIONS)
+    catalog["openclaw"]["2026.9.10"] = "sha256:" + "a" * 64
+    monkeypatch.setattr(get_settings(), "runtime_versions", catalog)
+    response = client.post(
+        "/api/v1/agents",
+        json={"display_name": "Pinned", "employee_label": "Alex", "runtime_version": "2026.9.6"},
+        headers={"Idempotency-Key": "pinned-version"},
+    )
+    assert response.status_code == 202
+    with session_maker() as session:
+        agent = session.get(Agent, UUID(response.json()["agent_id"]))
+        assert agent.runtime_release == "openclaw-2026.9.6"
+        assert agent.runtime_image == "talos-openclaw-native:local"
+
+
+def test_upgrade_backfills_only_existing_native_image_pins(database_engine, session_maker):
+    image = "sha256:" + "a" * 64
+    with session_maker.begin() as session:
+        agents = [
+            Agent(display_name=mode, employee_label="Alex", runtime_mode=mode)
+            for mode in ("native", "managed", "native")
+        ]
+        session.add_all(agents)
+        session.flush()
+        for agent in agents[:2]:
+            incarnation = WorkloadIncarnation(
+                agent_id=agent.id,
+                generation=1,
+                runtime_release=agent.runtime_release,
+                image_digest=image,
+            )
+            session.add(incarnation)
+            session.flush()
+            agent.current_incarnation_id = incarnation.id
+        ids = [agent.id for agent in agents]
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(ROOT / "backend/migrations"))
+    with database_engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.downgrade(config, "0024")
+        command.upgrade(config, "head")
+    with session_maker() as session:
+        assert [session.get(Agent, agent_id).runtime_image for agent_id in ids] == [
+            image,
+            None,
+            None,
+        ]

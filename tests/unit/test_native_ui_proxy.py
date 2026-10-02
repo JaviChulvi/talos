@@ -183,8 +183,10 @@ def legacy_relay(monkeypatch):
 
 
 @pytest.mark.parametrize("failure", [None, "create", "start"])
-def test_worker_upgrades_legacy_relay_on_its_existing_port(legacy_relay, failure):
+@pytest.mark.parametrize("release", [HERMES_RELEASE, "hermes-0.22.0"])
+def test_worker_upgrades_legacy_relay_on_its_existing_port(legacy_relay, failure, release):
     worker, incarnation, old, new, create = legacy_relay
+    incarnation.runtime_release = release
     if failure == "create":
         worker.client.containers.create.side_effect = APIError("Creation interrupted")
     elif failure == "start":

@@ -24,6 +24,7 @@ from backend.app.models import (
     Run,
     WorkloadIncarnation,
 )
+from backend.app.runtime_versions import VERSION_PATTERN, resolve_version
 
 router = APIRouter(prefix="/api/v1")
 
@@ -38,6 +39,9 @@ class CreateAgent(BaseModel):
 
     runtime_kind: Literal["openclaw", "hermes"] = "openclaw"
     runtime_mode: Literal["native", "managed"] = "native"
+    runtime_version: str = Field(
+        default="latest", max_length=90, pattern=f"^(latest|{VERSION_PATTERN})$"
+    )
     dashboard_password: SecretStr | None = Field(default=None, min_length=12, max_length=256)
 
     @model_validator(mode="after")
@@ -47,6 +51,8 @@ class CreateAgent(BaseModel):
                 raise ValueError("Hermes requires native mode and a dashboard password")
         elif self.dashboard_password is not None:
             raise ValueError("OpenClaw uses device pairing, not a dashboard password")
+        if self.runtime_mode == "managed" and self.runtime_version != "latest":
+            raise ValueError("Talos-managed conversations use the bundled OpenClaw version")
         return self
 
     display_name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
@@ -160,7 +166,7 @@ def recover_duplicate(
 @router.post("/agents", status_code=202, response_model=OperationResponse)
 async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, session: Database):
     scope = "create-agent"
-    payload = body.model_dump(exclude={"dashboard_password", "model_id"})
+    payload = body.model_dump(exclude={"dashboard_password", "model_id", "runtime_version"})
     request = {key: value for key, value in payload.items() if key != "runtime_kind"}
     if body.employee_id is not None:
         request["employee_id"] = str(body.employee_id)
@@ -168,6 +174,8 @@ async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, sessi
         request.pop("employee_id")  # Retain replay hashes for legacy requests.
     if body.model_id is not None:
         request["model_id"] = body.model_id
+    if body.runtime_version != "latest":
+        request["runtime_version"] = body.runtime_version
     if body.runtime_kind == "hermes":
         request.update(
             runtime_kind="hermes",
@@ -187,6 +195,12 @@ async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, sessi
     session.rollback()
     if replay:
         return replay
+    release, image = RUNTIME_RELEASES[body.runtime_kind], None
+    if body.runtime_mode == "native":
+        try:
+            release, image = resolve_version(body.runtime_kind, body.runtime_version)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from None
     selection = None
     if body.model_id is not None:
         from backend.app.inference import ModelSelection, validated_selection
@@ -224,7 +238,8 @@ async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, sessi
                 )
             agent = Agent(
                 **payload,
-                runtime_release=RUNTIME_RELEASES[body.runtime_kind],
+                runtime_release=release,
+                runtime_image=image,
                 dashboard_password_hash=password_hash,
                 inference_override=selection,
             )

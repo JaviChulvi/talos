@@ -30,7 +30,6 @@ from backend.app.db import session_factory
 from backend.app.diagnostics import mark_runs_stopped
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
-    HERMES_RELEASE,
     RUNTIME_RELEASES,
     Agent,
     Operation,
@@ -330,6 +329,18 @@ class Worker:
             raise OwnershipError("Runtime image does not match the approved digest")
         return container
 
+    def native_image(self, agent):
+        image = self.client.images.get(agent.runtime_image or NATIVE_IMAGES[agent.runtime_kind])
+        # Original built-in images predate the explicit release label.
+        declared = getattr(image, "labels", {}).get("io.talos.runtime-release")
+        if declared != agent.runtime_release and (
+            declared is not None or agent.runtime_release != RUNTIME_RELEASES[agent.runtime_kind]
+        ):
+            raise RuntimeReadinessError(
+                "Installed image does not match the selected runtime version"
+            )
+        return image
+
     def ui_proxy(self, incarnation: WorkloadIncarnation, *, ensure=False, upgrade=False):
         """Publish the native UI while keeping Talos's administrator cookie out."""
         name = incarnation.container_name + "-ui"
@@ -337,7 +348,7 @@ class Worker:
         command = [
             Path(__file__).with_name("ui_proxy.cjs").read_text(),
             incarnation.container_name,
-            "9119" if incarnation.runtime_release == HERMES_RELEASE else "18789",
+            "9119" if incarnation.runtime_release.startswith("hermes-") else "18789",
             COOKIE,
         ]
         published_port = 20000 + secrets.randbelow(40000)
@@ -437,7 +448,7 @@ class Worker:
                 container.reload()
             if container.status in {"running", "restarting", "paused"}:
                 raise RuntimeError("Runtime did not stop")
-            if incarnation.runtime_release != HERMES_RELEASE:
+            if not incarnation.runtime_release.startswith("hermes-"):
                 # The successor has a different hostname/PID namespace, so
                 # OpenClaw cannot prove this predecessor dead by itself.
                 release_stopped_gateway_lease(
@@ -445,6 +456,7 @@ class Worker:
                     self.names(incarnation.agent_id)[0],
                     container.attrs["Config"]["Hostname"],
                     self.labels(incarnation.agent_id),
+                    image=incarnation.image_digest or IMAGE,
                 )
             if remove:
                 container.remove()
@@ -482,7 +494,7 @@ class Worker:
                     incarnation.revoked_at = datetime.now(UTC)
             return incarnations
 
-    def ensure_incarnation(self, operation: Operation) -> WorkloadIncarnation:
+    def ensure_incarnation(self, operation: Operation, image: str) -> WorkloadIncarnation:
         # The target revision is the durable identity for this particular start.
         with self.sessions() as session:
             current = session.scalar(
@@ -499,15 +511,15 @@ class Worker:
             agent = session.get(Agent, operation.agent_id, with_for_update=True)
             # All predecessors are stopped; their runs cannot survive replacement.
             mark_runs_stopped(session, agent.id)
+            if agent.runtime_mode == "native":
+                agent.runtime_image = image
             incarnation = WorkloadIncarnation(
                 id=uuid4(),
                 agent_id=agent.id,
                 generation=operation.target_revision,
                 model_route="native" if agent.runtime_mode == "native" else "default",
                 runtime_release=agent.runtime_release,
-                image_digest=self.client.images.get(NATIVE_IMAGES[agent.runtime_kind]).id
-                if agent.runtime_mode == "native"
-                else IMAGE,
+                image_digest=image,
                 expires_at=datetime.now(UTC) + timedelta(days=30),
             )
             prefix = f"talos-{incarnation.id.hex}"
@@ -730,7 +742,12 @@ class Worker:
         with self.sessions() as session:
             agent = session.get(Agent, operation.agent_id)
             if (
-                agent.runtime_release != RUNTIME_RELEASES.get(agent.runtime_kind)
+                agent.runtime_kind not in RUNTIME_RELEASES
+                or not agent.runtime_release.startswith(agent.runtime_kind + "-")
+                or (
+                    (agent.runtime_image is None or agent.runtime_mode != "native")
+                    and agent.runtime_release != RUNTIME_RELEASES.get(agent.runtime_kind)
+                )
                 or agent.revision != operation.target_revision
             ):
                 raise OwnershipError("Operation does not match the approved agent revision")
@@ -864,9 +881,10 @@ class Worker:
             self.ensure_state(operation.agent_id)
             observed = "stopped"
         elif operation.action in {"start", "apply_role"}:
-            self.client.images.get(
-                NATIVE_IMAGES[agent.runtime_kind] if agent.runtime_mode == "native" else IMAGE
-            )  # Pull/install the approved image before starting the worker.
+            if agent.runtime_mode == "native":
+                image = self.native_image(agent)
+            else:
+                self.client.images.get(IMAGE)
             application = operation.role_application
             if application:
                 from backend.app.applications import normalize_application
@@ -899,9 +917,7 @@ class Worker:
                         state,
                         SimpleNamespace(
                             config_volume=previous.config_volume,
-                            image_digest=self.client.images.get(
-                                NATIVE_IMAGES[agent.runtime_kind]
-                            ).id,
+                            image_digest=image.id,
                         ),
                         agent.runtime_kind,
                         application,
@@ -915,7 +931,9 @@ class Worker:
                 with self.sessions.begin() as session:
                     session.get(Operation, operation.id).step = "applying_setup"
                 operation.step = "applying_setup"
-            incarnation = self.ensure_incarnation(operation)
+            incarnation = self.ensure_incarnation(
+                operation, image.id if agent.runtime_mode == "native" else IMAGE
+            )
             if incarnation.revoked_at is not None or incarnation.expires_at <= datetime.now(UTC):
                 raise RuntimeError("Start identity is revoked or expired")
             if operation.role_application:

@@ -92,13 +92,13 @@ STATE_PATH = "/home/node/.openclaw"
 CONFIG_PATH = "/etc/talos/openclaw.json"
 
 
-def release_stopped_gateway_lease(client, volume: str, hostname: str, labels: dict):
+def release_stopped_gateway_lease(client, volume: str, hostname: str, labels: dict, *, image=IMAGE):
     """Release only the pinned OpenClaw lease belonging to a confirmed stopped container."""
     if not hostname:
         raise OwnershipError("Stopped gateway hostname is missing")
     require_labels(client.volumes.get(volume).attrs.get("Labels") or {}, labels)
     client.containers.run(
-        IMAGE,
+        image,
         entrypoint=["node", "-e"],
         command=[
             "const fs=require('node:fs');const p='/state/state/openclaw.sqlite';"
