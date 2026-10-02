@@ -7,7 +7,7 @@ A self-hosted control plane for personal employee agents. The goal is to let com
 ## What works
 
 - Create, inspect, start, stop, and delete an agent with a display name and employee label.
-- Choose OpenClaw or Hermes with the runtime icon picker; each agent has its own container, private internal network, and private state volume.
+- Choose OpenClaw or Hermes and a supported version, defaulting to Latest supported; each agent has its own container, private internal network, and private state volume.
 - Native UI access through a loopback-only TCP relay: OpenClaw device pairing or Hermes password login.
 - Native tools and key-free search; choose an OpenRouter model in Talos or leave provider setup to the runtime.
 - Durable PostgreSQL operations, idempotent requests, bounded retries, and adoption of owned Docker resources after a worker crash.
@@ -48,7 +48,7 @@ docker compose up --build -d
 docker compose ps
 ```
 
-Create the administrator with `docker compose exec api python -m backend.app.auth bootstrap`, then open [http://127.0.0.1:8000](http://127.0.0.1:8000) and sign in with that password. PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the pinned upstream image for managed agents and the locally built native image for native agents. Each native incarnation records and launches the immutable local image ID. Both runtimes are installed by the build command above. Rebuild the corresponding target (`native-runtime` for OpenClaw, `hermes-runtime` for Hermes) when its pin or dependencies change; stop/start applies the new image.
+Create the administrator with `docker compose exec api python -m backend.app.auth bootstrap`, then open [http://127.0.0.1:8000](http://127.0.0.1:8000) and sign in with that password. PostgreSQL and the gateway are not published; the API binds to host loopback. The migration service must complete successfully before the application services start. The worker uses the pinned upstream image for managed agents and the selected locally installed wrapper image for native agents. Each native incarnation records and launches the immutable local image ID. Both bundled runtimes are installed by the build command above. Rebuilding a native image affects new agents; existing initialized agents keep their saved image across stop/start.
 
 For a remote Linux development host, keep that binding and use a tunnel:
 
@@ -65,6 +65,48 @@ Hermes uses its upstream password authentication and host-scoped session cookies
 On a remote Docker host, the UI also needs a tunnel for its assigned port. Obtain it with `docker port <native-container-name>-ui 18789/tcp`, then add `ssh -N -L <port>:127.0.0.1:<port> user@your-host` before opening the native UI. For Hermes, open the generated `.localhost` URL after tunneling; modern browsers resolve it to loopback. The port changes on stop/start. The Talos tunnel alone does not forward this separate UI port.
 
 For the existing diagnostic/conversation flow, choose **OpenClaw** and check **Use Talos-managed conversations** when creating an agent. Hermes supports native mode only. Send a short synthetic message; include `[slow]` with the simulator to exercise cancellation. Existing agents keep managed mode. A start request on an already-ready agent is rejected: stop it first.
+
+### Runtime version selection
+
+The administrator's **New agent** form includes a version picker for native
+OpenClaw and Hermes. **Latest supported** resolves to the highest numeric version
+in this installation's approved catalog when the creation request is admitted.
+Selecting an explicit version keeps that selection. The API accepts
+`runtime_version: "latest"` (also the default when omitted) or a listed version
+such as `"2026.9.6"`; requests cannot supply a Docker image. Talos-managed
+conversations continue to use the bundled OpenClaw version.
+
+The initial catalog contains the tested OpenClaw **2026.9.6** and Hermes
+**0.21.5** builds. It does not automatically follow upstream's newest release.
+Additional versions must use Talos's native wrapper and pass runtime acceptance
+checks before a host administrator adds them. The Docker build accepts
+`OPENCLAW_IMAGE` / `OPENCLAW_VERSION` or `HERMES_IMAGE` / `HERMES_VERSION` build
+arguments, checks the upstream package version, and labels the wrapper with
+`io.talos.runtime-release`. Use an upstream SHA-256 digest when building. OpenClaw's
+browser patch names files in its pinned distribution; a new version may require
+updating and retesting that integration before its wrapper will build.
+
+Set `TALOS_RUNTIME_VERSIONS` in `.env` to a JSON object with both `openclaw` and
+`hermes` maps, mapping version numbers to installed wrapper image IDs or repository
+digests. The default is:
+
+```json
+{"openclaw":{"2026.9.6":"talos-openclaw-native:local"},"hermes":{"0.21.5":"talos-hermes-native:local"}}
+```
+
+Additional entries require immutable `sha256:…` IDs or `repository@sha256:…`
+references, obtained from the wrapper build's `--iidfile` or a registry push. Install
+the images on the worker's Docker host and recreate the platform services after
+changing the catalog so API and worker share the configuration. Setup targets use
+the same catalog and can name multiple versions of one runtime.
+
+At first start the worker verifies the image's release label and saves its local
+image ID on the agent. Restarting retains that ID even if a tag moves or the catalog
+changes. Migration preserves existing native agents' recorded incarnation images;
+legacy bundled images without a release label remain usable. There is no in-place
+version change or workspace migration in this picker: upgrade and rollback between
+versions require a separately provisioned agent with compatible state. Keep the
+images used by existing agents installed.
 
 ### Native tools and connectivity
 
@@ -204,7 +246,7 @@ docker build --target verification -f deploy/Dockerfile -t talos-verification:lo
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock talos-verification:local
 ```
 
-### Repeatable OpenClaw reliability proof
+### Repeatable native runtime reliability proof
 
 From the repository root, with Docker running:
 
@@ -212,8 +254,8 @@ From the repository root, with Docker running:
 uv run python -m tests.reliability
 ```
 
-This builds the current verification image and an OpenClaw test image from the
-repository's pinned upstream digest. It uses an isolated internal network,
+This builds the current verification image and both native test images from the
+repository's pinned upstream digests. It uses an isolated internal network,
 disposable PostgreSQL, RAM-backed agent volumes, fake credentials, and local
 model/channel fixtures. It does not require employee recipients or provider keys.
 The trusted test runner mounts Docker's socket; agent containers do not.
@@ -229,7 +271,8 @@ during initial network allocation.
 | Worker killed before acknowledgment, during a tool, or before result commit | Durable send intent becomes `unknown`; a fixture's independent action journal contains exactly one action; Telegram/Slack redelivery reuses the original turn without sending again. |
 | Connector killed after its provider accepts a response | The outbox becomes `uncertain`; restart does not resend the response. |
 | Employee access revoked, channel disabled, credentials rotated, identity reassigned, or verification withdrawn during work | The worker persists cancellation and requests native abort; unauthorized channel delivery is blocked. Rejected cancellation retains `unknown`. |
-| Native restart and tool denial | The pinned OpenClaw container retains separate channel histories, rejects a denied native read invocation, and closes a synthetic provider stream when each channel's access is revoked. |
+| Native restart and tool denial | Both pinned native containers retain separate channel histories. OpenClaw also rejects a denied native read invocation and closes a synthetic provider stream when each channel's access is revoked. |
+| Runtime version selected, default tag rebuilt, or catalog changed | Creation saves one concrete release; replay recovers the original selection. Restart keeps the initialized image ID; unapproved versions and mismatched image release labels are rejected. Saved setup artifacts remain readable after catalog removal. |
 | Budget exhausted or accounting unavailable | Existing gateway tests reject new paid calls before provider dispatch. This is admission against known spending; already admitted/concurrent calls can overshoot, and missing costs remain explicit. |
 | Incompatible setup or unsupported receipt schema | Preflight or inspection fails before changing managed state. New receipts pin their schema version, runtime image ID, architecture, labels, and applied policy. Original unversioned receipts remain readable and are versioned on explicit Apply. |
 | Setup upgraded or helper process exits during publication | Explicitly selecting the previous immutable setup restores its skills, instructions and policy. Tests compare private fixture history and a SQLite memory file byte for byte across rollback. |
@@ -239,7 +282,7 @@ dashboard is an administrator/testing surface. Revocation is observed by the
 worker between runtime events (normally within its 250 ms event wait); native
 cancellation cannot retract completed external actions. Process-kill tests use a
 real WebSocket adapter and PostgreSQL with a synthetic runtime/action; the native
-acceptance test uses the real pinned OpenClaw container with synthetic inference
+acceptance tests use the real pinned native containers with synthetic inference
 and channel providers. Passing these cases establishes those contracts only.
 
 The next reliability backlog is deliberately narrower than a universal security claim:

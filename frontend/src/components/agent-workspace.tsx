@@ -126,6 +126,7 @@ type Agent = AgentPermissions & {
   id: string;
   runtime_kind: "openclaw" | "hermes";
   runtime_mode: "native" | "managed";
+  runtime_release: string;
   display_name: string;
   employee_label: string;
   desired_state: string;
@@ -172,6 +173,7 @@ type Mutation = {
 
 const runtimes = { openclaw: "OpenClaw", hermes: "Hermes" } as const;
 type RuntimeKind = keyof typeof runtimes;
+type RuntimeTarget = { runtime_kind: RuntimeKind; runtime_release: string };
 
 function RuntimeIcon({
   kind,
@@ -277,11 +279,40 @@ export function AgentWorkspace({
   const [retryRequest, setRetryRequest] = useState<Mutation | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [runtimeKind, setRuntimeKind] = useState<RuntimeKind>("openclaw");
+  const [runtimeVersion, setRuntimeVersion] = useState("latest");
+  const [runtimeTargets, setRuntimeTargets] = useState<RuntimeTarget[]>([]);
+  const [runtimeTargetsError, setRuntimeTargetsError] = useState("");
   const [createModel, setCreateModel] = useState<string | null>(null);
   const [dashboardPassword, setDashboardPassword] = useState("");
   const [runtimeMode, setRuntimeMode] = useState<"native" | "managed">(
     "native",
   );
+  const runtimeChoices = runtimeTargets.filter(
+    (target) => target.runtime_kind === runtimeKind,
+  );
+  useEffect(() => {
+    if (!createOpen) return;
+    const controller = new AbortController();
+    api<RuntimeTarget[]>("/setups/runtime-targets", {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]),
+    })
+      .then(setRuntimeTargets)
+      .catch((cause) => {
+        if (!controller.signal.aborted)
+          setRuntimeTargetsError(errorMessage(cause));
+      });
+    return () => controller.abort();
+  }, [createOpen]);
+
+  function changeCreateOpen(open: boolean) {
+    if (submitting) return;
+    if (open) {
+      setRuntimeVersion("latest");
+      setRuntimeTargets([]);
+      setRuntimeTargetsError("");
+    }
+    setCreateOpen(open);
+  }
   const dashboardWindows = useRef<Record<string, Window>>({});
   const [displayName, setDisplayName] = useState("");
   const [employeeLabel, setEmployeeLabel] = useState("");
@@ -498,6 +529,8 @@ export function AgentWorkspace({
       !displayName.trim() ||
       (!employeeId && !employeeLabel.trim()) ||
       employeeLabel.trim().length > 160 ||
+      (runtimeMode === "native" &&
+        (!runtimeChoices.length || !!runtimeTargetsError)) ||
       writesDisabled
     )
       return;
@@ -513,6 +546,7 @@ export function AgentWorkspace({
           : { employee_label: employeeLabel.trim() }),
         runtime_mode: runtimeMode,
         runtime_kind: runtimeKind,
+        ...(runtimeMode === "native" ? { runtime_version: runtimeVersion } : {}),
         ...(runtimeMode === "native" && createModel
           ? { model_id: createModel }
           : {}),
@@ -695,7 +729,7 @@ export function AgentWorkspace({
               createTrigger.current = event.currentTarget;
               setActionError(null);
               setOpenMobile(false);
-              setCreateOpen(true);
+              changeCreateOpen(true);
             }}
           >
             <Plus />
@@ -970,7 +1004,7 @@ export function AgentWorkspace({
                   onClick={(event) => {
                     createTrigger.current = event.currentTarget;
                     setActionError(null);
-                    setCreateOpen(true);
+                    changeCreateOpen(true);
                   }}
                 >
                   <Plus />
@@ -1338,7 +1372,8 @@ export function AgentWorkspace({
                       Agent settings
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      {selected.display_name} · {runtimeName} ·{" "}
+                      {selected.display_name} · {runtimeName}{" "}
+                      {selected.runtime_release.slice(selected.runtime_kind.length + 1)} ·{" "}
                       {selected.employee_name || "Unassigned"}
                     </p>
                   </div>
@@ -1618,9 +1653,7 @@ export function AgentWorkspace({
       </SidebarInset>
       <Dialog
         open={createOpen}
-        onOpenChange={(open) => {
-          if (!submitting) setCreateOpen(open);
-        }}
+        onOpenChange={changeCreateOpen}
       >
         <DialogContent
           onCloseAutoFocus={(event) => {
@@ -1730,6 +1763,7 @@ export function AgentWorkspace({
                 value={runtimeKind}
                 onValueChange={(value) => {
                   setRuntimeKind(value as RuntimeKind);
+                  setRuntimeVersion("latest");
                   setRuntimeMode("native");
                   setDashboardPassword("");
                 }}
@@ -1755,6 +1789,53 @@ export function AgentWorkspace({
                   : `Your own ${runtimes[runtimeKind]} workspace with the employee’s native tool permissions.`}
               </p>
             </fieldset>
+            {runtimeMode === "native" && (
+              <div>
+                <Label
+                  htmlFor="runtime-version"
+                  className="mb-1.5 block text-xs text-muted-foreground"
+                >
+                  Version
+                </Label>
+                <Select
+                  value={runtimeVersion}
+                  onValueChange={setRuntimeVersion}
+                  disabled={writesDisabled || !runtimeChoices.length}
+                >
+                  <SelectTrigger id="runtime-version" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="latest">
+                      Latest supported
+                      {runtimeChoices[0]
+                        ? ` · ${runtimeChoices[0].runtime_release.slice(runtimeKind.length + 1)}`
+                        : ""}
+                    </SelectItem>
+                    {runtimeChoices.map((target) => {
+                      const version = target.runtime_release.slice(
+                        runtimeKind.length + 1,
+                      );
+                      return (
+                        <SelectItem key={version} value={version}>
+                          {version}
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  Latest selects the newest version supported by this Talos
+                  installation. This agent keeps its version when restarted.
+                </p>
+                {runtimeTargetsError && (
+                  <p role="alert" className="mt-2 text-sm text-danger">
+                    Versions unavailable: {runtimeTargetsError}. Reopen this
+                    dialog to retry.
+                  </p>
+                )}
+              </div>
+            )}
             {runtimeKind === "openclaw" ? (
               <Label className="flex items-start gap-3 text-sm">
                 <Checkbox
@@ -1847,6 +1928,8 @@ export function AgentWorkspace({
                 type="submit"
                 disabled={
                   writesDisabled ||
+                  (runtimeMode === "native" &&
+                    (!runtimeChoices.length || !!runtimeTargetsError)) ||
                   !displayName.trim() ||
                   (!employeeId && !employeeLabel.trim()) ||
                   (runtimeKind === "hermes" && dashboardPassword.length < 12)
