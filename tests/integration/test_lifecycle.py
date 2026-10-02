@@ -424,9 +424,9 @@ def test_reconciliation_reattaches_gateway_recovers_and_detects_exit(client, wor
     runtime.stop()
     worker.recover()
     worker.recover()
-    assert client.get(f"/api/v1/agents/{agent_id}").json()["observed_state"] == "degraded"
-    assert runtime.status == "exited"
-    assert not validate_token(token)
+    assert client.get(f"/api/v1/agents/{agent_id}").json()["observed_state"] == "ready"
+    assert runtime.status == "running"
+    assert validate_token(token)
 
 
 @pytest.mark.parametrize("gateway_state", ["missing", "mismatched", "multiple"])

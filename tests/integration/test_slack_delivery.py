@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -6,7 +7,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import select
 
-from backend.app.models import ChannelInbox, ChannelOutbox, EmployeeChannel, Run
+from backend.app.models import ChannelCursor, ChannelInbox, ChannelOutbox, EmployeeChannel, Run
 from connector.delivery import Delivery
 from connector.slack import Slack
 
@@ -228,3 +229,23 @@ def test_envelope_ack_happens_after_commit_and_not_on_storage_failure(
         await transport.close()
 
     asyncio.run(check())
+
+
+def test_restored_slack_rejects_backlog_and_admits_only_new_events(session_maker, ready_accesses):
+    _, pairs = ready_accesses
+    pair = pairs[1]
+    boundary = datetime.now(UTC)
+    with session_maker.begin() as session:
+        session.add(ChannelCursor(channel_id=UUID(pair[1]["id"]), accept_after=boundary))
+    for value in (None, "invalid", str((boundary - timedelta(seconds=1)).timestamp())):
+        receive(session_maker, pair, payload(ts=value))
+    with session_maker() as session:
+        assert not session.scalar(select(Run.id))
+        assert not session.scalar(select(ChannelInbox.id))
+    receive(
+        session_maker,
+        pair,
+        payload(event_id="EvFresh", ts=str((boundary + timedelta(seconds=1)).timestamp())),
+    )
+    with session_maker() as session:
+        assert session.scalar(select(Run.id))

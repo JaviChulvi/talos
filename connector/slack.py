@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from datetime import UTC, datetime
 
 import aiohttp
 from slack_sdk.errors import SlackApiError
@@ -12,6 +13,7 @@ from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy.exc import SQLAlchemyError
 
+from backend.app.models import ChannelCursor
 from connector.delivery import TransportError, ingest
 
 REQUIRED_SCOPES = {"im:history", "chat:write", "users:read"}
@@ -145,6 +147,16 @@ class Slack:
             or not isinstance(event.get("text"), str)
         ):
             return
+        cursor = session.get(ChannelCursor, channel.id)
+        if cursor and (cursor.reconnect_required or cursor.accept_after):
+            if cursor.reconnect_required:
+                return
+            try:
+                sent_at = datetime.fromtimestamp(float(event.get("ts", "")), UTC)
+            except (ValueError, TypeError, OverflowError, OSError):
+                return
+            if sent_at <= cursor.accept_after:
+                return
         text = event["text"].strip()
         # Slack slash commands do not arrive through message.im. These narrow
         # private-message commands work with the internal Socket Mode manifest.

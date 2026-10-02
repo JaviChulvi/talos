@@ -10,6 +10,7 @@ from backend.app.availability import availability
 from backend.app.channels import authorized_access, claim_invitation
 from backend.app.diagnostics import admit_employee_run, authorized_run
 from backend.app.handoff import claim_challenge, current_challenge, record_acceptance
+from backend.app.installation import ensure_writable, writable
 from backend.app.models import (
     ACTIVE_RUN_STATUSES,
     Agent,
@@ -58,6 +59,7 @@ def ingest(
     message: str,
 ) -> ChannelInbox:
     """Called only by a provider adapter. Caller commits before acknowledging receipt."""
+    ensure_writable(session)
     previous = session.scalar(
         select(ChannelInbox).where(
             ChannelInbox.channel_id == channel_id, ChannelInbox.event_id == event_id
@@ -217,6 +219,8 @@ class Delivery:
 
     def claim(self, channel_id: UUID):
         with self.sessions.begin() as session:
+            if not writable(session):
+                return None
             outbox = session.scalar(
                 select(ChannelOutbox)
                 .join(ChannelInbox)

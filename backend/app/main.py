@@ -22,6 +22,7 @@ from backend.app.db import Database, get_engine
 from backend.app.diagnostics import router as diagnostics_router
 from backend.app.handoff import router as handoff_router
 from backend.app.inference import router as inference_router
+from backend.app.installation import installation_status, management_admission
 from backend.app.readiness import router as readiness_router
 from backend.app.setups import router as setups_router
 from backend.app.usage import router as usage_router
@@ -42,7 +43,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Talos", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
-    management = APIRouter(dependencies=[Depends(require_admin)])
+    management = APIRouter(dependencies=[Depends(require_admin), Depends(management_admission)])
 
     @app.exception_handler(SQLAlchemyError)
     async def database_error(request: Request, error: SQLAlchemyError):
@@ -94,6 +95,10 @@ def create_app() -> FastAPI:
         return JSONResponse(
             {"status": "ready" if ok else "unavailable"}, status_code=200 if ok else 503
         )
+
+    @management.get("/api/v1/installation")
+    def installation(session: Database):
+        return installation_status(session)
 
     @management.get("/api/v1/status")
     def status(session: Database):

@@ -227,3 +227,33 @@ def test_database_lease_allows_one_consumer(database_engine):
             assert not other.scalar(text("SELECT pg_try_advisory_lock(1413565519, 1)"))
         finally:
             owner.execute(text("SELECT pg_advisory_unlock(1413565519, 1)"))
+
+
+def test_restored_telegram_discards_backlog_before_resuming(
+    session_maker,
+    ready_accesses,
+    monkeypatch,
+):
+    _, pairs = ready_accesses
+    _, channel_data = pairs[0]
+    identifier = UUID(channel_data["id"])
+    with session_maker.begin() as session:
+        channel = session.get(EmployeeChannel, identifier)
+        version = session.get(Connection, channel.connection_id).current_version_id
+        session.add(ChannelCursor(channel_id=identifier, reconnect_required=True))
+    transport = AsyncMock()
+    transport.verify.return_value = {"bot_id": "restored-bot"}
+    transport.poll.side_effect = [
+        [{"update_id": 100, "message": {"text": "old unsent message"}}],
+        asyncio.CancelledError(),
+    ]
+    monkeypatch.setattr("connector.main.Telegram", lambda _: transport)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(Connector(session_maker).consume(channel, version))
+    assert [call.args for call in transport.poll.await_args_list] == [(-1,), (101,)]
+    transport.receive.assert_not_called()
+    with session_maker() as session:
+        cursor = session.get(ChannelCursor, identifier)
+        assert not cursor.reconnect_required and cursor.accept_after is not None
+        assert cursor.offset == 101
+        assert not session.scalar(select(ChannelInbox.id))

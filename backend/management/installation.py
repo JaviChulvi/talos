@@ -134,6 +134,10 @@ class Installation:
             result["services"] = self.compose(
                 "ps", "--all", "--format", "json", capture=True
             ).stdout
+            try:
+                result["database"] = self.maintenance_status()
+            except (subprocess.CalledProcessError, ValueError):
+                result["database"] = {"available": False}
         return result
 
     def db_command(self, code: str, *args: str, capture=False):
@@ -150,6 +154,23 @@ class Installation:
             code,
             *args,
             capture=capture,
+        )
+
+    def maintenance_status(self) -> dict:
+        code = (
+            "import json; from backend.app.db import session_factory; "
+            "from backend.app.installation import installation_status; "
+            "s=session_factory()(); print(json.dumps(installation_status(s),default=str))"
+        )
+        return json.loads(self.db_command(code, capture=True).stdout)
+
+    def record_release(self) -> None:
+        self.db_command(
+            "import sys; from backend.app.db import session_factory; "
+            "from backend.app.models import InstallationState; "
+            "s=session_factory()(); row=s.get(InstallationState,1); "
+            "row.release=sys.argv[1]; s.commit()",
+            self.manifest["version"],
         )
 
     def preflight_ports(self) -> None:
@@ -410,6 +431,8 @@ class Installation:
             raise ValueError(
                 "Release manifest changed for the saved version; use its original bundle"
             )
+        if self.state["phase"] == "ready" and self.maintenance_status()["maintenance"]["active"]:
+            raise ValueError("Installation is in maintenance; resume that operation first")
         self.journal("install", "configure")
         self.preflight_resources()
         if domain:
@@ -424,6 +447,7 @@ class Installation:
         self.journal("install", "start")
         self.compose("up", "-d", "--pull", "never", "--no-build")
         self.ready()
+        self.record_release()
         if domain:
             from backend.management.access import verify_https
 

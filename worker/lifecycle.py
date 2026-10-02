@@ -23,16 +23,20 @@ from docker.errors import APIError, NotFound
 from sqlalchemy import or_, select
 from sqlalchemy.exc import OperationalError
 
+from backend.app.applications import desired_application, normalize_application
 from backend.app.auth import COOKIE
 from backend.app.availability import record_check
 from backend.app.config import get_settings
 from backend.app.db import session_factory
 from backend.app.diagnostics import mark_runs_stopped
+from backend.app.installation import writable
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     RUNTIME_RELEASES,
     Agent,
+    InferenceCall,
     Operation,
+    Run,
     WorkloadIncarnation,
 )
 from worker.hermes import HermesClient
@@ -630,8 +634,92 @@ class Worker:
         agent.observed_state = "stopped"
         mark_runs_stopped(session, agent.id)
 
+    def restart_owned_runtime(self, agent_id, incarnation):
+        """Restart the same owned incarnation only after rechecking durable intent."""
+        with self.sessions.begin() as session:
+            if not writable(session):
+                raise RuntimeReadinessError("Installation maintenance is active")
+            agent = session.get(Agent, agent_id, with_for_update=True, populate_existing=True)
+            current = session.get(WorkloadIncarnation, incarnation.id, populate_existing=True)
+            if (
+                agent.desired_state != "running"
+                or agent.current_incarnation_id != incarnation.id
+                or current.revoked_at is not None
+                or current.expires_at is None
+                or current.expires_at <= datetime.now(UTC)
+                or session.scalar(
+                    select(Operation.id)
+                    .where(
+                        Operation.agent_id == agent_id,
+                        Operation.status.in_(ACTIVE_OPERATION_STATUSES),
+                    )
+                    .limit(1)
+                )
+            ):
+                raise RuntimeReadinessError("Runtime restart requires a current running identity")
+            if session.scalar(
+                select(Run.id)
+                .where(
+                    Run.agent_id == agent_id,
+                    Run.status.in_(("dispatching", "running", "cancel_requested", "unknown")),
+                )
+                .limit(1)
+            ) or session.scalar(
+                select(InferenceCall.id)
+                .where(
+                    InferenceCall.agent_id == agent_id,
+                    InferenceCall.completed_at.is_(None),
+                )
+                .limit(1)
+            ):
+                raise RuntimeReadinessError(
+                    "Work is unresolved; stop the agent explicitly before restarting"
+                )
+            if agent.runtime_mode == "native" and agent.employee_id:
+                desired = desired_application(session, agent)
+                if (
+                    not agent.applied_application
+                    or desired["fingerprint"]
+                    != normalize_application(agent.applied_application, agent.runtime_kind)[
+                        "fingerprint"
+                    ]
+                ):
+                    raise RuntimeReadinessError(
+                        "Permissions or credentials changed; apply the role before restarting"
+                    )
+            read_credentials(current)
+            container = self.owned_container(current)
+            if container is None:
+                raise RuntimeReadinessError("Owned runtime is missing")
+            container.reload()
+            if container.status not in {"exited", "created"}:
+                raise RuntimeReadinessError("Owned runtime is not stopped")
+            if agent.applied_application and not agent.applied_application.get("legacy_receipt"):
+                verify_setup(
+                    self.client,
+                    self.names(agent.id)[0],
+                    current,
+                    agent.runtime_kind,
+                    agent.applied_application,
+                    self.labels(agent.id),
+                    discover=False,
+                )
+            if agent.runtime_kind == "openclaw":
+                release_stopped_gateway_lease(
+                    self.client,
+                    self.names(agent.id)[0],
+                    container.attrs["Config"]["Hostname"],
+                    self.labels(agent.id),
+                    image=current.image_digest or IMAGE,
+                )
+            if current.model_route == "native":
+                self.ui_proxy(current, ensure=True, upgrade=True)
+            # Docker start is fenced by the agent/permission locks. Readiness is
+            # outside those locks so a requested stop can interrupt startup.
+            container.start()
+
     def recover(self, *, yield_to_operations=True):
-        """Reconcile existing runtimes without restarting them or replaying work."""
+        """Reattach live runtimes and safely restart stopped desired-running incarnations."""
         active = (
             select(Operation.id)
             .where(
@@ -641,6 +729,8 @@ class Worker:
             .exists()
         )
         with self.sessions() as session:
+            if not writable(session):
+                return
             agents = session.scalars(
                 select(Agent).where(
                     Agent.desired_state == "running",
@@ -680,9 +770,9 @@ class Worker:
                     raise RuntimeError("Runtime is missing")
                 container.reload()
                 if container.status != "running":
-                    raise RuntimeError("Runtime is not running")
+                    self.restart_owned_runtime(agent.id, incarnation)
                 if incarnation.model_route == "native":
-                    proxy = self.ui_proxy(incarnation, upgrade=True)
+                    proxy = self.ui_proxy(incarnation, ensure=True, upgrade=True)
                     if proxy is None or proxy.status != "running":
                         raise RuntimeError("UI relay is not running")
                 if (
@@ -1106,6 +1196,8 @@ class Worker:
 
     def process_one(self) -> bool:
         with self.sessions.begin() as session:
+            if not writable(session):
+                return False
             operation = session.scalar(
                 select(Operation)
                 .where(

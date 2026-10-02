@@ -28,6 +28,17 @@ from backend.app.runtime_versions import RUNTIME_RELEASES as RUNTIME_RELEASES
 ACTIVE_OPERATION_STATUSES = ("queued", "running", "retry_wait")
 
 
+class InstallationState(Base):
+    __tablename__ = "installation_state"
+    __table_args__ = (CheckConstraint("id = 1"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    release: Mapped[str | None] = mapped_column(String(100))
+    maintenance_operation_id: Mapped[str | None] = mapped_column(String(128))
+    maintenance_kind: Mapped[str | None] = mapped_column(String(20))
+    maintenance_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Administrator(Base):
     __tablename__ = "administrator"
     __table_args__ = (
@@ -114,6 +125,8 @@ class ChannelCursor(Base):
     credential_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("connection_versions.id"))
     provider_identity: Mapped[str] = mapped_column(String(80), default="")
     offset: Mapped[int] = mapped_column(BigInteger, default=0)
+    reconnect_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    accept_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revision: Mapped[int] = mapped_column(Integer, default=0)
     state: Mapped[str] = mapped_column(String(20), default="unknown")
     code: Mapped[str] = mapped_column(String(80), default="not_checked")
