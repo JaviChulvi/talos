@@ -71,7 +71,7 @@ def installer(tmp_path, monkeypatch, manifest):
     return host.Installation(directory)
 
 
-def install(instance, bundle):
+def install(instance, bundle, *, skip_admin=True):
     instance.install(
         bundle,
         platform="linux/arm64",
@@ -81,7 +81,7 @@ def install(instance, bundle):
         docker_socket="/var/run/docker.sock.raw",
         port=8000,
         domain=None,
-        skip_admin=True,
+        skip_admin=skip_admin,
     )
 
 
@@ -388,9 +388,9 @@ case "$*" in
   'info --format {{json .SecurityOptions}}') echo "${MOCK_SECURITY:-[]}" ;;
   'info --format {{.OperatingSystem}}') echo 'Docker Desktop' ;;
   'info --format {{.Architecture}}') echo "${MOCK_SERVER_ARCH:-aarch64}" ;;
-  'info --format {{.MemTotal}}') echo 8589934592 ;;
-  'info --format {{.NCPU}}') echo 4 ;;
-  'pull '*) exit 0 ;;
+  'info --format {{.MemTotal}}') echo "${MOCK_MEMORY:-8589934592}" ;;
+  'info --format {{.NCPU}}') echo "${MOCK_CPUS:-4}" ;;
+  'pull '*) exit "${MOCK_PULL_EXIT:-0}" ;;
   'run '*) exit 0 ;;
   *) exit 9 ;;
 esac
@@ -398,7 +398,7 @@ esac
         "uname": '#!/bin/bash\nif [ "$1" = -m ]; then echo "${MOCK_ARCH:-arm64}"; '
         'else echo "${MOCK_OS:-Darwin}"; fi\n',
         "df": '#!/bin/bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\n'
-        'fixture 90000000 1 80000000 1%% /fixture\\n"\n',
+        'fixture 90000000 1 ${MOCK_FREE_KB:-80000000} 1%% /fixture\\n"\n',
     }
     for name, content in scripts.items():
         path = bin_dir / name
@@ -413,7 +413,7 @@ esac
     }
     env.update(PATH=f"{bin_dir}:{env['PATH']}", MOCK_LOG=str(log))
 
-    def invoke(**changes):
+    def invoke(*arguments, **changes):
         result = subprocess.run(
             [
                 "/bin/bash",
@@ -421,8 +421,7 @@ esac
                 "install",
                 "--directory",
                 str(directory),
-                "--bundle",
-                str(bundle),
+                *(arguments or ("--bundle", str(bundle))),
                 "--skip-admin",
             ],
             env={**env, **changes},

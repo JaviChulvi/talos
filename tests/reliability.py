@@ -4,9 +4,12 @@ Usage: uv run python -m tests.reliability
 Builds current source, uses synthetic credentials, and cleans only owned resources.
 """
 
+import argparse
+import hashlib
 import ipaddress
 import json
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +36,13 @@ TESTS = [
             "runtime_versions",
             "slack",
             "telegram",
+            "release",
+            "installation",
+            "installation_access",
+            "installation_backup",
+            "installation_update",
+            "installation_failures",
+            "release_gate",
         )
     ],
     "tests/unit/test_native_ui_proxy.py::test_worker_upgrades_legacy_relay_on_its_existing_port",
@@ -55,6 +65,7 @@ TESTS = [
             "runtime_reliability",
             "access_revocation",
             "runtime_compatibility",
+            "installation_maintenance",
         )
     ],
     *[
@@ -74,20 +85,70 @@ TESTS = [
 ]
 
 
-def main():
+def release_images(client, manifest_path):
+    """Use the exact published artifacts; never silently rebuild a candidate."""
+    from backend.management.release import load_manifest
+
+    manifest = load_manifest(manifest_path)
+    architecture = client.info()["Architecture"]
+    architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(architecture, architecture)
+    platform = "linux/" + architecture
+    refs = manifest["images"][platform]
+    images = {}
+    for kind, role in (("runner", "verification"), ("openclaw", "openclaw"), ("hermes", "hermes")):
+        # Host CLI honors Docker Desktop's configured credential helper.
+        subprocess.run(["docker", "pull", "--platform", platform, refs[role]], check=True)
+        image = client.images.get(refs[role])
+        if image.attrs["Architecture"] != architecture:
+            raise ValueError("Release acceptance requires native images, not emulation")
+        if image.labels.get("org.opencontainers.image.revision") != manifest["source_revision"]:
+            raise ValueError("Release image revision does not match its manifest")
+        images[kind] = image.id
+    return (
+        images,
+        refs["postgres"],
+        {
+            "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "revision": manifest["source_revision"],
+            "platform": platform,
+            "image_references": refs,
+        },
+    )
+
+
+def main(argv=()):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", type=Path, help="Test a prebuilt release without rebuilding")
+    parser.add_argument("--report", type=Path, help="Evidence output directory")
+    args = parser.parse_args(argv)
     client = docker.from_env(timeout=180)
     client.ping()
     name = "talos-reliability-" + uuid4().hex[:12]
     labels = {"io.talos.reliability-run": name}
-    report = ROOT / ".data" / "reliability" / name
+    report = args.report or ROOT / ".data" / "reliability" / name
     report.mkdir(parents=True)
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))
+    revision = None
+    dirty = None
     images = {}
+    metadata = {}
+    postgres = POSTGRES
+    if args.manifest:
+        images, postgres, metadata = release_images(client, args.manifest)
+        revision = metadata["revision"]
+        dirty = False
+    else:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+        dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))
     for target, kind in (
-        ("verification", "runner"),
-        ("native-runtime", "openclaw"),
-        ("hermes-runtime", "hermes"),
+        ()
+        if args.manifest
+        else (
+            ("verification", "runner"),
+            ("native-runtime", "openclaw"),
+            ("hermes-runtime", "hermes"),
+        )
     ):
         image_file = report / f"{kind}.image-id"
         print(f"Building {target} from current source", flush=True)
@@ -136,11 +197,11 @@ def main():
         else:
             raise RuntimeError("No available reliability test subnet in 10.252.0.0/16")
         try:
-            client.images.get(POSTGRES)
+            client.images.get(postgres)
         except docker.errors.ImageNotFound:
-            client.images.pull(POSTGRES)
+            subprocess.run(["docker", "pull", postgres], check=True)
         database = client.containers.run(
-            POSTGRES,
+            postgres,
             name=name + "-db",
             labels=labels,
             network=network.name,
@@ -196,9 +257,10 @@ def main():
                     "revision": revision,
                     "dirty": dirty,
                     "images": images,
-                    "postgres": POSTGRES,
+                    "postgres": postgres,
                     "exit_code": code,
                     "tests": TESTS,
+                    **metadata,
                 },
                 indent=2,
             )
@@ -210,4 +272,4 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

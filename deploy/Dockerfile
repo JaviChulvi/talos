@@ -45,6 +45,7 @@ CMD []
 FROM platform AS verification
 USER root
 COPY tests/ tests/
+COPY deploy/ deploy/
 RUN uv sync --frozen
 CMD ["python", "-m", "tests.runtime_proof"]
 

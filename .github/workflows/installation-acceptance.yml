@@ -1,0 +1,68 @@
+name: Installation acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        description: Successful Release candidate run on the same main commit
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+  packages: read
+jobs:
+  native-hosts:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [amd64, arm64]
+    runs-on: ubuntu-24.04
+    environment: installation-acceptance-${{ matrix.architecture }}
+    concurrency:
+      group: installation-acceptance-${{ matrix.architecture }}
+      cancel-in-progress: false
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Resolve workflow-bound candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        run: python3 -m tests.release_gate candidate --candidate-run "$CANDIDATE_RUN" --directory "$RUNNER_TEMP/candidate"
+      - name: Configure disposable-host SSH credentials
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$SSH_KEY" && test -n "$SSH_KNOWN_HOSTS"
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Exercise installer on two disposable native hosts
+        env:
+          TALOS_ACCEPTANCE_FIRST_HOST: ${{ vars.FIRST_HOST }}
+          TALOS_ACCEPTANCE_SECOND_HOST: ${{ vars.SECOND_HOST }}
+          TALOS_ACCEPTANCE_HOST_ID: ${{ secrets.DISPOSABLE_HOST_ID }}
+          TALOS_ACCEPTANCE_ACME_DIRECTORY: ${{ vars.ACME_DIRECTORY }}
+          TALOS_ACCEPTANCE_ACME_DOMAIN: ${{ vars.ACME_DOMAIN }}
+          TALOS_ACCEPTANCE_ACME_ROOT: ${{ secrets.ACME_ROOT }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: >-
+          python3 -m tests.installation_acceptance
+          --bundle "$RUNNER_TEMP/candidate/bundle"
+          --candidate-run "$CANDIDATE_RUN"
+          --platform "linux/$ARCHITECTURE"
+          --report "$RUNNER_TEMP/acceptance"
+      - name: Upload executed evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: installation-acceptance-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/acceptance
+          if-no-files-found: error
+          retention-days: 30
