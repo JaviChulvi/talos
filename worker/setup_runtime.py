@@ -121,6 +121,7 @@ def _request(application, runtime_kind, image):
         "policy": setup_permissions(application, runtime_kind),
         "connections": application.get("connections", {}),
         "image": {
+            "id": image.attrs.get("Id"),
             "architecture": image.attrs.get("Architecture"),
             "labels": image.attrs.get("Config", {}).get("Labels") or {},
         },
@@ -269,6 +270,7 @@ def _run_locked(client, state, incarnation, labels, request, mode, files=None, n
 
 
 _ERRORS = {
+    "receipt_version": "Unsupported setup receipt version. Restore the matching Talos version.",
     "compatibility": "Unsupported runtime release, architecture, or interpreter for this setup.",
     "shadow": "A native skill shadows a setup skill. Resolve the conflicting skill before Apply.",
     "edited": "Talos-managed setup files or configuration were edited. Restore them before Apply.",
@@ -338,6 +340,17 @@ def guarded(path):
 
 def read_json(path, default):
     return json.loads(path.read_text()) if path.exists() else default
+
+
+def check_receipt(value):
+    # Unversioned receipts are the original v1 format. Future versions must never
+    # be interpreted as v1, including during recovery of an interrupted write.
+    if not isinstance(value, dict):
+        fail("receipt_version")
+    version = value.get("schema_version", 1)
+    if type(version) is not int or version != 1:
+        fail("receipt_version")
+    return value
 
 
 def atomic(path, data, permissions=0o600):
@@ -855,10 +868,11 @@ def recover_previous(previous, pending, config, original):
 def main():
     guarded(managed)
     ensure_compatibility()
-    previous = read_json(guarded(receipt_path), {})
-    pending = read_json(guarded(pending_path), {})
+    previous = check_receipt(read_json(guarded(receipt_path), {}))
+    pending = check_receipt(read_json(guarded(pending_path), {}))
     if pending:
-        previous = pending["previous"]
+        previous = check_receipt(pending["previous"])
+        check_receipt(pending.get("target"))
     path, config = load_config()
     workspace = guarded(
         config.get("terminal", {}).get("cwd", str(root / "workspace"))
@@ -879,6 +893,9 @@ def main():
                 if name in executables:
                     executables.add(destination)
     target = {
+        "schema_version": 1,
+        "runtime": {"kind": kind, **r["image"]},
+        "policy": r["policy"],
         "fingerprint": r["fingerprint"],
         "artifact_hash": r["artifact_hash"],
         "manifest": manifest,
@@ -903,6 +920,8 @@ def main():
     if mode in {"verify", "inspect"}:
         if pending or previous.get("fingerprint") != r["fingerprint"]:
             fail("receipt")
+        if previous.get("runtime", target["runtime"]) != target["runtime"]:
+            fail("compatibility")
         if updated != config or rewritten != original:
             fail("edited")
         verify_env(previous)
@@ -915,7 +934,8 @@ def main():
     atomic(
         pending_path,
         json.dumps(
-            {"fingerprint": r["fingerprint"], "previous": previous, "target": target}
+            {"schema_version": 1, "fingerprint": r["fingerprint"],
+             "previous": previous, "target": target}
         ).encode(),
     )
     for name, expected in manifest.get("assets", {}).items():
