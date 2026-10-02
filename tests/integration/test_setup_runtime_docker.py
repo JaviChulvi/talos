@@ -81,6 +81,7 @@ def put_file(client, image, volume, mount, path, content, uid):
         image,
         entrypoint=["true"],
         network_mode="none",
+        labels=client.volumes.get(volume).attrs.get("Labels") or {},
         volumes={volume: {"bind": mount, "mode": "rw"}},
     )
     try:
@@ -94,14 +95,42 @@ def put_file(client, image, volume, mount, path, content, uid):
         container.remove(force=True)
 
 
+def hold_tmpfs(client, image, volumes, labels):
+    """Keep disposable RAM-backed volumes mounted between offline helpers."""
+    if os.environ.get("TALOS_TEST_TMPFS_VOLUMES") != "1":
+        return None
+    for name in volumes:
+        client.volumes.create(
+            name=name,
+            labels=labels,
+            driver_opts={"type": "tmpfs", "device": "tmpfs", "o": "size=256m"},
+        )
+    return client.containers.run(
+        image,
+        entrypoint=["sleep", "infinity"],
+        network_mode="none",
+        labels=labels,
+        read_only=True,
+        detach=True,
+        volumes={
+            name: {"bind": f"/keep/{index}", "mode": "ro"} for index, name in enumerate(volumes)
+        },
+    )
+
+
 @pytest.mark.parametrize("kind", ["openclaw", "hermes"])
 def test_setup_reproduces_native_skills_and_mcp_and_preserves_unmanaged_state(kind, monkeypatch):
     client = docker.from_env(timeout=180)
     secret = {"crm": {"token": "synthetic-quote\"-slash\\n-apostrophe'"}}
     prefix = "talos-setup-test-" + uuid4().hex
     labels = {"io.talos.test": prefix}
-    image = client.images.get(NATIVE_IMAGES[kind])
+    if run_id := os.environ.get("TALOS_RELIABILITY_RUN_ID"):
+        labels["io.talos.reliability-run"] = run_id
+    image = client.images.get(
+        os.environ.get("TALOS_TEST_" + kind.upper() + "_IMAGE", NATIVE_IMAGES[kind])
+    )
     incarnation = SimpleNamespace(image_digest=image.id, config_volume=prefix + "-config")
+    keeper = hold_tmpfs(client, image.id, (prefix, incarnation.config_volume), labels)
     mount, uid = ("/opt/data", 10000) if kind == "hermes" else (STATE_PATH, 1000)
     files = {
         "skills/fixture/SKILL.md": (
@@ -332,6 +361,8 @@ def test_setup_reproduces_native_skills_and_mcp_and_preserves_unmanaged_state(ki
         apply_setup(client, prefix, incarnation, kind, empty, labels)
         verify_setup(client, prefix, incarnation, kind, empty, labels)
     finally:
+        if keeper:
+            keeper.remove(force=True)
         for name in (prefix, incarnation.config_volume):
             client.volumes.get(name).remove()
         client.close()

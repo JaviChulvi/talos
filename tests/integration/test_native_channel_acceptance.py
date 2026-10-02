@@ -36,6 +36,7 @@ from tests.integration.test_channel_runs import (
     worker,
 )
 from tests.integration.test_handoff import challenge, proof, receive
+from tests.integration.test_setup_runtime_docker import hold_tmpfs
 from tests.runtime_proof import ready
 from tests.unit.test_slack import response, web_client
 from worker.diagnostics import DiagnosticManager
@@ -66,6 +67,8 @@ def test_both_channels_use_native_scoped_history_and_receipts(
     runner = docker_client.containers.get(os.environ["HOSTNAME"])
     name = "talos-channel-proof-" + uuid4().hex[:10]
     labels = {"io.talos.channel-proof": name}
+    if run_id := os.environ.get("TALOS_RELIABILITY_RUN_ID"):
+        labels["io.talos.reliability-run"] = run_id
     records = []
     slow_started, slow_closed = threading.Event(), threading.Event()
     token, control = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
@@ -123,6 +126,7 @@ def test_both_channels_use_native_scoped_history_and_receipts(
     thread.start()
     network, runtime = None, None
     volumes = [name + "-state", name + "-config"]
+    keeper = hold_tmpfs(docker_client, runner.image.id, volumes, labels)
     try:
         occupied = [
             ipaddress.ip_network(config["Subnet"])
@@ -167,7 +171,9 @@ def test_both_channels_use_native_scoped_history_and_receipts(
                 network.name,
                 volumes[1],
                 labels,
-                native_image=NATIVE_IMAGES[runtime_kind],
+                native_image=os.environ.get(
+                    "TALOS_TEST_" + runtime_kind.upper() + "_IMAGE", NATIVE_IMAGES[runtime_kind]
+                ),
                 runtime_kind=runtime_kind,
                 control_token=control,
                 control_origin="http://localhost",
@@ -296,6 +302,8 @@ def test_both_channels_use_native_scoped_history_and_receipts(
         if network:
             network.disconnect(runner, force=True)
             network.remove()
+        if keeper:
+            keeper.remove(force=True)
         for volume in volumes:
             try:
                 docker_client.volumes.get(volume).remove()

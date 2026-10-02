@@ -204,6 +204,53 @@ docker build --target verification -f deploy/Dockerfile -t talos-verification:lo
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock talos-verification:local
 ```
 
+### Repeatable OpenClaw reliability proof
+
+From the repository root, with Docker running:
+
+```sh
+uv run python -m tests.reliability
+```
+
+This builds the current verification image and an OpenClaw test image from the
+repository's pinned upstream digest. It uses an isolated internal network,
+disposable PostgreSQL, RAM-backed agent volumes, fake credentials, and local
+model/channel fixtures. It does not require employee recipients or provider keys.
+The trusted test runner mounts Docker's socket; agent containers do not.
+The runner removes its containers, volumes and network and writes `results.xml`,
+`pytest.log`, and `environment.json` under `.data/reliability/<run-id>/`.
+The environment records the tested image IDs, source revision, and dirty status.
+Run-specific build records capture immutable image IDs directly, preventing
+concurrent runs from exchanging images. The runner retries subnet collisions
+during initial network allocation.
+
+| Scenario | Expected behavior and evidence |
+| --- | --- |
+| Worker killed before acknowledgment, during a tool, or before result commit | Durable send intent becomes `unknown`; a fixture's independent action journal contains exactly one action; Telegram/Slack redelivery reuses the original turn without sending again. |
+| Connector killed after its provider accepts a response | The outbox becomes `uncertain`; restart does not resend the response. |
+| Employee access revoked, channel disabled, credentials rotated, identity reassigned, or verification withdrawn during work | The worker persists cancellation and requests native abort; unauthorized channel delivery is blocked. Rejected cancellation retains `unknown`. |
+| Native restart and tool denial | The pinned OpenClaw container retains separate channel histories, rejects a denied native read invocation, and closes a synthetic provider stream when each channel's access is revoked. |
+| Budget exhausted or accounting unavailable | Existing gateway tests reject new paid calls before provider dispatch. This is admission against known spending; already admitted/concurrent calls can overshoot, and missing costs remain explicit. |
+| Incompatible setup or unsupported receipt schema | Preflight or inspection fails before changing managed state. New receipts pin their schema version, runtime image ID, architecture, labels, and applied policy. Original unversioned receipts remain readable and are versioned on explicit Apply. |
+| Setup upgraded or helper process exits during publication | Explicitly selecting the previous immutable setup restores its skills, instructions and policy. Tests compare private fixture history and a SQLite memory file byte for byte across rollback. |
+
+Employee access is exercised through Telegram and Slack admission/delivery. The
+dashboard is an administrator/testing surface. Revocation is observed by the
+worker between runtime events (normally within its 250 ms event wait); native
+cancellation cannot retract completed external actions. Process-kill tests use a
+real WebSocket adapter and PostgreSQL with a synthetic runtime/action; the native
+acceptance test uses the real pinned OpenClaw container with synthetic inference
+and channel providers. Passing these cases establishes those contracts only.
+
+The next reliability backlog is deliberately narrower than a universal security claim:
+
+| Workstream | Remaining acceptance criterion |
+| --- | --- |
+| Recovery | For each supported business-action tool, retain a durable action identity, prove provider-side idempotency or require reconciliation, and inject failure after provider acceptance but before the tool result. An uncertain run alone does not establish exactly-once business actions. |
+| Permissions | Add an employee approval broker for sensitive channel actions with durable, argument-bound, expiring decisions; test revoked decisions before execution. Before offering employee website access, apply the same identity, admission, history and delivery contract to that adapter. Test cross-employee containers with real granted file and network tools. |
+| Version compatibility | Pin hosted MCP input/output schemas and reject shape changes even when tool names are unchanged. Local connector payloads and skill assets are content-hashed today; hosted schemas can still drift. |
+| Runtime/memory upgrades | Add a consistent stopped-runtime backup/restore of native state and validate a real old/new image pair, native memory schema migration failure, and downgrade. This suite proves setup rollback under one runtime image, not safe rollback after arbitrary upstream memory migrations. Restore code, PostgreSQL, artifacts, secrets and runtime state together. |
+
 PostgreSQL tests create random schemas and drop only those schemas afterward. The following commands use a disposable database and run the API, recovery, diagnostic, and Docker-resource checks inside the Linux verification container. `--network host` here assumes native Linux:
 
 ```sh
