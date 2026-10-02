@@ -264,10 +264,18 @@ class DiagnosticManager:
             deadline = monotonic() + self.timeout
             abort_sent = False
             while monotonic() < deadline:
-                with self.sessions() as session:
-                    current = session.get(Run, run_id)
+                with self.sessions.begin() as session:
+                    current = session.get(Run, run_id, with_for_update=True)
                     if current.status not in ACTIVE_RUN_STATUSES:
                         return
+                    if not current.cancel_requested and not authorized_run(
+                        session, current, session.get(Agent, current.agent_id)
+                    ):
+                        current.cancel_requested = True
+                        current.status = "cancel_requested"
+                        append_event(
+                            session, current, "cancel_requested", {"reason": "access_changed"}
+                        )
                     cancel = current.cancel_requested
                 if cancel and not abort_sent:
                     await client.abort(session_key, upstream_id)
