@@ -1,0 +1,99 @@
+name: Release candidate
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Candidate release version (for example 0.1.0-beta.1)'
+        required: true
+        type: string
+      compatible_from:
+        description: 'JSON array of explicitly supported source version/database_revision pairs'
+        required: true
+        default: '[]'
+        type: string
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require private repository and private package destinations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          test "$PRIVATE" = true
+          owner_path=users
+          if [ "$OWNER_TYPE" = Organization ]; then owner_path=orgs; fi
+          repository_name="${GITHUB_REPOSITORY#*/}"
+          repository_name="${repository_name,,}"
+          for role in platform management verification egress openclaw hermes; do
+            endpoint="/$owner_path/$GITHUB_REPOSITORY_OWNER/packages/container/$repository_name-$role"
+            if gh api "$endpoint" > package.json 2> package.err; then
+              test "$(jq -r .visibility package.json)" = private
+            elif ! grep -q 'HTTP 404' package.err; then
+              cat package.err >&2
+              exit 1
+            fi
+          done
+      - name: Authenticate and create native builder
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use
+      - name: Build immutable candidate images
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          python3 -m deploy.build_release build --platform "linux/$ARCH" \
+            --registry "ghcr.io/${GITHUB_REPOSITORY,,}" --source-revision "$GITHUB_SHA" \
+            --output candidate-images
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: images-${{ matrix.arch }}
+          path: candidate-images/images-${{ matrix.arch }}.json
+          if-no-files-found: error
+  bundle:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: images-*
+          merge-multiple: true
+          path: candidate-images
+      - name: Assemble candidate (publication requires installation acceptance)
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          COMPATIBLE_FROM: ${{ inputs.compatible_from }}
+        run: |
+          printf '%s\n' "$COMPATIBLE_FROM" > compatibility.json
+          database_revision=$(python3 -c 'import ast,pathlib; rows=[ast.parse(p.read_text()) for p in pathlib.Path("backend/migrations/versions").glob("*.py")]; values=lambda name: {ast.literal_eval(n.value) for tree in rows for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id == name for t in n.targets)}; heads=values("revision")-values("down_revision"); assert len(heads)==1; print(heads.pop())')
+          python3 -m deploy.build_release bundle --version "$RELEASE_VERSION" \
+            --source-revision "$GITHUB_SHA" --database-revision "$database_revision" \
+            --images candidate-images --compatible-from compatibility.json --output release-candidate
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate
+          path: release-candidate/*
+          if-no-files-found: error
+          retention-days: 30

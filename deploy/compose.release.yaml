@@ -1,0 +1,132 @@
+# Release installation only: no local image builds.
+name: ${COMPOSE_PROJECT_NAME:?Installation project is required}
+x-platform: &platform
+  image: ${TALOS_PLATFORM_IMAGE:?A release image digest is required}
+  restart: unless-stopped
+  labels:
+    io.talos.installation: ${TALOS_INSTALLATION_ID:?Installation ID is required}
+  environment: &environment
+    TALOS_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-talos}
+    TALOS_INFERENCE_TIMEOUT_SECONDS: ${TALOS_INFERENCE_TIMEOUT_SECONDS:-1800}
+    TALOS_INFERENCE_IDLE_TIMEOUT_SECONDS: ${TALOS_INFERENCE_IDLE_TIMEOUT_SECONDS:-300}
+    TALOS_INFERENCE_MAX_OUTPUT_CHARS: ${TALOS_INFERENCE_MAX_OUTPUT_CHARS:-4000000}
+    TALOS_INFERENCE_MAX_REQUEST_BYTES: ${TALOS_INFERENCE_MAX_REQUEST_BYTES:-16777216}
+    TALOS_INSTALLATION_ID: ${TALOS_INSTALLATION_ID:-local}
+    TALOS_RUNTIME_VERSIONS: ${TALOS_RUNTIME_VERSIONS:?An approved runtime catalog is required}
+    TALOS_DATABASE_URL: postgresql+psycopg://talos@db:5432/talos
+    TALOS_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Installation password is required}
+  networks: [control]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+
+services:
+  egress:
+    image: ${TALOS_EGRESS_IMAGE:?A release image digest is required}
+    restart: unless-stopped
+    labels:
+      io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
+    networks: [egress]
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    pids_limit: 64
+  db:
+    image: ${TALOS_POSTGRES_IMAGE:?A release image digest is required}
+    restart: unless-stopped
+    labels:
+      io.talos.installation: ${TALOS_INSTALLATION_ID:?Installation ID is required}
+    environment:
+      POSTGRES_DB: talos
+      POSTGRES_USER: talos
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Installation password is required}
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    networks: [control]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U talos -d talos"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *platform
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db: {condition: service_healthy}
+  api:
+    <<: *platform
+    environment:
+      <<: *environment
+      TALOS_ALLOWED_HOSTS: ${TALOS_ALLOWED_HOSTS:-["127.0.0.1","localhost"]}
+      TALOS_ALLOWED_ORIGINS: ${TALOS_ALLOWED_ORIGINS:-["http://127.0.0.1:${TALOS_PORT:-8000}","http://localhost:${TALOS_PORT:-8000}"]}
+      TALOS_ADMIN_COOKIE_SECURE: ${TALOS_ADMIN_COOKIE_SECURE:-true}
+    networks: [control, ingress]
+    volumes: ["provider-secrets:/var/lib/talos-provider", "setup-artifacts:/var/lib/talos-setups", "connection-secrets:/var/lib/talos-connections"]
+    ports: ["127.0.0.1:${TALOS_PORT:-8000}:8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  worker:
+    <<: *platform
+    restart: unless-stopped
+    labels:
+      io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
+    user: "0:10001"
+    command: ["python", "-m", "worker.main"]
+    volumes: ["${TALOS_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock", "worker-state:/var/lib/talos", "setup-artifacts:/var/lib/talos-setups", "connection-secrets:/var/lib/talos-connections:ro"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  connector:
+    <<: *platform
+    restart: unless-stopped
+    command: ["python", "-m", "connector.main"]
+    networks: [control, egress]
+    environment:
+      <<: *environment
+      HTTPS_PROXY: http://egress:3128
+      HTTP_PROXY: http://egress:3128
+      NO_PROXY: db
+    volumes: ["connection-secrets:/var/lib/talos-connections:ro"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      egress: {condition: service_started}
+    read_only: true
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]
+    mem_limit: 256m
+    pids_limit: 64
+  gateway:
+    <<: *platform
+    networks: [control, inference-egress]
+    volumes: ["provider-secrets:/var/lib/talos-provider:ro"]
+    labels:
+      io.talos.installation: ${TALOS_INSTALLATION_ID:-local}
+    command: ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8001", "--no-proxy-headers"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+networks:
+  inference-egress:
+    labels: &installation-labels
+      io.talos.installation: ${TALOS_INSTALLATION_ID:?Installation ID is required}
+  egress:
+    labels: *installation-labels
+  ingress:
+    labels: *installation-labels
+  control:
+    internal: true
+    labels: *installation-labels
+volumes:
+  setup-artifacts:
+    labels: *installation-labels
+  connection-secrets:
+    labels: *installation-labels
+  provider-secrets:
+    labels: *installation-labels
+  postgres-data:
+    labels: *installation-labels
+  worker-state:
+    labels: *installation-labels

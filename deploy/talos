@@ -1,0 +1,3 @@
+#!/bin/bash
+set -eu
+printf '%s\n' 'Talos release candidate tooling. Installation commands arrive in the next stack layer.'

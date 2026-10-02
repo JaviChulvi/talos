@@ -28,6 +28,20 @@ RUN useradd --uid 10001 --create-home talos \
 USER talos
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]
 
+# Host tools are copied from the immutable official CLI build (Compose 2.40.3).
+FROM docker:28.5.2-cli@sha256:625d9431a9f54c5a2bc90f24f0e1c3d55b1349fd857dd85035f98c2c9acbdd4d AS docker-cli
+
+FROM platform AS management
+USER root
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+ARG TARGETARCH
+COPY deploy/ /app/deploy/
+RUN python deploy/install_age.py "$TARGETARCH" \
+    && docker --version && docker compose version && age --version
+ENTRYPOINT ["python", "-m", "backend.management"]
+CMD []
+
 FROM platform AS verification
 USER root
 COPY tests/ tests/
