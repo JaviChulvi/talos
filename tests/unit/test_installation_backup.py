@@ -253,6 +253,7 @@ def test_interrupted_rollback_resumes_without_requiring_removed_database(tmp_pat
     }
     calls = []
     monkeypatch.setattr(snapshots, "_control", lambda *args, **kwargs: calls.append("assert"))
+    monkeypatch.setattr(snapshots, "_ready_existing_database", lambda *args: None)
     monkeypatch.setattr(snapshots, "_containers", lambda *args, **kwargs: [])
     monkeypatch.setattr(snapshots, "_stopped", lambda *args: None)
     installation.compose = lambda *args: calls.append(args)
@@ -644,3 +645,92 @@ def test_standalone_sanitize_registers_connection_tables_in_fresh_process(tmp_pa
         assert cursor is not None and cursor.reconnect_required
         assert cursor.state == "restored" and cursor.offset == 0
         assert not session.get(EmployeeChannel, channel_id).enabled
+
+
+def test_rollback_restarts_only_owned_database_after_stop_before_checkpoint_crash(
+    tmp_path, monkeypatch
+):
+    from backend.management.installation import Installation
+
+    installation = Installation(tmp_path)
+    installation.state = {"installation_id": "source", "compose_project": "source-project"}
+    installation.write("operation.json", {"kind": "update", "phase": "rollback"})
+    archive = tmp_path / "snapshot"
+    archive.write_bytes(b"verified ciphertext")
+    manifest = {
+        "installation_id": "source",
+        "operation_id": "owner",
+        "platform": "linux/arm64",
+        "release": {"images": {"linux/arm64": {"platform": "source-platform-image"}}},
+    }
+    events = []
+
+    class Database:
+        labels = {
+            "com.docker.compose.project": "source-project",
+            "com.docker.compose.service": "db",
+            "io.talos.installation": "source",
+        }
+        status = "running"
+
+        def reload(self):
+            self.attrs = {"State": {"Status": self.status, "Health": {"Status": "healthy"}}}
+
+        def start(self):
+            events.append("start-db")
+            self.status = "running"
+
+    database = Database()
+    client = SimpleNamespace(
+        containers=SimpleNamespace(
+            list=lambda all=False, **kwargs: (
+                [database] if all or database.status == "running" else []
+            )
+        )
+    )
+
+    def control(_, action, operation_id, kind, *, image):
+        assert database.status == "running"
+        assert (action, operation_id, kind, image) == (
+            "assert",
+            "owner",
+            "update",
+            "source-platform-image",
+        )
+        events.append("verify-fence")
+
+    def stop(*args):
+        assert args == ("stop", "--timeout", "60")
+        database.status = "exited"
+        events.append("stop")
+
+    installation.compose = stop
+    monkeypatch.setattr(snapshots, "_control", control)
+    monkeypatch.setattr(snapshots, "_stopped", lambda *args: None)
+    durable_write = installation.write
+
+    def killed_before_checkpoint(name, value):
+        assert name == ".restore-operation.json"
+        raise RuntimeError("process died before checkpoint write")
+
+    installation.write = killed_before_checkpoint
+    with pytest.raises(RuntimeError, match="process died"):
+        snapshots._prepare_rollback(installation, client, manifest, archive, "owner")
+    assert events == ["verify-fence", "stop"]
+    assert database.status == "exited" and not (tmp_path / ".restore-operation.json").exists()
+    installation.write = durable_write
+    snapshots._prepare_rollback(installation, client, manifest, archive, "owner")
+    assert events == ["verify-fence", "stop", "start-db", "verify-fence", "stop"]
+    assert installation.read(".restore-operation.json")["operation_id"] == "owner"
+
+
+def test_rollback_database_restart_rejects_foreign_ownership(tmp_path):
+    installation = SimpleNamespace(
+        state={"installation_id": "source", "compose_project": "project"}
+    )
+    foreign = SimpleNamespace(
+        labels={"com.docker.compose.service": "db", "io.talos.installation": "someone-else"}
+    )
+    client = SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [foreign]))
+    with pytest.raises(snapshots.BackupError, match="Foreign container"):
+        snapshots._ready_existing_database(installation, client)

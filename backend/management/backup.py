@@ -14,6 +14,7 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -715,6 +716,36 @@ def list_restore_images(archive: Path, identity: Path) -> list[str]:
         return sorted(references)
 
 
+def _ready_existing_database(installation, client):
+    """Recover the stop-before-checkpoint window without starting platform writers."""
+    databases = [
+        row
+        for row in _containers(client, installation)
+        if row.labels.get("com.docker.compose.service") == "db"
+    ]
+    if len(databases) != 1:
+        raise BackupError(
+            "Rollback requires the existing owned database until its fence is checked"
+        )
+    database = databases[0]
+    database.reload()
+    if database.status in ("exited", "created"):
+        database.start()
+    elif database.status != "running":
+        raise BackupError("The existing rollback database is not startable")
+    deadline = time.monotonic() + 60
+    while True:
+        database.reload()
+        state = database.attrs.get("State", {})
+        if state.get("Status") == "running" and state.get("Health", {}).get("Status") == "healthy":
+            return
+        if state.get("Status") not in ("running", "created", "restarting"):
+            raise BackupError("The existing rollback database failed to start")
+        if time.monotonic() >= deadline:
+            raise BackupError("The existing rollback database did not become ready")
+        time.sleep(0.25)
+
+
 def _prepare_rollback(installation, client, manifest, archive, operation_id):
     """The persistent checkpoint permits retry after the database volume is replaced."""
     if (
@@ -748,6 +779,9 @@ def _prepare_rollback(installation, client, manifest, archive, operation_id):
         for database in _containers(client, installation, running=True):
             database.stop(timeout=60)
     else:
+        # A previous attempt may have stopped the DB and died before persisting
+        # its checkpoint. Restart only that owned DB, then prove fence ownership.
+        _ready_existing_database(installation, client)
         _control(
             installation,
             "assert",
