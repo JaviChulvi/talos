@@ -29,6 +29,7 @@ import {
   PanelLeftClose,
   Package,
   DollarSign,
+  ListChecks,
 } from "lucide-react";
 import {
   Sidebar,
@@ -681,7 +682,9 @@ export function AgentWorkspace({
   const budgetCoverage = selected?.runtime_mode === "native"
     ? selected.inference_override ? "gateway" : "external"
     : effectiveModel === "fixture" ? "simulator" : "gateway";
-  const pageTitle = page.startsWith("setups")
+  const pageTitle = page.startsWith("onboarding")
+    ? "Employee setup"
+    : page.startsWith("setups")
     ? "Setups"
     : page.startsWith("usage")
       ? "Usage"
@@ -877,6 +880,7 @@ export function AgentWorkspace({
         <SidebarFooter className="gap-3 p-3">
           <SidebarMenu>
             {[
+              { id: "onboarding", label: "Employee setup", icon: ListChecks },
               { id: "usage", label: "Usage", icon: DollarSign },
               { id: "employees", label: "Employees", icon: Users },
               { id: "roles", label: "Roles", icon: ShieldCheck },
