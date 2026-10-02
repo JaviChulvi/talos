@@ -82,3 +82,49 @@ def test_unrelated_network_errors_are_reported_without_retrying(harness):
     harness.client.containers.run.assert_not_called()
     assert environment(harness)["exit_code"] == 1
     harness.client.close.assert_called_once()
+
+
+def test_prebuilt_release_uses_exact_native_artifacts_without_building(harness, monkeypatch):
+    from tests.unit.test_release import release_manifest
+
+    manifest = release_manifest()
+    path = harness.root / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    harness.client.info.return_value = {"Architecture": "aarch64"}
+    harness.client.images.get.side_effect = lambda ref: SimpleNamespace(
+        id="id:" + ref,
+        attrs={"Architecture": "arm64"},
+        labels={"org.opencontainers.image.revision": manifest["source_revision"]},
+    )
+    commands = Mock()
+    monkeypatch.setattr(reliability.subprocess, "run", commands)
+    assert reliability.main(["--manifest", str(path)]) == 0
+    refs = manifest["images"]["linux/arm64"]
+    assert all(call.args[0][:2] == ["docker", "pull"] for call in commands.call_args_list)
+    assert harness.client.containers.run.call_args_list[0].args[0] == refs["postgres"]
+    assert harness.client.containers.run.call_args_list[1].args[0] == "id:" + refs["verification"]
+    report = environment(harness)
+    assert report["image_references"] == refs
+    assert report["revision"] == manifest["source_revision"]
+    assert report["dirty"] is False
+    assert report["platform"] == "linux/arm64"
+
+
+@pytest.mark.parametrize("architecture,revision", [("amd64", "a" * 40), ("arm64", "b" * 40)])
+def test_prebuilt_release_rejects_emulation_and_wrong_source(
+    harness, monkeypatch, architecture, revision
+):
+    from tests.unit.test_release import release_manifest
+
+    path = harness.root / "manifest.json"
+    path.write_text(json.dumps(release_manifest()))
+    harness.client.info.return_value = {"Architecture": "arm64"}
+    harness.client.images.get.return_value = SimpleNamespace(
+        id="image",
+        attrs={"Architecture": architecture},
+        labels={"org.opencontainers.image.revision": revision},
+    )
+    monkeypatch.setattr(reliability.subprocess, "run", Mock())
+    with pytest.raises(ValueError, match="native images|revision"):
+        reliability.main(["--manifest", str(path)])
+    harness.client.containers.run.assert_not_called()

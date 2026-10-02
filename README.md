@@ -2,6 +2,9 @@
 
 A self-hosted control plane for personal employee agents. The goal is to let companies manage agent integrations, permissions, credentials, spending, and offboarding.
 
+For the prebuilt private-beta installer, supported hosts, manual backup/restore, and
+release acceptance requirements, see [Installation and recovery](docs/installation.md).
+
 **Current status: local prototype.** Talos creates and manages native OpenClaw and Hermes instances with their own UI, tools, configuration, and persistent workspace. New agents default to native mode; a model provider is optional at creation. The existing Talos-managed conversation mode remains available with its simulator and opt-in OpenRouter gateway. Employee roles, Talos-routed spend reporting, and employee monthly allowances are available. A single built-in administrator secures the dashboard and management API, with host-only setup and recovery. Employees access their assigned agents through approved private Telegram or Slack identities.
 
 ## What works

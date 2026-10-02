@@ -1,0 +1,33 @@
+name: Promote private beta release
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        required: true
+        type: string
+      acceptance_run:
+        description: Successful Installation acceptance run for this exact candidate
+        required: true
+        type: string
+permissions:
+  contents: write
+  actions: read
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: private-beta-release
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify trusted workflow provenance and publish immutable assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          ACCEPTANCE_RUN: ${{ inputs.acceptance_run }}
+        run: >-
+          python3 -m tests.release_gate promote
+          --candidate-run "$CANDIDATE_RUN"
+          --acceptance-run "$ACCEPTANCE_RUN"
+          --directory "$RUNNER_TEMP/promotion"
