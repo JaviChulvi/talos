@@ -67,6 +67,7 @@ def test_both_channels_use_native_scoped_history_and_receipts(
     name = "talos-channel-proof-" + uuid4().hex[:10]
     labels = {"io.talos.channel-proof": name}
     records = []
+    slow_started, slow_closed = threading.Event(), threading.Event()
     token, control = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     app = FastAPI()
 
@@ -83,6 +84,12 @@ def test_both_channels_use_native_scoped_history_and_receipts(
         if body.get("stream"):
 
             async def chunks():
+                if any("[revocation-proof]" in message for message in users):
+                    slow_started.set()
+                    try:
+                        await asyncio.sleep(60)
+                    finally:
+                        slow_closed.set()
                 for delta, finish in [({"role": "assistant", "content": text}, None), ({}, "stop")]:
                     yield (
                         "data: "
@@ -235,6 +242,50 @@ def test_both_channels_use_native_scoped_history_and_receipts(
                 f"PASS {runtime_kind}: private histories persist across native stop/start",
                 flush=True,
             )
+            if runtime_kind == "openclaw":
+                # Attempt an actual native tool invocation with the deny-all policy.
+                denial = await asyncio.to_thread(
+                    runtime.exec_run,
+                    [
+                        "node",
+                        "-e",
+                        (
+                            "fetch('http://127.0.0.1:18789/tools/invoke',{method:'POST',"
+                            "headers:{'Authorization':'Bearer '+process.argv[1],"
+                            "'Content-Type':'application/json'},body:JSON.stringify({"
+                            "tool:'read',args:{path:'/etc/passwd'}})})"
+                            ".then(async r=>{console.log(r.status);"
+                            "if(r.status!==404)process.exit(1)}).catch(()=>process.exit(1))"
+                        ),
+                        control,
+                    ],
+                )
+                assert denial.exit_code == 0 and denial.output.strip() == b"404"
+                for pair in pairs:
+                    slow_started.clear()
+                    slow_closed.clear()
+                    inbox = receive(session_maker, pair, "[revocation-proof]", 4)
+                    task = asyncio.create_task(manager._execute(inbox.run_id))
+                    try:
+                        assert await asyncio.to_thread(slow_started.wait, 30)
+                        assert (
+                            client.post(
+                                f"/api/v1/employee-accesses/{pair[0]['id']}/disable"
+                            ).status_code
+                            == 200
+                        )
+                        await asyncio.wait_for(task, 15)
+                        with session_maker() as session:
+                            run = session.get(Run, inbox.run_id)
+                            assert run.cancel_requested and run.status == "cancelled", run.error
+                        assert await asyncio.to_thread(slow_closed.wait, 5)
+                        blocked_transport = AsyncMock()
+                        assert not await delivery.send_one(pair[1]["id"], blocked_transport)
+                        blocked_transport.send.assert_not_called()
+                    finally:
+                        task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                print("PASS openclaw: denied native tool and active channel revocation", flush=True)
 
         asyncio.run(exercise())
     finally:
