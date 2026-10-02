@@ -5,7 +5,7 @@ umask 077
 fail() { printf 'Talos: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
-Usage: talos {install|status|doctor} [options]
+Usage: talos {install|status|doctor|backup|restore} [options]
   --directory PATH       Installation directory (default ~/.talos)
   --bundle PATH          Downloaded, checksum-verified release assets
   --version VERSION      Download a private release using authenticated gh
@@ -23,7 +23,7 @@ EOF
 }
 [ "$#" -gt 0 ] || { usage; exit 0; }
 command=$1; shift
-case "$command" in install|status|doctor) ;; -h|--help|help) usage; exit 0 ;; *) fail 'Unknown command; use --help' ;; esac
+case "$command" in install|status|doctor|backup|restore) ;; -h|--help|help) usage; exit 0 ;; *) fail 'Unknown command; use --help' ;; esac
 install_dir=${TALOS_DIRECTORY:-$HOME/.talos}
 bundle=; version=; archive=; identity=; domain=; port=8000
 skip_admin=false; cancel=false; source_fenced=false; acme_directory=; acme_root=
@@ -181,6 +181,20 @@ if [ -n "$acme_directory" ]; then
   args+=(--acme-directory "$acme_directory" --acme-root "$install_dir/acceptance-acme-root.pem")
 fi
 run_args=(run --rm); if [ -t 0 ] && [ -t 1 ]; then run_args+=(-it); fi
+# A restored employee may retain an older pullable image outside this release's catalog.
+# Authenticate the archive without networking; let the host client perform every private pull.
+if [ "$command" = restore ]; then
+  [ -n "$archive" ] && [ -n "$identity" ] || fail 'restore requires --archive and --identity'
+  [ "$source_fenced" = true ] || fail 'Stop and fence the original installation, then pass --source-fenced'
+  restore_images=$verified_bundle/restore-images.txt
+  docker run --rm --pull never --network none "${mounts[@]}" --entrypoint python "$manager" \
+    -m backend.management.backup _images "$archive" "$identity" > "$restore_images" \
+    || fail 'Backup validation failed before restore; check archive and recovery identity'
+  while IFS= read -r reference || [ -n "$reference" ]; do
+    [[ "$reference" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$ ]] || fail 'Invalid backup image reference'
+    docker pull --platform "linux/$arch" "$reference" || fail 'Cannot pull an image retained by this backup; check registry access'
+  done < "$restore_images"
+fi
 # No registry configuration or credentials enter the management container.
 docker "${run_args[@]}" --pull never --network bridge --security-opt no-new-privileges \
   "${mounts[@]}" "$manager" "${args[@]}"
