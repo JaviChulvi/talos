@@ -23,7 +23,8 @@ from starlette.concurrency import run_in_threadpool
 
 from backend.app.config import get_settings
 from backend.app.db import Database
-from backend.app.models import RUNTIME_RELEASES, Setup, SetupRevision
+from backend.app.models import Setup, SetupRevision
+from backend.app.runtime_versions import runtime_targets
 
 router = APIRouter(prefix="/api/v1/setups", tags=["setups"])
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
@@ -184,9 +185,12 @@ def validate_manifest(manifest: dict, files: dict[str, bytes], *, publication: b
         raise BundleError("Resolve or remove captured blockers before publication")
     targets = set()
     for target in parsed.targets:
-        if target.runtime_release != RUNTIME_RELEASES[target.runtime_kind]:
+        if {
+            "runtime_kind": target.runtime_kind,
+            "runtime_release": target.runtime_release,
+        } not in runtime_targets():
             raise BundleError("Target runtime release is not supported by this Talos installation")
-        key = (target.runtime_kind, target.architecture)
+        key = (target.runtime_kind, target.runtime_release, target.architecture)
         if key in targets:
             raise BundleError("Duplicate runtime target")
         targets.add(key)
@@ -524,11 +528,8 @@ def import_bundle(content: bytes, session, setup_id: UUID | None, name: str):
 
 
 @router.get("/runtime-targets")
-def runtime_targets():
-    return [
-        {"runtime_kind": kind, "runtime_release": release}
-        for kind, release in RUNTIME_RELEASES.items()
-    ]
+def supported_runtime_targets():
+    return runtime_targets()
 
 
 @router.get("/{setup_id}", response_model=SetupResponse)

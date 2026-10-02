@@ -147,10 +147,11 @@ export function TargetFields({
             {available.flatMap((runtime) =>
               ["arm64", "amd64"].map((architecture) => (
                 <DropdownMenuItem
-                  key={`${runtime.runtime_kind}-${architecture}`}
+                  key={`${runtime.runtime_release}-${architecture}`}
                   disabled={targets.some(
                     (target) =>
                       target.runtime_kind === runtime.runtime_kind &&
+                      target.runtime_release === runtime.runtime_release &&
                       target.architecture === architecture,
                   )}
                   onSelect={() =>
@@ -158,6 +159,8 @@ export function TargetFields({
                   }
                 >
                   {runtime.runtime_kind === "hermes" ? "Hermes" : "OpenClaw"}
+                  {" · "}
+                  {runtime.runtime_release.slice(runtime.runtime_kind.length + 1)}
                   {" · "}{architecture.toUpperCase()}
                 </DropdownMenuItem>
               )),

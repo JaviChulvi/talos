@@ -1,9 +1,11 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
+
+from backend.app.runtime_versions import DEFAULT_RUNTIME_VERSIONS, validate_catalog
 
 
 class Settings(BaseSettings):
@@ -22,6 +24,7 @@ class Settings(BaseSettings):
     installation_id: str = Field(default="local", pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
     compose_project: str = Field(default="talos", pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
     worker_container: str | None = None
+    runtime_versions: dict[str, dict[str, str]] = DEFAULT_RUNTIME_VERSIONS
     lifecycle_poll_seconds: float = Field(default=1, ge=0.1, le=60)
     readiness_timeout_seconds: int = Field(default=120, ge=10, le=600)
 
@@ -30,6 +33,8 @@ class Settings(BaseSettings):
     inference_idle_timeout_seconds: int = Field(default=300, ge=30)
     inference_max_output_chars: int = Field(default=4_000_000, ge=16000)
     inference_max_request_bytes: int = Field(default=16_777_216, ge=262144)
+
+    _validate_runtime_versions = field_validator("runtime_versions")(validate_catalog)
 
     @property
     def connection_url(self) -> URL:

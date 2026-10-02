@@ -1,4 +1,4 @@
-"""Run the OpenClaw reliability suite in a disposable Docker installation.
+"""Run native runtime reliability checks in a disposable Docker installation.
 
 Usage: uv run python -m tests.reliability
 Builds current source, uses synthetic credentials, and cleans only owned resources.
@@ -30,10 +30,12 @@ TESTS = [
             "setup_application_status",
             "connection_secrets",
             "reliability",
+            "runtime_versions",
             "slack",
             "telegram",
         )
     ],
+    "tests/unit/test_native_ui_proxy.py::test_worker_upgrades_legacy_relay_on_its_existing_port",
     *[
         f"tests/integration/test_{name}.py"
         for name in (
@@ -55,10 +57,20 @@ TESTS = [
             "runtime_compatibility",
         )
     ],
-    "tests/integration/test_setup_runtime_docker.py::"
-    "test_setup_reproduces_native_skills_and_mcp_and_preserves_unmanaged_state[openclaw]",
-    "tests/integration/test_native_channel_acceptance.py::"
-    "test_both_channels_use_native_scoped_history_and_receipts[openclaw]",
+    *[
+        f"tests/integration/{module}.py::{test}[{kind}]"
+        for kind in ("openclaw", "hermes")
+        for module, test in (
+            (
+                "test_setup_runtime_docker",
+                "test_setup_reproduces_native_skills_and_mcp_and_preserves_unmanaged_state",
+            ),
+            (
+                "test_native_channel_acceptance",
+                "test_both_channels_use_native_scoped_history_and_receipts",
+            ),
+        )
+    ],
 ]
 
 
@@ -72,7 +84,11 @@ def main():
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))
     images = {}
-    for target, kind in (("verification", "runner"), ("native-runtime", "openclaw")):
+    for target, kind in (
+        ("verification", "runner"),
+        ("native-runtime", "openclaw"),
+        ("hermes-runtime", "hermes"),
+    ):
         image_file = report / f"{kind}.image-id"
         print(f"Building {target} from current source", flush=True)
         subprocess.run(
@@ -151,6 +167,7 @@ def main():
                 "TALOS_TEST_TMPFS_VOLUMES": "1",
                 "TALOS_RELIABILITY_RUN_ID": name,
                 "TALOS_TEST_OPENCLAW_IMAGE": images["openclaw"],
+                "TALOS_TEST_HERMES_IMAGE": images["hermes"],
             },
             tmpfs={"/tmp": "rw,exec,nosuid,nodev,size=512m,mode=1777"},
             volumes={

@@ -21,11 +21,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db import Base
+from backend.app.runtime_versions import HERMES_RELEASE as HERMES_RELEASE
+from backend.app.runtime_versions import RUNTIME_RELEASE
+from backend.app.runtime_versions import RUNTIME_RELEASES as RUNTIME_RELEASES
 
 ACTIVE_OPERATION_STATUSES = ("queued", "running", "retry_wait")
-RUNTIME_RELEASE = "openclaw-2026.9.6"
-HERMES_RELEASE = "hermes-0.21.5"
-RUNTIME_RELEASES = {"openclaw": RUNTIME_RELEASE, "hermes": HERMES_RELEASE}
 
 
 class Administrator(Base):
@@ -334,6 +334,7 @@ class Agent(Base):
 
     inference_override: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     runtime_release: Mapped[str] = mapped_column(String(100), default=RUNTIME_RELEASE)
+    runtime_image: Mapped[str | None] = mapped_column(String(255))
     desired_state: Mapped[str] = mapped_column(String(20), default="stopped")
     observed_state: Mapped[str] = mapped_column(String(20), default="pending")
     revision: Mapped[int] = mapped_column(BigInteger, default=1)

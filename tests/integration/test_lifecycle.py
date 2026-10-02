@@ -873,6 +873,7 @@ def test_gateway_lease_cleanup_requires_confirmed_stop(client, worker, session_m
         worker.names(UUID(agent_id))[0],
         container.attrs["Config"]["Hostname"],
         worker.labels(UUID(agent_id)),
+        image=incarnation.image_digest,
     )
 
 
@@ -963,8 +964,126 @@ def test_replacement_releases_old_run_only_after_runtime_stops(
         assert result["status"] == "succeeded"
         assert agent.current_incarnation_id != old
         assert run.status == "interrupted"
-    assert client.post(
-        f"/api/v1/agents/{agent_id}/diagnostic-runs",
-        json={"message": "new turn"},
-        headers={"Idempotency-Key": "new-turn"},
-    ).status_code == 202
+    assert (
+        client.post(
+            f"/api/v1/agents/{agent_id}/diagnostic-runs",
+            json={"message": "new turn"},
+            headers={"Idempotency-Key": "new-turn"},
+        ).status_code
+        == 202
+    )
+
+
+@pytest.mark.parametrize("kind", ["openclaw", "hermes"])
+def test_native_restart_retains_image_after_tag_and_catalog_change(
+    client, worker, session_maker, role_agent, monkeypatch, kind
+):
+    from copy import deepcopy
+
+    from backend.app.config import get_settings
+    from backend.app.runtime_versions import DEFAULT_RUNTIME_VERSIONS, RUNTIME_RELEASES
+    from worker.lifecycle import release_stopped_gateway_lease
+    from worker.runtime import NATIVE_IMAGES
+
+    release = RUNTIME_RELEASES[kind]
+    original, replacement = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    images = {
+        NATIVE_IMAGES[kind]: SimpleNamespace(
+            id=original, labels={"io.talos.runtime-release": release}
+        ),
+        original: SimpleNamespace(id=original, labels={"io.talos.runtime-release": release}),
+    }
+    lookup = Mock(side_effect=images.__getitem__)
+    monkeypatch.setattr(worker.client.images, "get", lookup)
+    payload = {"display_name": "Pinned", "employee_label": "Alex", "runtime_kind": kind}
+    if kind == "hermes":
+        payload["dashboard_password"] = "synthetic-version-password"
+    created = client.post(
+        "/api/v1/agents", json=payload, headers={"Idempotency-Key": "versioned-agent"}
+    )
+    assert created.status_code == 202
+    agent_id = UUID(created.json()["agent_id"])
+    worker.process_one()
+    path = f"/api/v1/agents/{agent_id}"
+    assert (
+        client.post(path + "/start", headers={"Idempotency-Key": "first-start"}).status_code == 202
+    )
+    worker.process_one()
+    with session_maker() as session:
+        agent = session.get(Agent, agent_id)
+        assert agent.observed_state == "ready"
+        assert agent.runtime_image == original
+        first_id = agent.current_incarnation_id
+    images[NATIVE_IMAGES[kind]] = SimpleNamespace(
+        id=replacement, labels={"io.talos.runtime-release": release}
+    )
+    catalog = deepcopy(DEFAULT_RUNTIME_VERSIONS)
+    catalog[kind] = {"2026.9.10" if kind == "openclaw" else "0.22.0": replacement}
+    monkeypatch.setattr(get_settings(), "runtime_versions", catalog)
+    assert (
+        client.post(path + "/stop", headers={"Idempotency-Key": "stop-versioned"}).status_code
+        == 202
+    )
+    worker.process_one()
+    assert (
+        client.post(path + "/start", headers={"Idempotency-Key": "restart-versioned"}).status_code
+        == 202
+    )
+    worker.process_one()
+    with session_maker() as session:
+        agent = session.get(Agent, agent_id)
+        assert agent.observed_state == "ready"
+        assert agent.runtime_release == release and agent.runtime_image == original
+        assert agent.current_incarnation_id != first_id
+        incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
+        assert incarnation.image_digest == original
+        assert worker.owned_container(incarnation).attrs["Config"]["Image"] == original
+    assert lookup.call_args_list[-1].args == (original,)
+    if kind == "hermes":
+        release_stopped_gateway_lease.assert_not_called()
+    else:
+        assert release_stopped_gateway_lease.call_args.kwargs["image"] == original
+
+
+@pytest.mark.parametrize("declared", [None, "openclaw-2026.9.6"])
+def test_added_version_requires_matching_installed_image_before_start(
+    client, worker, session_maker, role_agent, monkeypatch, declared
+):
+    from copy import deepcopy
+
+    from backend.app.config import get_settings
+    from backend.app.runtime_versions import DEFAULT_RUNTIME_VERSIONS
+
+    catalog = deepcopy(DEFAULT_RUNTIME_VERSIONS)
+    image = "sha256:" + "a" * 64
+    catalog["openclaw"]["2026.9.10"] = image
+    monkeypatch.setattr(get_settings(), "runtime_versions", catalog)
+    monkeypatch.setattr(
+        worker.client.images,
+        "get",
+        lambda _: SimpleNamespace(
+            id=image,
+            labels={} if declared is None else {"io.talos.runtime-release": declared},
+        ),
+    )
+    created = client.post(
+        "/api/v1/agents",
+        json={"display_name": "Mismatch", "employee_label": "Alex", "runtime_version": "2026.9.10"},
+        headers={"Idempotency-Key": "mismatched-version"},
+    )
+    assert created.status_code == 202
+    agent_id = UUID(created.json()["agent_id"])
+    worker.process_one()
+    assert (
+        client.post(
+            f"/api/v1/agents/{agent_id}/start", headers={"Idempotency-Key": "mismatched-start"}
+        ).status_code
+        == 202
+    )
+    creations = worker.client.containers.creations
+    worker.process_one()
+    with session_maker() as session:
+        agent = session.get(Agent, agent_id)
+        assert agent.current_incarnation_id is None
+        assert "does not match" in agent.last_error
+    assert worker.client.containers.creations == creations

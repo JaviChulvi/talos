@@ -49,11 +49,13 @@ def test_runner_uses_its_build_ids_even_if_another_checkout_overwrites_shared_ta
     call = harness.client.containers.run.call_args_list[1]
     assert call.args[0] == "sha256:our-verification"
     assert call.kwargs["environment"]["TALOS_TEST_OPENCLAW_IMAGE"] == "sha256:our-native-runtime"
+    assert call.kwargs["environment"]["TALOS_TEST_HERMES_IMAGE"] == "sha256:our-hermes-runtime"
     report = environment(harness)
     assert report["revision"] == "our-revision"
     assert report["images"] == {
         "runner": "sha256:our-verification",
         "openclaw": "sha256:our-native-runtime",
+        "hermes": "sha256:our-hermes-runtime",
     }
 
 
