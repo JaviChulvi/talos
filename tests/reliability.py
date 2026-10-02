@@ -29,6 +29,7 @@ TESTS = [
             "setup_capture",
             "setup_application_status",
             "connection_secrets",
+            "reliability",
             "slack",
             "telegram",
         )
@@ -72,34 +73,52 @@ def main():
     dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT))
     images = {}
     for target, kind in (("verification", "runner"), ("native-runtime", "openclaw")):
-        tag = f"talos-reliability:{kind}"
+        image_file = report / f"{kind}.image-id"
         print(f"Building {target} from current source", flush=True)
         subprocess.run(
-            ["docker", "build", "--target", target, "-f", "deploy/Dockerfile", "-t", tag, "."],
+            [
+                "docker",
+                "build",
+                "--target",
+                target,
+                "-f",
+                "deploy/Dockerfile",
+                "--iidfile",
+                str(image_file),
+                ".",
+            ],
             cwd=ROOT,
             check=True,
         )
-        images[kind] = client.images.get(tag).id
-    occupied = [
-        ipaddress.ip_network(config["Subnet"])
-        for network in client.networks.list()
-        for config in (network.attrs.get("IPAM", {}).get("Config") or [])
-        if config.get("Subnet")
-    ]
-    subnet = next(
-        ipaddress.ip_network(f"10.252.{number}.0/24")
-        for number in range(1, 255)
-        if not any(ipaddress.ip_network(f"10.252.{number}.0/24").overlaps(net) for net in occupied)
-    )
-    network = client.networks.create(
-        name,
-        internal=True,
-        labels=labels,
-        ipam=docker.types.IPAMConfig(pool_configs=[docker.types.IPAMPool(subnet=str(subnet))]),
-    )
-    database = runner = None
+        images[kind] = image_file.read_text().strip()
     code = 1
     try:
+        occupied = [
+            ipaddress.ip_network(config["Subnet"])
+            for network in client.networks.list()
+            for config in (network.attrs.get("IPAM", {}).get("Config") or [])
+            if config.get("Subnet")
+        ]
+        for number in range(1, 255):
+            subnet = ipaddress.ip_network(f"10.252.{number}.0/24")
+            if any(subnet.overlaps(net) for net in occupied):
+                continue
+            try:
+                network = client.networks.create(
+                    name,
+                    internal=True,
+                    labels=labels,
+                    ipam=docker.types.IPAMConfig(
+                        pool_configs=[docker.types.IPAMPool(subnet=str(subnet))]
+                    ),
+                )
+            except docker.errors.APIError as error:
+                if "pool overlaps" not in str(error.explanation).lower():
+                    raise
+            else:
+                break
+        else:
+            raise RuntimeError("No available reliability test subnet in 10.252.0.0/16")
         try:
             client.images.get(POSTGRES)
         except docker.errors.ImageNotFound:

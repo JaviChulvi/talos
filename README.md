@@ -220,6 +220,9 @@ The trusted test runner mounts Docker's socket; agent containers do not.
 The runner removes its containers, volumes and network and writes `results.xml`,
 `pytest.log`, and `environment.json` under `.data/reliability/<run-id>/`.
 The environment records the tested image IDs, source revision, and dirty status.
+Run-specific build records capture immutable image IDs directly, preventing
+concurrent runs from exchanging images. The runner retries subnet collisions
+during initial network allocation.
 
 | Scenario | Expected behavior and evidence |
 | --- | --- |
