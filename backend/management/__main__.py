@@ -46,7 +46,7 @@ def main(argv=None):
             print(json.dumps(installation.status(), indent=2))
             if args.command == "doctor":
                 installation.preflight_resources()
-                installation.ready(timeout=5)
+                installation.ready(timeout=15)
                 print(
                     "Platform services are running; "
                     "this check does not prove employee channel delivery."

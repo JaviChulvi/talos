@@ -25,10 +25,13 @@ ASSETS = {
 
 
 def checksums(bundle):
-    (bundle / "checksums.txt").write_text("".join(
-        f"{hashlib.sha256((bundle / name).read_bytes()).hexdigest()}  {name}\n"
-        for name in ASSETS if (bundle / name).exists()
-    ))
+    (bundle / "checksums.txt").write_text(
+        "".join(
+            f"{hashlib.sha256((bundle / name).read_bytes()).hexdigest()}  {name}\n"
+            for name in ASSETS
+            if (bundle / name).exists()
+        )
+    )
 
 
 @pytest.fixture
@@ -60,7 +63,9 @@ def installer(tmp_path, monkeypatch, manifest):
     monkeypatch.setattr(host.Installation, "record_release", lambda _: None, raising=False)
     monkeypatch.setattr(host.Installation, "ready", lambda _: None)
     monkeypatch.setattr(
-        host.Installation, "maintenance_status", lambda _: {"maintenance": {"active": False}},
+        host.Installation,
+        "maintenance_status",
+        lambda _: {"maintenance": {"active": False}},
         raising=False,
     )
     return host.Installation(directory)
@@ -68,13 +73,22 @@ def installer(tmp_path, monkeypatch, manifest):
 
 def install(instance, bundle):
     instance.install(
-        bundle, platform="linux/arm64", host_os="macos", uid=os.getuid(), gid=os.getgid(),
-        docker_socket="/var/run/docker.sock.raw", port=8000, domain=None, skip_admin=True,
+        bundle,
+        platform="linux/arm64",
+        host_os="macos",
+        uid=os.getuid(),
+        gid=os.getgid(),
+        docker_socket="/var/run/docker.sock.raw",
+        port=8000,
+        domain=None,
+        skip_admin=True,
     )
 
 
 def test_interrupted_install_and_repeat_preserve_identity_secrets_and_resume(
-    installer, bundle, monkeypatch,
+    installer,
+    bundle,
+    monkeypatch,
 ):
     commands = []
     fail_migration = True
@@ -109,7 +123,11 @@ def test_interrupted_install_and_repeat_preserve_identity_secrets_and_resume(
 
 @pytest.mark.parametrize("change", ["release", "architecture"])
 def test_retry_refuses_release_or_architecture_changes_before_writing(
-    installer, bundle, monkeypatch, manifest, change,
+    installer,
+    bundle,
+    monkeypatch,
+    manifest,
+    change,
 ):
     monkeypatch.setattr(
         host.Installation, "compose", lambda *a, **kw: SimpleNamespace(stdout="exists")
@@ -135,14 +153,24 @@ def test_retry_refuses_access_change_before_writing(installer, bundle, monkeypat
     previous = (installer.directory / "installation.json").read_bytes()
     with pytest.raises(ValueError, match="saved domain and port"):
         installer.install(
-            bundle, platform="linux/arm64", host_os="macos", uid=os.getuid(), gid=os.getgid(),
-            docker_socket="/var/run/docker.sock.raw", port=9000, domain=None, skip_admin=True,
+            bundle,
+            platform="linux/arm64",
+            host_os="macos",
+            uid=os.getuid(),
+            gid=os.getgid(),
+            docker_socket="/var/run/docker.sock.raw",
+            port=9000,
+            domain=None,
+            skip_admin=True,
         )
     assert (installer.directory / "installation.json").read_bytes() == previous
 
 
 def test_retry_refuses_changed_image_under_same_release_version(
-    installer, bundle, monkeypatch, manifest,
+    installer,
+    bundle,
+    monkeypatch,
+    manifest,
 ):
     monkeypatch.setattr(
         host.Installation, "compose", lambda *a, **kw: SimpleNamespace(stdout="exists")
@@ -153,7 +181,6 @@ def test_retry_refuses_changed_image_under_same_release_version(
     with pytest.raises(ValueError, match="manifest changed"):
         install(host.Installation(installer.directory), bundle)
     assert (installer.directory / ".env").read_bytes() == original
-
 
 
 def test_developer_directory_is_never_adopted(installer, bundle):
@@ -186,9 +213,15 @@ def test_failed_configuration_write_preserves_original_secret(installer, bundle,
     @contextmanager
     def interrupted(path, mode="r", *args, **kwargs):
         with path_open(path, mode, *args, **kwargs) as stream:
-            yield InterruptedWrite(stream) if (
-                path.parent == installer.directory and path.name.startswith(".env") and "w" in mode
-            ) else stream
+            yield (
+                InterruptedWrite(stream)
+                if (
+                    path.parent == installer.directory
+                    and path.name.startswith(".env")
+                    and "w" in mode
+                )
+                else stream
+            )
 
     monkeypatch.setattr(Path, "open", interrupted)
     with pytest.raises(OSError, match="Simulated disk write failure"):
@@ -230,7 +263,9 @@ def test_checked_bundle_rejects_invalid_or_duplicate_entries(bundle, entry):
 
 @pytest.mark.parametrize("resource", ["container", "volume", "network"])
 def test_project_resources_with_foreign_installation_labels_are_refused(
-    tmp_path, monkeypatch, resource,
+    tmp_path,
+    monkeypatch,
+    resource,
 ):
     instance = host.Installation(tmp_path)
     instance.state = {"installation_id": "owned", "compose_project": "talos-test"}
@@ -251,8 +286,11 @@ def test_explicit_volume_name_cannot_adopt_unlabelled_foreign_data(tmp_path, mon
     instance = host.Installation(tmp_path)
     instance.state = {"installation_id": "owned", "compose_project": "talos-test"}
     monkeypatch.setattr(host, "run", lambda *a, **kw: SimpleNamespace(stdout=""))
-    monkeypatch.setattr(host.subprocess, "run", lambda *a, **kw:
-                        SimpleNamespace(returncode=0, stdout='[{"Labels": {}}]'))
+    monkeypatch.setattr(
+        host.subprocess,
+        "run",
+        lambda *a, **kw: SimpleNamespace(returncode=0, stdout='[{"Labels": {}}]'),
+    )
     with pytest.raises(ValueError, match="Foreign volume talos-test_postgres-data"):
         instance.preflight_resources()
 
@@ -260,7 +298,9 @@ def test_explicit_volume_name_cannot_adopt_unlabelled_foreign_data(tmp_path, mon
 def test_occupied_port_removes_probe_and_closes_docker_client(tmp_path, monkeypatch, manifest):
     instance = host.Installation(tmp_path)
     instance.state = {
-        "installation_id": "owned", "compose_project": "talos-test", "platform": "linux/arm64",
+        "installation_id": "owned",
+        "compose_project": "talos-test",
+        "platform": "linux/arm64",
         "access": {"mode": "local", "port": 8000},
     }
     instance.manifest = manifest
@@ -288,21 +328,31 @@ def test_occupied_port_removes_probe_and_closes_docker_client(tmp_path, monkeypa
 def test_owned_port_is_reusable_on_install_retry(tmp_path, monkeypatch, manifest):
     instance = host.Installation(tmp_path)
     instance.state = {
-        "installation_id": "owned", "compose_project": "talos-test", "platform": "linux/arm64",
+        "installation_id": "owned",
+        "compose_project": "talos-test",
+        "platform": "linux/arm64",
         "access": {"mode": "local", "port": 8000},
     }
     instance.manifest = manifest
-    owned = SimpleNamespace(attrs={
-        "NetworkSettings": {"Ports": {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8000"}]}},
-    })
+    owned = SimpleNamespace(
+        attrs={
+            "NetworkSettings": {
+                "Ports": {"8000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8000"}]}
+            },
+        }
+    )
 
     def list_owned(**kwargs):
         assert "io.talos.installation=owned" in kwargs["filters"]["label"]
         return [owned]
 
-    client = SimpleNamespace(containers=SimpleNamespace(
-        list=list_owned, create=lambda *a, **kw: pytest.fail("Probed an owned port"),
-    ), close=lambda: None)
+    client = SimpleNamespace(
+        containers=SimpleNamespace(
+            list=list_owned,
+            create=lambda *a, **kw: pytest.fail("Probed an owned port"),
+        ),
+        close=lambda: None,
+    )
     monkeypatch.setattr(host.docker, "from_env", lambda: client)
     instance.preflight_ports()
 
@@ -312,7 +362,7 @@ def launcher(tmp_path, bundle):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     scripts = {
-        "docker": r'''#!/bin/bash
+        "docker": r"""#!/bin/bash
 printf '%s\n' "$*" >> "$MOCK_LOG"
 case "$*" in
   'context show') echo default ;;
@@ -327,11 +377,11 @@ case "$*" in
   'run '*) exit 0 ;;
   *) exit 9 ;;
 esac
-''',
+""",
         "uname": '#!/bin/bash\nif [ "$1" = -m ]; then echo "${MOCK_ARCH:-arm64}"; '
-                 'else echo "${MOCK_OS:-Darwin}"; fi\n',
+        'else echo "${MOCK_OS:-Darwin}"; fi\n',
         "df": '#!/bin/bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\n'
-              'fixture 90000000 1 80000000 1%% /fixture\\n"\n',
+        'fixture 90000000 1 80000000 1%% /fixture\\n"\n',
     }
     for name, content in scripts.items():
         path = bin_dir / name
@@ -339,31 +389,48 @@ esac
         path.chmod(0o755)
     log = tmp_path / "docker.log"
     directory = tmp_path / "managed"
-    env = {key: value for key, value in os.environ.items()
-           if key not in {"DOCKER_HOST", "DOCKER_CONTEXT", "TALOS_DIRECTORY"}}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"DOCKER_HOST", "DOCKER_CONTEXT", "TALOS_DIRECTORY"}
+    }
     env.update(PATH=f"{bin_dir}:{env['PATH']}", MOCK_LOG=str(log))
 
     def invoke(**changes):
         result = subprocess.run(
-            ["/bin/bash", str(ROOT / "deploy/talos"), "install", "--directory", str(directory),
-             "--bundle", str(bundle), "--skip-admin"],
-            env={**env, **changes}, capture_output=True, text=True, timeout=10,
+            [
+                "/bin/bash",
+                str(ROOT / "deploy/talos"),
+                "install",
+                "--directory",
+                str(directory),
+                "--bundle",
+                str(bundle),
+                "--skip-admin",
+            ],
+            env={**env, **changes},
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return result, log.read_text() if log.exists() else "", directory
 
     return invoke
 
 
-@pytest.mark.parametrize(("overrides", "message"), [
-    ({"MOCK_ENDPOINT": "ssh://remote"}, "Only a local Docker context"),
-    ({"MOCK_ENDPOINT": "tcp://127.0.0.1:2375"}, "Only a local Docker context"),
-    ({"DOCKER_HOST": "unix:///other.sock"}, "Unset DOCKER_HOST/DOCKER_CONTEXT"),
-    ({"DOCKER_CONTEXT": "remote"}, "Unset DOCKER_HOST/DOCKER_CONTEXT"),
-    ({"MOCK_SECURITY": '["name=rootless"]'}, "Rootless Docker"),
-    ({"MOCK_ARCH": "x86_64"}, "Supported hosts"),
-    ({"MOCK_SERVER_ARCH": "x86_64"}, "Docker architecture does not match"),
-    ({"MOCK_DOCKER_EXIT": "1"}, "Docker is unavailable"),
-])
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"MOCK_ENDPOINT": "ssh://remote"}, "Only a local Docker context"),
+        ({"MOCK_ENDPOINT": "tcp://127.0.0.1:2375"}, "Only a local Docker context"),
+        ({"DOCKER_HOST": "unix:///other.sock"}, "Unset DOCKER_HOST/DOCKER_CONTEXT"),
+        ({"DOCKER_CONTEXT": "remote"}, "Unset DOCKER_HOST/DOCKER_CONTEXT"),
+        ({"MOCK_SECURITY": '["name=rootless"]'}, "Rootless Docker"),
+        ({"MOCK_ARCH": "x86_64"}, "Supported hosts"),
+        ({"MOCK_SERVER_ARCH": "x86_64"}, "Docker architecture does not match"),
+        ({"MOCK_DOCKER_EXIT": "1"}, "Docker is unavailable"),
+    ],
+)
 def test_launcher_rejects_unsupported_hosts_before_installation(launcher, overrides, message):
     result, commands, directory = launcher(**overrides)
     assert result.returncode != 0
@@ -377,6 +444,8 @@ def test_launcher_uses_host_digest_pulls_and_never_builds(launcher):
     assert result.returncode == 0, result.stderr
     assert f"pull --platform linux/arm64 {IMAGE}" in commands
     assert f"{IMAGE} install --directory {directory}" in commands
+    assert "-v /var/run/docker.sock.raw:/var/run/docker.sock" in commands
+    assert "--docker-socket /var/run/docker.sock --port" in commands
     assert "--pull never" in commands
     assert "build" not in commands
     assert not (directory / ".talos-lock").exists()
@@ -389,3 +458,24 @@ def test_launcher_rejects_unpinned_pull_list_before_docker_pull(launcher, bundle
     assert result.returncode != 0
     assert "Invalid image in release pull list" in result.stderr
     assert not any(line.startswith(("pull ", "run ")) for line in commands.splitlines())
+
+
+def test_readiness_requires_fresh_worker_gateway_connector_heartbeats(tmp_path, monkeypatch):
+    instance = host.Installation(tmp_path)
+    commands = []
+
+    def compose(*args, **kwargs):
+        commands.append(args)
+        if args[0] == "exec":
+            raise subprocess.CalledProcessError(1, args)
+        pytest.fail("Reported readiness before fresh heartbeats")
+
+    moments = iter([0, 0, 3])
+    monkeypatch.setattr(instance, "compose", compose)
+    monkeypatch.setattr(host.time, "monotonic", lambda: next(moments))
+    monkeypatch.setattr(host.time, "sleep", lambda _: None)
+    with pytest.raises(ValueError, match="Platform readiness timed out"):
+        instance.ready(timeout=2)
+    assert "('worker','gateway','connector')" in commands[0][5]
+    assert "rows[k]>=cutoff" in commands[0][5]
+    assert len(commands[0]) == 7

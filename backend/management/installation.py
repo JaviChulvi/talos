@@ -10,6 +10,7 @@ import subprocess
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import docker
@@ -311,16 +312,28 @@ class Installation:
         self.save()
 
     def ready(self, timeout: int = 180) -> None:
-        code = "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=3)"
+        started = datetime.now(UTC).isoformat()
+        code = (
+            "import sys,urllib.request; from datetime import datetime; "
+            "from sqlalchemy import select; from backend.app.db import session_factory; "
+            "from backend.app.models import ServiceHeartbeat; "
+            "urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=3); "
+            "s=session_factory()(); "
+            "rows={r.service:r.checked_at for r in s.scalars(select(ServiceHeartbeat))}; "
+            "cutoff=datetime.fromisoformat(sys.argv[1]); "
+            "assert all(rows.get(k) and rows[k]>=cutoff for k in ('worker','gateway','connector'))"
+        )
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                self.compose("exec", "-T", "api", "python", "-c", code, capture=True)
+                self.compose("exec", "-T", "api", "python", "-c", code, started, capture=True)
                 break
             except subprocess.CalledProcessError:
                 time.sleep(2)
         else:
-            raise ValueError("API readiness timed out; rerun install after inspecting talos doctor")
+            raise ValueError(
+                "Platform readiness timed out; inspect service logs, then rerun the command"
+            )
         # Ready must include actual daemon processes, not only an API/database healthcheck.
         records = self.compose("ps", "--format", "json", capture=True).stdout
         services = (
