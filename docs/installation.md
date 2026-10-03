@@ -1,5 +1,9 @@
 # Private beta installation and recovery
 
+[← Talos](../README.md) · [Documentation index](../README.md#documentation)
+
+This guide covers promoted private-beta bundles. For a source checkout, use [Development and validation](development.md#run-locally) and [source-checkout maintenance](operations.md#source-checkout-maintenance).
+
 The release installer supports Ubuntu 24.04 x86_64 with local rootful Docker Engine,
 and Apple Silicon macOS with local Docker Desktop. Allocate at least 4 CPUs,
 8 GB RAM, and 30 GiB free disk space. Docker must already be installed and running.
