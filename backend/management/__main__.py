@@ -32,6 +32,7 @@ def parser():
     result.add_argument("--archive", type=Path)
     result.add_argument("--identity", type=Path)
     result.add_argument("--cancel-maintenance", action="store_true")
+    result.add_argument("--reconcile-uncertain", action="store_true")
     result.add_argument("--acme-directory")
     result.add_argument("--acme-root", type=Path)
     return result
@@ -40,11 +41,15 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
+        if args.reconcile_uncertain and (args.command != "status" or args.cancel_maintenance):
+            raise ValueError("Use status --reconcile-uncertain without --cancel-maintenance")
         manifest = checked_bundle(args.bundle)
         if manifest["images"][args.platform]["management"] != args.management_image:
             raise ValueError("Management image does not match the selected release manifest")
         installation = Installation(args.directory)
-        if args.command in ("status", "doctor") and not args.cancel_maintenance:
+        if args.command in ("status", "doctor") and not (
+            args.cancel_maintenance or args.reconcile_uncertain
+        ):
             print(json.dumps(installation.status(), indent=2))
             if args.command == "doctor":
                 installation.preflight_resources()
@@ -78,6 +83,14 @@ def main(argv=None):
                     domain=args.domain,
                     skip_admin=args.skip_admin,
                 )
+            elif args.reconcile_uncertain:
+                from backend.management.backup import reconcile
+
+                reconcile(installation)
+                print(
+                    "Interrupted inference and uncertain delivery reconciled. "
+                    "Unknown costs remain unknown; no messages were resent."
+                )
             elif args.command == "status" and args.cancel_maintenance:
                 from backend.management.backup import resume
 
@@ -109,7 +122,7 @@ def main(argv=None):
                     print(f"Encrypted backup saved: {args.archive}")
                     print(f"Retain the recovery identity separately: {args.identity}")
                 elif args.command == "restore":
-                    restore(
+                    operation_id = restore(
                         installation,
                         args.archive,
                         args.identity,
@@ -121,7 +134,7 @@ def main(argv=None):
                             "docker_socket": args.docker_socket,
                         },
                     )
-                    resume(installation)
+                    resume(installation, operation_id)
                     installation.journal("restore", "complete")
                     print(
                         "Restored with employee agents stopped, "

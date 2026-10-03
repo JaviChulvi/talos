@@ -333,6 +333,8 @@ class Installation:
             if saved.exists():
                 shutil.rmtree(saved)
             shutil.copytree(bundle, saved)
+            for path in (saved, *saved.rglob("*")):
+                os.chown(path, self.state["owner_uid"], self.state["owner_gid"])
         self.state["release"] = manifest["version"]
         self.save()
 

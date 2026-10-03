@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from backend.app.installation import (
     ensure_writable,
@@ -35,6 +35,7 @@ pytestmark = pytest.mark.integration
 @pytest.fixture(autouse=True)
 def reset_gate(session_maker):
     with session_maker.begin() as session:
+        session.execute(text("TRUNCATE employee_channels, connections CASCADE"))
         state = session.get(InstallationState, 1)
         state.maintenance_operation_id = None
         state.maintenance_kind = None
@@ -246,3 +247,114 @@ def test_reboot_can_resume_known_unsent_queue_without_new_identity(client, worke
     with session_maker() as session:
         assert session.get(Agent, UUID(agent_id)).current_incarnation_id == incarnation.id
         assert session.scalar(select(Run.status)) == "queued"
+
+
+@pytest.mark.parametrize("delivery_state", ["sending", "uncertain"])
+def test_explicit_reconciliation_preserves_unknown_costs_and_delivery_evidence(
+    client,
+    worker,
+    session_maker,
+    delivery_state,
+):
+    from decimal import Decimal
+
+    from backend.app.connections import Connection
+    from backend.app.installation import reconcile_uncertain
+    from backend.app.models import ChannelInbox, ChannelOutbox, EmployeeChannel
+    from connector.delivery import Delivery
+
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    assert (
+        client.post(
+            f"/api/v1/agents/{agent_id}/stop", headers={"Idempotency-Key": "stop-for-reconcile"}
+        ).status_code
+        == 202
+    )
+    worker.process_one()
+    with session_maker.begin() as session:
+        agent = session.get(Agent, UUID(agent_id))
+        call = InferenceCall(
+            agent_id=agent.id, incarnation_id=agent.current_incarnation_id, model="test/model"
+        )
+        reported = InferenceCall(
+            agent_id=agent.id,
+            incarnation_id=agent.current_incarnation_id,
+            model="test/model",
+            cost_usd=Decimal("0.123"),
+            input_tokens=42,
+        )
+        connection = Connection(name="Reconcile test", purpose="channel")
+        session.add_all([call, reported, connection])
+        session.flush()
+        channel = EmployeeChannel(provider="telegram", name="Test", connection_id=connection.id)
+        session.add(channel)
+        session.flush()
+        inbox = ChannelInbox(
+            channel_id=channel.id,
+            channel_revision=1,
+            event_id="crash",
+            external_user_id="123",
+            destination="123",
+            code="admitted",
+        )
+        session.add(inbox)
+        session.flush()
+        outbox = ChannelOutbox(
+            inbox_id=inbox.id,
+            state=delivery_state,
+            parts=["first", "second"],
+            next_part=1,
+            provider_ids=["confirmed-first-part"],
+        )
+        session.add(outbox)
+        session.flush()
+        call_id, reported_id, outbox_id, channel_id = call.id, reported.id, outbox.id, channel.id
+    with session_maker.begin() as session:
+        with pytest.raises(HTTPException, match="uncertain channel"):
+            enter_maintenance(session, "backup", "backup")
+        enter_maintenance(session, "acknowledgment", "reconcile")
+    with session_maker.begin() as session:
+        with pytest.raises(HTTPException, match="own maintenance fence"):
+            reconcile_uncertain(session, "wrong-owner")
+        with pytest.raises(HTTPException, match="maintenance"):
+            ensure_writable(session)
+        reconcile_uncertain(session, "acknowledgment")
+    with session_maker.begin() as session:
+        call, reported = (
+            session.get(InferenceCall, call_id),
+            session.get(InferenceCall, reported_id),
+        )
+        assert call.completed_at and call.outcome == "interrupted" and call.cost_usd is None
+        assert reported.cost_usd == Decimal("0.123") and reported.input_tokens == 42
+        outbox = session.get(ChannelOutbox, outbox_id)
+        assert (outbox.state, outbox.code) == ("blocked", "uncertain_reconciled")
+        assert outbox.parts == ["first", "second"] and outbox.next_part == 1
+        assert outbox.provider_ids == ["confirmed-first-part"]
+        leave_maintenance(session, "acknowledgment")
+        enter_maintenance(session, "backup", "backup")
+        leave_maintenance(session, "backup")
+    assert Delivery(session_maker).claim(channel_id) is None
+
+
+def test_reconciliation_cannot_bypass_running_agents_or_unknown_runs(client, worker, session_maker):
+    agent_id, _ = provision(client, worker)
+    worker.process_one()
+    with session_maker.begin() as session:
+        with pytest.raises(HTTPException, match="Stop every agent"):
+            enter_maintenance(session, "acknowledgment", "reconcile")
+        agent = session.get(Agent, UUID(agent_id))
+        agent.desired_state = agent.observed_state = "stopped"
+        session.add(
+            Run(
+                agent_id=agent.id,
+                incarnation_id=agent.current_incarnation_id,
+                message="Unresolved external tools",
+                status="unknown",
+                idempotency_key="unknown",
+                request_hash="a" * 64,
+            )
+        )
+    with session_maker.begin() as session:
+        with pytest.raises(HTTPException, match="uncertain work"):
+            enter_maintenance(session, "acknowledgment", "reconcile")
