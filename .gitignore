@@ -14,5 +14,9 @@ dist/
 *.md
 *.mdx
 !README.md
-docs/
+docs/*
+!docs/*.md
+!docs/assets/
+docs/assets/*
+!docs/assets/dashboard.png
 specs/
