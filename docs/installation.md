@@ -91,6 +91,23 @@ will refuse a running native runtime; conversation counters alone do not demonst
 that an employee's tools are idle. Maintenance fences new work and pauses remaining
 writers before capturing state. There are no scheduled backups or unattended updates.
 
+If a gateway or connector crash left unfinished inference or uncertain delivery,
+inspect the provider's outcome and stop every employee before explicitly acknowledging
+that uncertainty:
+
+```sh
+bash talos-release/talos status --reconcile-uncertain
+```
+
+This command fences admissions and confirms platform writers have stopped before
+closing interrupted inference records and blocking uncertain sends. Unknown costs
+remain unknown; existing costs, response parts and provider IDs are retained. It never
+resends a message or marks an uncertain delivery successful. Resolve queued work and
+channel checks first. If interrupted, rerun this same command; ordinary backup/update
+commands still refuse unreconciled uncertainty.
+If a backup or update already failed at its pre-write maintenance gate, use
+`status --cancel-maintenance` to cancel that attempt before reconciliation.
+
 The backup includes the database, installation secrets/configuration, setup artifacts,
 worker credentials, owned runtime volumes, HTTPS state, and required local-only images.
 The envelope's components are encrypted with `age` and checked before publication.
@@ -112,6 +129,12 @@ installation identity. Restore does not overwrite another installation. The rest
 installation invalidates runtime identities and administrator sessions, leaves agents
 stopped and channels disabled, and quarantines pending/uncertain deliveries. Reconnect
 channels explicitly with a fresh ingress boundary before resuming employee work.
+
+An interrupted restore can be retried with the identical snapshot and destination
+host options. Its journal authorizes replacing only the partial restore's owned
+resources. Once reopening services begins, retries only finish readiness and release
+maintenance; they never reimport an older snapshot over newly admitted work. Retain
+the journal and keep the original server fenced throughout recovery.
 
 For an explicit platform update:
 

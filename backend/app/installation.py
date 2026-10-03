@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.app.db import Database
@@ -81,6 +81,7 @@ def enter_maintenance(session, operation_id: str, kind: str):
             "backup",
             "restore",
             "update",
+            "reconcile",
         }
     ):
         raise ValueError("Invalid maintenance operation")
@@ -108,7 +109,9 @@ def enter_maintenance(session, operation_id: str, kind: str):
         (
             select(ChannelOutbox.id).where(
                 ChannelOutbox.state.in_(
-                    ("waiting", "pending", "sending", "uncertain"),
+                    ("waiting", "pending")
+                    if kind == "reconcile"
+                    else ("waiting", "pending", "sending", "uncertain"),
                 )
             ),
             "Resolve pending or uncertain channel delivery before maintenance",
@@ -118,7 +121,9 @@ def enter_maintenance(session, operation_id: str, kind: str):
             "Wait for channel checks before maintenance",
         ),
         (
-            select(InferenceCall.id).where(InferenceCall.completed_at.is_(None)),
+            select(InferenceCall.id).where(
+                InferenceCall.completed_at.is_(None), kind != "reconcile"
+            ),
             "Resolve outstanding inference accounting before maintenance",
         ),
     )
@@ -129,6 +134,24 @@ def enter_maintenance(session, operation_id: str, kind: str):
     state.maintenance_kind = kind
     state.maintenance_started_at = datetime.now(UTC)
     session.flush()
+
+
+def reconcile_uncertain(session, operation_id: str):
+    """Host management calls only after confirming every platform writer stopped."""
+    state = state_row(session, exclusive=True)
+    if (state.maintenance_operation_id, state.maintenance_kind) != (operation_id, "reconcile"):
+        raise HTTPException(409, "Uncertainty reconciliation requires its own maintenance fence")
+    session.execute(
+        update(InferenceCall)
+        .where(InferenceCall.completed_at.is_(None))
+        .values(completed_at=datetime.now(UTC), outcome="interrupted")
+    )
+    # Retain parts, provider IDs and partial-send progress. Never resend or claim success.
+    session.execute(
+        update(ChannelOutbox)
+        .where(ChannelOutbox.state.in_(("sending", "uncertain")))
+        .values(state="blocked", code="uncertain_reconciled", retry_at=None)
+    )
 
 
 def leave_maintenance(session, operation_id: str):

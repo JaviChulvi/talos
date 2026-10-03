@@ -22,6 +22,7 @@ from uuid import uuid4
 
 import docker
 
+from backend.management.installation import atomic_text
 from backend.management.release import IMAGE_PATTERN
 
 BACKUP_FORMAT = 1
@@ -358,6 +359,47 @@ def _journal(installation, *, create=False, operation_id=None, kind="backup"):
     return data
 
 
+def quiesce(installation, client, operation_id, kind):
+    """Persist admission fencing and the restart set before stopping any writer."""
+    _stopped(client, installation)
+    journal = _journal(installation, create=True, operation_id=operation_id, kind=kind)
+    _control(installation, "enter", journal["operation_id"], journal["kind"])
+    running = [
+        row.labels["com.docker.compose.service"]
+        for row in _containers(client, installation, running=True)
+        if row.labels.get("com.docker.compose.service") not in (None, "db", "migrate")
+    ]
+    if "services" not in journal:
+        journal["services"] = sorted(set(running))
+        installation.write(".backup-operation.json", journal)
+    if running:
+        installation.compose("stop", "--timeout", "60", *running)
+    _stopped(client, installation)
+    if any(
+        row.labels.get("com.docker.compose.service") not in ("db", "migrate")
+        for row in _containers(client, installation, running=True)
+    ):
+        raise BackupError("A platform writer did not stop; maintenance remains active")
+    return journal
+
+
+def reconcile(installation):
+    prior = installation.read("operation.json", {})
+    if prior.get("kind") == "reconcile" and prior.get("phase") == "reopening":
+        resume(installation, prior["operation_id"])
+    else:
+        operation = installation.journal("reconcile", "preflight")
+        client = docker.from_env()
+        try:
+            quiesce(installation, client, operation["operation_id"], "reconcile")
+            _control(installation, "reconcile", operation["operation_id"], "reconcile")
+            installation.journal("reconcile", "reopening")
+        finally:
+            client.close()
+        resume(installation, operation["operation_id"])
+    installation.journal("reconcile", "complete")
+
+
 def backup(
     installation,
     destination: Path,
@@ -383,28 +425,9 @@ def backup(
     destination.parent.mkdir(parents=True, exist_ok=True)
     client = docker.from_env()
     try:
-        _stopped(client, installation)
-        journal = _journal(installation, create=True, operation_id=operation_id, kind=kind)
+        journal = quiesce(installation, client, operation_id, kind)
         operation_id = journal["operation_id"]
-        # The owner checks stopped agents and unresolved work atomically with admission fencing.
-        _control(installation, "enter", operation_id, journal["kind"])
-        running = [
-            row.labels["com.docker.compose.service"]
-            for row in _containers(client, installation, running=True)
-            if row.labels.get("com.docker.compose.service") not in (None, "db", "migrate")
-        ]
-        if "services" not in journal:
-            journal["services"] = sorted(set(running))
-            installation.write(".backup-operation.json", journal)
-        if running:
-            installation.compose("stop", "--timeout", "60", *running)
-        _stopped(client, installation)
         database = _database(client, installation)
-        if any(
-            row.labels.get("com.docker.compose.service") not in ("db", "migrate")
-            for row in _containers(client, installation, running=True)
-        ):
-            raise BackupError("A platform writer did not stop; maintenance remains active")
         volumes = _inventory(client, installation, database)
         runtime = _control(installation, "inventory", operation_id, journal["kind"])
         present = {volume["name"] for volume in volumes}
@@ -590,6 +613,11 @@ def finish_resume(installation, operation_id):
 def resume(installation, operation_id=None, *, verify=True):
     """Explicitly resume/cancel a snapshot operation; interrupted work stays fenced."""
     journal = _journal(installation, operation_id=operation_id)
+    if not _control(installation, "status")["maintenance"]["active"]:
+        if verify:
+            installation.ready()
+        finish_resume(installation, journal["operation_id"])
+        return
     _control(installation, "assert", journal["operation_id"], journal["kind"])
     # Start services under the fence; none can admit work until all startup calls succeed.
     if journal.get("services"):
@@ -707,11 +735,26 @@ def list_restore_images(archive: Path, identity: Path) -> list[str]:
     The caller uses its own Docker credential store; no registry credentials enter
     this management process. Saved local-only images are loaded during restore.
     """
-    with read_backup(archive, identity) as (manifest, _, _configs):
+    with read_backup(archive, identity) as (manifest, _, configs):
         platform = manifest["platform"]
         references = set(manifest["release"]["images"][platform].values())
         for versions in manifest["release"]["runtime_versions"][platform].values():
             references.update(versions.values())
+        # Updates retain the installation's approved catalog, which may differ
+        # from the current release even when no employee uses an older image yet.
+        from backend.app.runtime_versions import validate_catalog
+
+        environment = dict(
+            line.split("=", 1)
+            for line in configs[".env"].decode().splitlines()
+            if "=" in line and not line.startswith("#")
+        )
+        catalog = validate_catalog(json.loads(environment["TALOS_RUNTIME_VERSIONS"]))
+        for versions in catalog.values():
+            for reference in versions.values():
+                if not re.fullmatch(IMAGE_PATTERN, reference):
+                    raise BackupError("Restored runtime catalog requires pullable image digests")
+                references.add(reference)
         references.update(row["reference"] for row in manifest["images"] if row.get("reference"))
         return sorted(references)
 
@@ -810,14 +853,36 @@ def restore(
         raise BackupError("Confirm the original installation is stopped and fenced before restore")
     identity = _identity(identity)
     directory = installation.directory
+    prior = installation.read("operation.json", {})
+    retry_restore = (
+        not rollback
+        and prior.get("kind") == "restore"
+        and prior.get("phase") in ("restore", "reopening")
+    )
     controls = {"operation.lock", ".talos-lock", ".downloads"}
-    if not rollback and directory.exists():
+    if not rollback and not retry_restore and directory.exists():
         if any(path.name not in controls for path in directory.iterdir()):
             raise BackupError("Restore requires an empty installation directory")
     _outside(identity, directory)
     client = docker.from_env()
     try:
         with read_backup(archive, identity) as (manifest, stage, configs):
+            restore_identity = (
+                {
+                    "archive_sha256": _sha(Path(archive)),
+                    "snapshot_operation_id": manifest["operation_id"],
+                    "installation_id": manifest["installation_id"],
+                    "destination_options": destination_options,
+                }
+                if not rollback
+                else {}
+            )
+            if retry_restore:
+                if any(prior.get(key) != value for key, value in restore_identity.items()):
+                    raise BackupError("Resume restore with the identical snapshot and host options")
+                if prior["phase"] == "reopening":
+                    # Traffic may already have resumed. Never import the snapshot again.
+                    return manifest["operation_id"]
             machine = client.info()
             architecture = {"x86_64": "amd64", "aarch64": "arm64"}.get(
                 machine["Architecture"], machine["Architecture"]
@@ -846,7 +911,7 @@ def restore(
                         "label": [f"com.docker.compose.project={manifest['compose_project']}"]
                     },
                 )
-                if (rows or project_rows) and not rollback:
+                if (rows or project_rows) and not (rollback or retry_restore):
                     raise BackupError(
                         "The source installation or project exists on this Docker host"
                     )
@@ -864,7 +929,7 @@ def restore(
                     existing = client.volumes.get(volume["name"])
                 except docker.errors.NotFound:
                     continue
-                if not rollback or existing.attrs.get("Labels") != labels:
+                if not (rollback or retry_restore) or existing.attrs.get("Labels") != labels:
                     raise BackupError("Destination volume collision")
             # Every referenced image must already have been pulled by the host launcher.
             for image in manifest["images"]:
@@ -893,20 +958,42 @@ def restore(
                     )
                     + "\n"
                 ).encode()
+            if not rollback:
+                if retry_restore:
+                    _stopped(client, installation)
+                    running = _containers(client, installation, running=True)
+                    if any(row.labels.get("com.docker.compose.service") != "db" for row in running):
+                        raise BackupError(
+                            "Platform writers started during restore; investigate first"
+                        )
+                    for database in running:
+                        database.stop(timeout=60)
+                # This durable identity precedes every destination file/volume write.
+                installation.journal("restore", "restore", **restore_identity)
             old_caddy = str(Path(manifest["directory"]) / "Caddyfile")
             configs["compose.yaml"] = configs["compose.yaml"].replace(
                 old_caddy.encode(), str(directory / "Caddyfile").encode()
             )
-            for name, content in configs.items():
+            # The launcher selects the saved bundle when its manifest exists.
+            # Publish that marker last so a retry can still use the original bundle.
+            for name in sorted(configs, key=lambda name: name == "bundle/manifest.json"):
+                content = configs[name]
                 path = directory / name
                 path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                path.write_bytes(content)
+                os.chown(
+                    path.parent, installation.state["owner_uid"], installation.state["owner_gid"]
+                )
+                atomic_text(
+                    path,
+                    content.decode(),
+                    installation.state["owner_uid"],
+                    installation.state["owner_gid"],
+                )
                 path.chmod(manifest["config_modes"].get(name, 0o600) & 0o777)
-                os.chown(path, installation.state["owner_uid"], installation.state["owner_gid"])
             installation.manifest = manifest["release"]
             helper = manifest["release"]["images"][manifest["platform"]]["management"]
             for volume in manifest["volumes"]:
-                if rollback:
+                if rollback or retry_restore:
                     # Remove only already-verified owned volumes after stopping every consumer.
                     consumers = client.containers.list(all=True, filters={"volume": volume["name"]})
                     for container in consumers:
@@ -982,8 +1069,11 @@ def restore(
             installation.save()
             if rollback:
                 (directory / ".restore-operation.json").unlink(missing_ok=True)
+            else:
+                installation.journal("restore", "reopening")
             # Leave all writers stopped and admission fenced. The caller verifies readiness,
             # then resumes explicitly; restore never reconnects employees automatically.
+            return manifest["operation_id"]
     finally:
         client.close()
 
@@ -1099,7 +1189,12 @@ def _main():
     from sqlalchemy import select
 
     from backend.app.db import session_factory
-    from backend.app.installation import enter_maintenance, installation_status, leave_maintenance
+    from backend.app.installation import (
+        enter_maintenance,
+        installation_status,
+        leave_maintenance,
+        reconcile_uncertain,
+    )
     from backend.app.models import Agent
 
     _, _, action, operation_id, kind = sys.argv
@@ -1108,12 +1203,14 @@ def _main():
             enter_maintenance(session, operation_id, kind)
         elif action == "status":
             pass
-        elif action in ("assert", "leave", "inventory", "sanitize"):
+        elif action in ("assert", "leave", "inventory", "sanitize", "reconcile"):
             status = installation_status(session)
             if status["maintenance"]["operation_id"] != operation_id:
                 raise BackupError("Maintenance fence owner does not match")
             if action == "leave":
                 leave_maintenance(session, operation_id)
+            elif action == "reconcile":
+                reconcile_uncertain(session, operation_id)
             elif action == "sanitize":
                 sanitize_restored_database(session)
             elif action == "inventory":

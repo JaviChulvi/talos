@@ -495,3 +495,23 @@ def test_readiness_requires_fresh_worker_gateway_connector_heartbeats(tmp_path, 
     assert "('worker','gateway','connector')" in commands[0][5]
     assert "rows[k]>=cutoff" in commands[0][5]
     assert len(commands[0]) == 7
+
+
+def test_saved_private_bundle_is_owned_by_host_user(installer, bundle, monkeypatch):
+    bundle.chmod(0o700)
+    monkeypatch.setattr(
+        host.Installation, "compose", lambda *a, **kw: SimpleNamespace(stdout="exists")
+    )
+    ownership = {}
+    original = os.chown
+
+    def chown(path, uid, gid):
+        ownership[Path(path)] = (uid, gid)
+        original(path, uid, gid)
+
+    monkeypatch.setattr(host.os, "chown", chown)
+    install(installer, bundle)
+    saved = installer.directory / "bundle"
+    for path in (saved, *saved.rglob("*")):
+        assert ownership[path] == (os.getuid(), os.getgid())
+    assert saved.stat().st_mode & 0o777 == 0o700

@@ -16,6 +16,7 @@ Usage: talos {install|status|doctor|backup|restore|update} [options]
   --source-fenced        Confirm the original restore source is stopped and fenced
   --skip-admin           Leave administrator bootstrap pending (install only)
   --cancel-maintenance   Cancel a pre-write maintenance operation (status only)
+  --reconcile-uncertain  Acknowledge interrupted inference and uncertain sends (status only)
 
 Download all private release assets together, or authenticate gh for --version.
 Authenticate Docker to GHCR using its normal credential store before installation.
@@ -27,6 +28,7 @@ case "$command" in install|status|doctor|backup|restore|update) ;; -h|--help|hel
 install_dir=${TALOS_DIRECTORY:-$HOME/.talos}
 bundle=; version=; archive=; identity=; domain=; port=8000
 skip_admin=false; cancel=false; source_fenced=false; acme_directory=; acme_root=
+reconcile_uncertain=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --directory|--bundle|--version|--domain|--port|--archive|--identity|--acme-directory|--acme-root)
@@ -38,6 +40,7 @@ while [ "$#" -gt 0 ]; do
       esac; shift 2 ;;
     --skip-admin) skip_admin=true; shift ;;
     --cancel-maintenance) cancel=true; shift ;;
+    --reconcile-uncertain) reconcile_uncertain=true; shift ;;
     --source-fenced) source_fenced=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) fail "Unknown option $1" ;;
@@ -48,6 +51,9 @@ case "$install_dir" in *:*|*,*|*$'\n'*) fail 'Installation path cannot contain a
 case "$port" in ''|*[!0-9]*) fail 'Invalid port' ;; esac
 [ "$port" -gt 0 ] && [ "$port" -le 65535 ] || fail 'Invalid port'
 [ -z "$bundle" ] || [ -z "$version" ] || fail 'Choose --bundle or --version'
+if [ "$reconcile_uncertain" = true ]; then
+  [ "$command" = status ] && [ "$cancel" = false ] || fail 'Use status --reconcile-uncertain without --cancel-maintenance'
+fi
 if [ -n "$acme_directory$acme_root" ]; then
   [ "${TALOS_ACCEPTANCE_TEST:-}" = 1 ] || fail 'ACME overrides are for isolated acceptance fixtures only'
   [ -n "$acme_directory" ] && [ -f "$acme_root" ] || fail 'Test ACME requires directory and root certificate'
@@ -175,6 +181,7 @@ args=("$command" --directory "$install_dir" --bundle /run/talos-release --platfo
 [ -z "$identity" ] || args+=(--identity "$identity")
 [ "$skip_admin" = false ] || args+=(--skip-admin)
 [ "$cancel" = false ] || args+=(--cancel-maintenance)
+[ "$reconcile_uncertain" = false ] || args+=(--reconcile-uncertain)
 [ "$source_fenced" = false ] || args+=(--source-fenced)
 if [ -n "$acme_directory" ]; then
   cp "$acme_root" "$install_dir/acceptance-acme-root.pem"

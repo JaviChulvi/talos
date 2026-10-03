@@ -82,9 +82,14 @@ def test_resume_restarts_services_under_fence_before_releasing(tmp_path, monkeyp
     )
     events = []
     installation = SimpleNamespace(directory=tmp_path, compose=lambda *args: events.append(args))
-    monkeypatch.setattr(snapshots, "_control", lambda _, action, *args: events.append(action))
+    monkeypatch.setattr(
+        snapshots,
+        "_control",
+        lambda _, action, *args: events.append(action) or {"maintenance": {"active": True}},
+    )
     snapshots.resume(installation, "saved-operation", verify=False)
     assert events == [
+        "status",
         "assert",
         ("up", "-d", "--no-deps", "--pull", "never", "--no-build", "api", "worker"),
         "leave",
@@ -102,10 +107,14 @@ def test_failed_restart_keeps_maintenance_journal(tmp_path, monkeypatch):
 
     actions = []
     installation = SimpleNamespace(directory=tmp_path, compose=fail)
-    monkeypatch.setattr(snapshots, "_control", lambda _, action, *args: actions.append(action))
+    monkeypatch.setattr(
+        snapshots,
+        "_control",
+        lambda _, action, *args: actions.append(action) or {"maintenance": {"active": True}},
+    )
     with pytest.raises(RuntimeError):
         snapshots.resume(installation, "saved-operation", verify=False)
-    assert actions == ["assert"]
+    assert actions == ["status", "assert"]
     assert (tmp_path / ".backup-operation.json").exists()
 
 
@@ -294,10 +303,14 @@ def test_resume_keeps_fence_when_readiness_fails(tmp_path, monkeypatch):
     installation = SimpleNamespace(
         directory=tmp_path, ready=fail_readiness, compose=lambda *args: calls.append("start")
     )
-    monkeypatch.setattr(snapshots, "_control", lambda _, action, *args: calls.append(action))
+    monkeypatch.setattr(
+        snapshots,
+        "_control",
+        lambda _, action, *args: calls.append(action) or {"maintenance": {"active": True}},
+    )
     with pytest.raises(RuntimeError, match="ready"):
         snapshots.resume(installation, "owner")
-    assert calls == ["assert", "start"]
+    assert calls == ["status", "assert", "start"]
     assert (tmp_path / ".backup-operation.json").exists()
 
 
@@ -378,6 +391,7 @@ def test_backup_owns_new_recovery_identity_but_preserves_existing_owner(
 def test_restore_pull_plan_includes_retained_versions_and_deduplicates(tmp_path, monkeypatch):
     current = "ghcr.io/example/talos@sha256:" + "a" * 64
     old = "ghcr.io/example/openclaw@sha256:" + "b" * 64
+    unused = "ghcr.io/example/openclaw@sha256:" + "c" * 64
 
     @contextmanager
     def validated(*args):
@@ -395,12 +409,23 @@ def test_restore_pull_plan_includes_retained_versions_and_deduplicates(tmp_path,
                 ],
             },
             None,
-            None,
+            {
+                ".env": (
+                    "TALOS_RUNTIME_VERSIONS="
+                    + json.dumps(
+                        {
+                            "openclaw": {"1.0.0": old, "2.0.0": unused},
+                            "hermes": {"1.0.0": current},
+                        }
+                    )
+                    + "\n"
+                ).encode()
+            },
         )
 
     monkeypatch.setattr(snapshots, "read_backup", validated)
     assert snapshots.list_restore_images(tmp_path / "archive", tmp_path / "identity") == sorted(
-        [current, old]
+        [current, old, unused]
     )
 
 
@@ -513,10 +538,15 @@ def test_restore_rejects_unlabeled_named_network_before_mutating_destination(tmp
     identity.write_text("private fake identity")
     identity.chmod(0o600)
     state = {"installation_id": "source-id", "compose_project": "source-project"}
+    (tmp_path / "archive").write_bytes(b"validated snapshot")
 
     @contextmanager
     def validated(*args):
-        yield {"platform": "linux/arm64"}, None, {"installation.json": json.dumps(state).encode()}
+        yield (
+            {"platform": "linux/arm64", "operation_id": "owner", "installation_id": "source-id"},
+            None,
+            {"installation.json": json.dumps(state).encode()},
+        )
 
     client = SimpleNamespace(info=lambda: {"Architecture": "aarch64"}, close=lambda: None)
     inspections = []
@@ -734,3 +764,306 @@ def test_rollback_database_restart_rejects_foreign_ownership(tmp_path):
     client = SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [foreign]))
     with pytest.raises(snapshots.BackupError, match="Foreign container"):
         snapshots._ready_existing_database(installation, client)
+
+
+@pytest.fixture
+def cold_restore(tmp_path, monkeypatch):
+    """Exercise the real restore orchestration with persistent fake Docker resources."""
+    import os
+    from unittest.mock import Mock
+
+    from docker.errors import NotFound
+
+    from backend.management.installation import Installation
+
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    archive, identity = tmp_path / "backup.tar", tmp_path / "identity"
+    archive.write_bytes(b"authenticated snapshot")
+    identity.write_bytes(b"fake private recovery key")
+    identity.chmod(0o600)
+    state = {
+        "schema_version": 1,
+        "installation_id": "source",
+        "compose_project": "source-project",
+        "platform": "linux/arm64",
+        "owner_uid": os.getuid(),
+        "owner_gid": os.getgid(),
+        "docker_socket": "/old/socket",
+        "host_os": "macos",
+        "phase": "ready",
+    }
+    labels = {"io.talos.installation": "source", "com.docker.compose.project": "source-project"}
+    manifest = {
+        "platform": "linux/arm64",
+        "installation_id": "source",
+        "compose_project": "source-project",
+        "operation_id": "snapshot-owner",
+        "directory": "/old",
+        "images": [],
+        "release": {"images": {"linux/arm64": {"management": "helper"}}},
+        "services": ["api", "worker", "gateway", "connector"],
+        "config_modes": {},
+        "volumes": [
+            {"name": "database", "labels": labels, "database": True},
+            {"name": "state", "labels": labels, "database": False, "component": "volume-1.age"},
+        ],
+    }
+    configs = {
+        "installation.json": json.dumps(state).encode(),
+        "manifest.json": json.dumps(manifest["release"]).encode(),
+        "compose.yaml": b"services: {}\n",
+        ".env": b"TALOS_DOCKER_SOCKET=/old/socket\n",
+        "bundle/talos": b"#!/bin/bash\n",
+        "bundle/manifest.json": json.dumps(manifest["release"]).encode(),
+    }
+    events, volumes = [], {}
+    crash = {"at": None}
+    fence = {"active": True}
+    database = Mock(id="db", labels={**labels, "com.docker.compose.service": "db"})
+    database.running, database.exists = False, False
+
+    def event(name):
+        events.append(name)
+        if crash["at"] == name:
+            crash["at"] = None
+            raise RuntimeError("Interrupted at " + name)
+
+    def containers(**kwargs):
+        if kwargs.get("filters", {}).get("volume") == "state":
+            return []
+        if "io.talos.agent" in kwargs.get("filters", {}).get("label", []):
+            return []
+        return [database] if database.exists and (kwargs.get("all") or database.running) else []
+
+    def volume_get(name):
+        if name not in volumes:
+            raise NotFound("missing")
+        return volumes[name]
+
+    def volume_create(*, name, labels):
+        event("create-" + name)
+        volume = SimpleNamespace(attrs={"Labels": labels}, remove=lambda: volumes.pop(name))
+        volumes[name] = volume
+        return volume
+
+    database.stop.side_effect = lambda **kw: setattr(database, "running", False)
+    database.remove.side_effect = lambda: setattr(database, "exists", False)
+    client = Mock()
+    client.info.return_value = {"Architecture": "aarch64"}
+    client.containers.list.side_effect = containers
+    client.networks.list.return_value = []
+    client.volumes.list.return_value = []
+    client.volumes.get.side_effect = volume_get
+    client.volumes.create.side_effect = volume_create
+
+    @contextmanager
+    def read(*args):
+        yield manifest, tmp_path, configs.copy()
+
+    @contextmanager
+    def decrypt(*args):
+        yield io.BytesIO(b"snapshot bytes")
+
+    def compose(*args, **kwargs):
+        if args[-1] == "db":
+            database.exists, database.running = True, True
+            event("database-start")
+        else:
+            event("services-start")
+
+    def control(_, action, *args):
+        if action == "leave":
+            fence["active"] = False
+        event(action)
+        return {"maintenance": {"active": fence["active"]}}
+
+    def command(args, **kwargs):
+        event("database-import" if "pg_restore" in args else "volume-import")
+
+    original_write = Installation.write
+    original_atomic_text = snapshots.atomic_text
+
+    def atomic_text(path, *args):
+        original_atomic_text(path, *args)
+        if path.name == ".env":
+            event("config-write")
+
+    def write(self, name, value):
+        original_write(self, name, value)
+        if name == "operation.json" and value["phase"] == "reopening":
+            event("reopening")
+
+    monkeypatch.setattr(snapshots, "read_backup", read)
+    monkeypatch.setattr(snapshots, "atomic_text", atomic_text)
+    monkeypatch.setattr(snapshots, "_decrypt", decrypt)
+    monkeypatch.setattr(snapshots, "_database", lambda *args: "db")
+    monkeypatch.setattr(snapshots, "_control", control)
+    monkeypatch.setattr(snapshots, "_run", command)
+    monkeypatch.setattr(snapshots.docker, "from_env", lambda: client)
+    monkeypatch.setattr(Installation, "preflight_resources", lambda self: None)
+    monkeypatch.setattr(Installation, "compose", lambda self, *args, **kw: compose(*args, **kw))
+    monkeypatch.setattr(Installation, "ready", lambda self: event("ready"))
+    monkeypatch.setattr(Installation, "write", write)
+
+    def restore():
+        return snapshots.restore(
+            Installation(destination),
+            archive,
+            identity,
+            source_fenced=True,
+            destination_options={
+                "owner_uid": os.getuid(),
+                "owner_gid": os.getgid(),
+                "docker_socket": "/new/socket",
+                "host_os": "macos",
+            },
+        )
+
+    return SimpleNamespace(
+        directory=destination,
+        archive=archive,
+        crash=crash,
+        events=events,
+        restore=restore,
+        installation=lambda: Installation(destination),
+        volumes=volumes,
+        database=database,
+        client=client,
+    )
+
+
+@pytest.mark.parametrize(
+    "point",
+    [
+        "config-write",
+        "create-database",
+        "volume-import",
+        "database-start",
+        "database-import",
+        "sanitize",
+        "reopening",
+    ],
+)
+def test_cold_restore_retries_partial_import_without_adopting_other_data(cold_restore, point):
+    cold_restore.crash["at"] = point
+    with pytest.raises(RuntimeError, match="Interrupted"):
+        cold_restore.restore()
+    prior = cold_restore.installation().read("operation.json")
+    assert prior["kind"] == "restore"
+    assert prior["archive_sha256"] and prior["snapshot_operation_id"] == "snapshot-owner"
+    if point == "config-write":
+        assert not (cold_restore.directory / "bundle/manifest.json").exists()
+    completed = cold_restore.restore()
+    assert completed == "snapshot-owner"
+    assert cold_restore.installation().read("operation.json")["phase"] == "reopening"
+    assert cold_restore.installation().state["docker_socket"] == "/new/socket"
+    assert (cold_restore.directory / "bundle/talos").is_file()
+    snapshots.resume(cold_restore.installation(), completed)
+    assert not (cold_restore.directory / ".backup-operation.json").exists()
+    if point == "reopening":
+        assert cold_restore.events.count("database-import") == 1
+    elif point != "config-write":
+        assert cold_restore.events.count("create-database") == 2
+
+
+def test_restore_retry_rejects_another_snapshot_before_touching_resources(cold_restore):
+    cold_restore.crash["at"] = "volume-import"
+    with pytest.raises(RuntimeError):
+        cold_restore.restore()
+    cold_restore.archive.write_bytes(b"different snapshot")
+    before = cold_restore.events.copy()
+    with pytest.raises(snapshots.BackupError, match="identical snapshot"):
+        cold_restore.restore()
+    assert cold_restore.events == before
+
+
+@pytest.mark.parametrize("after_cleanup", [False, True])
+def test_restore_retry_never_reimports_after_lost_reopening_response(cold_restore, after_cleanup):
+    operation = cold_restore.restore()
+    if after_cleanup:
+        snapshots.resume(cold_restore.installation(), operation)
+    else:
+        cold_restore.crash["at"] = "leave"
+        with pytest.raises(RuntimeError, match="leave"):
+            snapshots.resume(cold_restore.installation(), operation)
+    cold_restore.events.clear()
+    operation = cold_restore.restore()
+    snapshots.resume(cold_restore.installation(), operation)
+    assert cold_restore.events == ["status", "ready"]
+
+
+def test_restore_retry_refuses_running_writers(cold_restore):
+    cold_restore.crash["at"] = "database-import"
+    with pytest.raises(RuntimeError):
+        cold_restore.restore()
+    cold_restore.database.labels["com.docker.compose.service"] = "gateway"
+    before = cold_restore.events.copy()
+    with pytest.raises(snapshots.BackupError, match="writers started"):
+        cold_restore.restore()
+    assert cold_restore.events == before
+
+
+def test_restore_retry_refuses_foreign_volume(cold_restore):
+    cold_restore.crash["at"] = "database-import"
+    with pytest.raises(RuntimeError):
+        cold_restore.restore()
+    cold_restore.volumes["state"].attrs["Labels"] = {"io.talos.installation": "foreign"}
+    before = cold_restore.events.copy()
+    with pytest.raises(snapshots.BackupError, match="volume collision"):
+        cold_restore.restore()
+    assert cold_restore.events == before
+    assert cold_restore.volumes["state"].attrs["Labels"]["io.talos.installation"] == "foreign"
+
+
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_reconciliation_stops_writers_before_resolving_and_preserves_retry_set(
+    tmp_path,
+    monkeypatch,
+    stop_fails,
+):
+    from unittest.mock import Mock
+
+    from backend.management.installation import Installation
+
+    installation = Installation(tmp_path)
+    installation.state = {"installation_id": "test"}
+    client = Mock()
+    running = [
+        SimpleNamespace(labels={"com.docker.compose.service": name})
+        for name in ("gateway", "connector")
+    ]
+    events = []
+    fence = {"active": True}
+
+    def compose(*args):
+        events.append(args[0])
+        if args[0] == "stop":
+            if stop_fails:
+                raise RuntimeError("Docker stop failed")
+            running.clear()
+
+    def control(_, action, *args):
+        events.append(action)
+        if action == "reconcile":
+            assert not running
+        if action == "leave":
+            fence["active"] = False
+        return {"maintenance": fence.copy()}
+
+    monkeypatch.setattr(snapshots.docker, "from_env", lambda: client)
+    monkeypatch.setattr(snapshots, "_stopped", lambda *args: None)
+    monkeypatch.setattr(snapshots, "_containers", lambda *args, **kwargs: running.copy())
+    monkeypatch.setattr(snapshots, "_control", control)
+    installation.compose = compose
+    installation.ready = lambda: events.append("ready")
+    if stop_fails:
+        with pytest.raises(RuntimeError, match="stop failed"):
+            snapshots.reconcile(installation)
+        assert "reconcile" not in events and "leave" not in events
+        assert installation.read(".backup-operation.json")["services"] == ["connector", "gateway"]
+        stop_fails = False
+    snapshots.reconcile(installation)
+    assert events.index("stop") < events.index("reconcile") < events.index("leave")
+    assert installation.read("operation.json")["phase"] == "complete"
+    assert not installation.read(".backup-operation.json")
