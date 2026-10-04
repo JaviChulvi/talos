@@ -60,7 +60,8 @@ addition to native installation acceptance. Do not publish an unresolved candida
 `licenses/application-inventory.json` is a development dependency observation;
 architecture-specific image SBOMs are authoritative for release contents.
 `licenses/image-inspection.json` records the inspected arm64 upstream and locally
-built wrapper/management/egress images and remaining review counts.
+built platform, verification, wrapper, management and egress images, plus the
+PostgreSQL/Caddy helpers, and remaining review counts.
 `licenses/observed-image-components.csv.gz` contains their component-level versions,
 origins, evidence paths, and provisional dispositions, bound to observed manifest
 digests. Decompress it with `gzip -dc licenses/observed-image-components.csv.gz`.

@@ -33,6 +33,22 @@
   },
   {
     "image": {
+      "userInput": "talos-oss:platform",
+      "imageID": "sha256:5a77bf56f1e1954d55a36d727b033e2fd56a172dbc0566b98b3634e5bd388ce0",
+      "manifestDigest": "sha256:6740b9440c17a42c98258dd109f28e8683255c729b4a76ce11a9cb11c22ff03d",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "platform",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 688,
+    "missing_license": 500,
+    "review_required": 607,
+    "sbom_sha256": "189410e392e867b57d04b8261013fedb9d8907b331f190e3035cd3d47d5b6f30"
+  },
+  {
+    "image": {
       "userInput": "talos-oss:management",
       "imageID": "sha256:30a4a9c4c3a1a71fcd14c086bbeab0b759674da636ebb6c6c1cfb601d24f799d",
       "manifestDigest": "sha256:a7fb41858ddde7ebba63834e0b51b14f864d1e9d80d8e9ec869ebccbcf7e730f",
@@ -46,6 +62,22 @@
     "missing_license": 690,
     "review_required": 797,
     "sbom_sha256": "a785188906fc539df3e09c9051d37c53c0b70e1745e2e57a029dc8442a399ca7"
+  },
+  {
+    "image": {
+      "userInput": "sha256:6671fad4ea20303651b16ff649870dcf25407daca141f39551f0a243655681ca",
+      "imageID": "sha256:f7d015050ce1822093247bdf1a5f87565cd9cdae23d82bed9a6c4acdc7176691",
+      "manifestDigest": "sha256:7722b6fc00d6511925651f5c82145f27254a59d8f6bb04a583045b739d5d0415",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "verification",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 708,
+    "missing_license": 503,
+    "review_required": 610,
+    "sbom_sha256": "028273c3cdf61ed3e209900f1c2e85548a0226621fa555b320fff77606c95993"
   },
   {
     "image": {
@@ -94,5 +126,37 @@
     "missing_license": 7,
     "review_required": 130,
     "sbom_sha256": "30936d30dadf79edda45a3876d96c68ceb3285b2626203920316f41a124324e5"
+  },
+  {
+    "image": {
+      "userInput": "postgres:17-bookworm@sha256:639ab7ceb90e13123085b741fb31ef493fba25463002f6da665352e7b534b652",
+      "imageID": "sha256:3300775c2560bfb0d4176741a76e4a8fc3f42a4a6ce93213ac24e22c13fc6993",
+      "manifestDigest": "sha256:75731e2765e7d0c8bb7dea960ef3bdcde68d16314991ab2057a2a74ea0fff257",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "postgres",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 148,
+    "missing_license": 1,
+    "review_required": 141,
+    "sbom_sha256": "9ca2e734dcb6548817dbda85585284cf1b7909e4239e359d107f0a184cc8b7bd"
+  },
+  {
+    "image": {
+      "userInput": "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d",
+      "imageID": "sha256:8f5619aac3ed45304632491507becd99711bcaed375aee3e6317c7b703902969",
+      "manifestDigest": "sha256:8dbca3525dd8dce671e495665a0eb297a83ec87ee30f373947d0ea93115949db",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "caddy",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 162,
+    "missing_license": 1,
+    "review_required": 30,
+    "sbom_sha256": "6dbd2f960196beca80639e47eab1a8414920f4a8972f208e8f2f56c9fd456135"
   }
 ]
