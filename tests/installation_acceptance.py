@@ -196,7 +196,7 @@ def main():
             raise RuntimeError("Disposable host rejected the requested reboot")
         wait_for_reboot(first, old_boot, args.platform)
         first.phase("recovered", args.platform)
-        report["scenarios"] += ["reboot_recovery", "employee_reboot_recovery"]
+        report["scenarios"] += ["reboot_recovery", "user_reboot_recovery"]
         first.phase("backup", args.platform)
         # Stop source services before restoring the same installation identity elsewhere.
         first.phase("fence", args.platform)

@@ -65,7 +65,7 @@ def test_capture_preserves_complete_skills_and_source_without_private_state(tmp_
         "workspace/client.csv",
     ):
         put(root, path, b"PRIVATE-SENTINEL")
-    put(root, "workspace/AGENTS.md", b"Employee private identity PRIVATE-SENTINEL")
+    put(root, "workspace/AGENTS.md", b"User private identity PRIVATE-SENTINEL")
     before = {
         p.relative_to(root): (p.read_bytes(), stat.S_IMODE(p.stat().st_mode))
         for p in root.rglob("*")

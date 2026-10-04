@@ -19,7 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { BudgetStatus } from "@/components/employee-budget";
+import { BudgetStatus } from "@/components/user-budget";
 import { formatUsd as usd } from "@/lib/utils";
 import { api, errorMessage, type Budget } from "@/lib/api";
 
@@ -46,14 +46,14 @@ type Summary = {
   coverage: string;
   total: UsageTotals;
   budgets: Budget[];
-  employees: (UsageTotals & { id: string | null })[];
+  users: (UsageTotals & { id: string | null })[];
   agents: (UsageTotals & { id: string })[];
-  options: { employees: Option[]; agents: Option[] };
+  options: { users: Option[]; agents: Option[] };
 };
 type Call = {
   id: string;
   agent_id: string;
-  employee_id: string | null;
+  user_id: string | null;
   model: string;
   generation_id: string | null;
   admitted_at: string;
@@ -74,7 +74,7 @@ const label = (options: Option[], id: string | null) =>
 export function Usage({ query }: { query: string }) {
   const params = new URLSearchParams(query);
   const month = params.get("month") || new Date().toISOString().slice(0, 7);
-  const employee = params.get("employee_id") || "";
+  const user = params.get("user_id") || "";
   const agent = params.get("agent_id") || "";
   const [summary, setSummary] = useState<Summary | null>(null);
   const [calls, setCalls] = useState<Calls | null>(null);
@@ -90,7 +90,7 @@ export function Usage({ query }: { query: string }) {
     async function load() {
       try {
         const filters = new URLSearchParams({ month });
-        if (employee) filters.set("employee_id", employee);
+        if (user) filters.set("user_id", user);
         if (agent) filters.set("agent_id", agent);
         const options = {
           signal: AbortSignal.any([
@@ -124,7 +124,7 @@ export function Usage({ query }: { query: string }) {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [month, employee, agent, cursor, refresh]);
+  }, [month, user, agent, cursor, refresh]);
 
   function filter(key: string, value: string) {
     const next = new URLSearchParams(query);
@@ -217,17 +217,17 @@ export function Usage({ query }: { query: string }) {
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="usage-employee">Employee</Label>
+          <Label htmlFor="usage-user">User</Label>
           <Select
-            value={employee || "all"}
-            onValueChange={(v) => filter("employee_id", v)}
+            value={user || "all"}
+            onValueChange={(v) => filter("user_id", v)}
           >
-            <SelectTrigger id="usage-employee" className="w-full">
-              <SelectValue placeholder="All employees" />
+            <SelectTrigger id="usage-user" className="w-full">
+              <SelectValue placeholder="All users" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All employees</SelectItem>
-              {summary?.options.employees.map((e) => (
+              <SelectItem value="all">All users</SelectItem>
+              {summary?.options.users.map((e) => (
                 <SelectItem key={e.id} value={e.id}>
                   {e.name}
                 </SelectItem>
@@ -299,13 +299,13 @@ export function Usage({ query }: { query: string }) {
           )}
           {summary.budgets.length > 0 && (
             <section
-              aria-label="Current employee allowances"
+              aria-label="Current user budgets"
               className="space-y-4"
             >
-              <h2 className="font-semibold">Current employee allowances</h2>
+              <h2 className="font-semibold">Current user budgets</h2>
               {summary.budgets.map((budget) => (
                 <div
-                  key={budget.employee_id}
+                  key={budget.user_id}
                   className="border-b pb-4 last:border-b-0 last:pb-0"
                 >
                   <BudgetStatus budget={budget} />
@@ -345,10 +345,10 @@ export function Usage({ query }: { query: string }) {
           </dl>
           <div className="grid gap-8 xl:grid-cols-2">
             {breakdown(
-              "By employee",
-              summary.employees,
-              summary.options.employees,
-              "employee_id",
+              "By user",
+              summary.users,
+              summary.options.users,
+              "user_id",
             )}
             {breakdown(
               "By agent",
@@ -363,7 +363,7 @@ export function Usage({ query }: { query: string }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Admitted (UTC)</TableHead>
-                  <TableHead>Agent / employee</TableHead>
+                  <TableHead>Agent / user</TableHead>
                   <TableHead>Model</TableHead>
                   <TableHead>Cost</TableHead>
                   <TableHead>Details</TableHead>
@@ -380,7 +380,7 @@ export function Usage({ query }: { query: string }) {
                     <TableCell>
                       {label(summary.options.agents, call.agent_id)}
                       <span className="block text-xs text-muted-foreground">
-                        {label(summary.options.employees, call.employee_id)}
+                        {label(summary.options.users, call.user_id)}
                       </span>
                     </TableCell>
                     <TableCell className="max-w-56 break-words whitespace-normal">

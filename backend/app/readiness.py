@@ -21,9 +21,9 @@ from backend.app.models import (
     ChannelInbox,
     ChannelOutbox,
     ChannelProbe,
-    EmployeeAccess,
-    EmployeeChannel,
     ServiceHeartbeat,
+    UserAccess,
+    UserChannel,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["readiness"])
@@ -119,7 +119,7 @@ def get_channel_check(probe_id: UUID, session: Database):
     return probe_response(probe)
 
 
-def channel_status(session, channel: EmployeeChannel, now=None):
+def channel_status(session, channel: UserChannel, now=None):
     now = now or datetime.now(UTC)
     connection = session.get(Connection, channel.connection_id, populate_existing=True)
     cursor = session.get(ChannelCursor, channel.id, populate_existing=True)
@@ -157,10 +157,10 @@ def get_channel_availability(channel_id: UUID, session: Database):
     return channel_status(session, channel_row(session, channel_id))
 
 
-@router.get("/employee-accesses/{access_id}/deliveries")
+@router.get("/user-accesses/{access_id}/deliveries")
 def list_deliveries(access_id: UUID, session: Database):
-    if session.get(EmployeeAccess, access_id) is None:
-        raise HTTPException(404, "Employee access not found")
+    if session.get(UserAccess, access_id) is None:
+        raise HTTPException(404, "User access not found")
     return [
         {
             "id": outbox.id,

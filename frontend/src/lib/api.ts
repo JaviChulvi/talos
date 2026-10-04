@@ -54,7 +54,7 @@ export function errorMessage(error: unknown) {
     : "Unable to reach the local API.";
 }
 
-export type Role = {
+export type AgentProfile = {
   id: string;
   name: string;
   description?: string;
@@ -64,11 +64,11 @@ export type Role = {
   connector_grants?: string[];
   connection_bindings?: Record<string, string>;
 };
-export type Employee = {
+export type User = {
   id: string;
   name: string;
   email: string | null;
-  role_id: string;
+  profile_id: string;
   connection_overrides?: Record<string, string>;
 };
 export type Capability = {
@@ -82,7 +82,7 @@ export type Capability = {
 export type ApplicationSnapshot = {
   setup_revision_id?: string | null;
   setup?: { id?: string; name?: string; version?: number };
-  role?: Role;
+  profile?: AgentProfile;
   artifact_hash?: string;
   [key: string]: unknown;
 };
@@ -95,10 +95,10 @@ export type SetupPreview = {
 export type AgentPermissions = {
   id: string;
   display_name: string;
-  employee_id: string | null;
-  employee_name: string;
-  role: Role | null;
-  applied_role: Role | null;
+  user_id: string | null;
+  user_name: string;
+  profile: AgentProfile | null;
+  applied_profile: AgentProfile | null;
   permissions_pending: boolean;
   runtime_mode: string;
   observed_state: string;
@@ -118,7 +118,7 @@ export type AvailabilityEvidence = {
   expires_at: string | null;
   action: string;
 };
-export type EmployeeChannel = {
+export type UserChannel = {
   id: string;
   provider: "telegram" | "slack";
   name: string;
@@ -136,11 +136,11 @@ export type EmployeeChannel = {
   };
   availability: AvailabilityEvidence;
 };
-export type EmployeeAccess = {
+export type UserAccess = {
   id: string;
   channel_id: string;
   agent_id: string;
-  employee_id: string;
+  user_id: string;
   external_user_id: string | null;
   external_scope: string;
   state: "pending" | "active" | "disabled";
@@ -160,9 +160,9 @@ export type AgentAvailability = {
 };
 
 export type Budget = {
-  employee_id: string;
-  employee_name: string;
-  monthly_allowance_usd: string | null;
+  user_id: string;
+  user_name: string;
+  monthly_budget_usd: string | null;
   known_spend_usd: string;
   unresolved_calls: number;
   missing_cost_calls: number;

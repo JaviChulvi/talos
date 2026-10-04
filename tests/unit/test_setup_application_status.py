@@ -10,7 +10,7 @@ def test_selection_does_not_claim_successful_installation(monkeypatch, error, ex
     selected = {"setup": {"revision_id": "chosen-but-not-applied"}}
     agent = SimpleNamespace(
         runtime_mode="native",
-        employee_id="employee",
+        user_id="user",
         selected_application=selected,
         applied_application=None,
         observed_state="stopped",
@@ -27,8 +27,8 @@ def test_selection_does_not_claim_successful_installation(monkeypatch, error, ex
 
 def test_legacy_receipt_marker_does_not_change_selected_configuration():
     application = {
-        "role": {"id": "sales", "name": "Sales", "revision": 1, "capabilities": []},
-        "employee_id": "employee",
+        "profile": {"id": "sales", "name": "Sales", "revision": 1, "capabilities": []},
+        "user_id": "user",
     }
     current = normalize_application(application, "openclaw")
     legacy = normalize_application({**application, "legacy_receipt": True}, "openclaw")

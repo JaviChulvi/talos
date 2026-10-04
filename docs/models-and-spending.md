@@ -1,8 +1,8 @@
-# Models, usage, and employee allowances
+# Models, usage, and user budgets
 
 [← Talos](../README.md) · [Documentation index](../README.md#documentation)
 
-Use OpenRouter through Talos for shared credentials and per-employee usage reporting, or configure a provider directly inside a native runtime. Talos accounting and allowances cover only requests routed through its gateway. Run shell commands from the repository root.
+Use OpenRouter through Talos for shared credentials and per-user usage reporting, or configure a provider directly inside a native runtime. Talos accounting and budgets cover only requests routed through its gateway. Run shell commands from the repository root.
 
 ## OpenRouter and the model picker
 
@@ -18,13 +18,13 @@ sent retain their captured model. Native sessions with explicit model overrides 
 need a new session. Talos conversations select the saved model on every turn. Runtimes
 started before this feature need one stop/start to add the internal gateway proxy
 exclusion. Returning to **Handled by agent** restores the prior native model settings.
-Role permissions, other provider credentials, workspace and history are preserved.
+Agent profile permissions, other provider credentials, workspace and history are preserved.
 
 The shared OpenRouter key is read by the gateway, never copied into agents. Native agents receive an incarnation
 token for `/native/v1/chat/completions`; this route preserves tool calls and results,
 and accepts only active native agents with an OpenRouter selection. Native runtimes
 still own tool dispatch and generation settings. Native inference usage is recorded in the durable call ledger, including calls
-without a Talos chat run. Employee monthly allowances apply at gateway admission. The managed text-only route retains its no-tools contract.
+without a Talos chat run. User monthly budgets apply at gateway admission. The managed text-only route retains its no-tools contract.
 
 `POST /api/v1/agents` accepts optional `model_id`. For a native agent,
 `POST /api/v1/inference/agents/{id}/native` with `{ "model_id": "lab/model" }` (or
@@ -131,7 +131,7 @@ connection. Streaming errors and truncated responses fail explicitly; the gatewa
 does not retry potentially billed requests. Provider-side cancellation and billing
 vary, so cancelling cannot undo charges already incurred.
 
-The picker is part of the **administrator-authenticated** dashboard. Employees access
+The picker is part of the **administrator-authenticated** dashboard. Users access
 their assigned agents through approved Telegram/Slack identities. Native subscription
 sharing and API fallback are not included. The protocol proof covers the real pinned OpenClaw container with a
 controlled upstream transport, including model changes, provider failures and
@@ -155,7 +155,7 @@ New managed OpenRouter calls are admitted into a durable per-call ledger before
 provider dispatch. Finalization updates that record once; failed persistence leaves
 an unresolved record. Reported costs use fixed-precision USD values. Missing cost
 is unknown, including interrupted calls without final provider accounting.
-Employee attribution is captured at admission and remains unchanged after agent
+User attribution is captured at admission and remains unchanged after agent
 reassignment or deletion. Legacy run usage remains readable but is not backfilled
 into this ledger. Tracking begins when migration 0012 is applied.
 
@@ -168,45 +168,45 @@ passes through Talos; “Handled by agent” usage is unavailable to Talos.
 
 ## Usage reporting
 
-Open **Usage** to inspect UTC calendar months by employee and agent, including
+Open **Usage** to inspect UTC calendar months by user and agent, including
 retained history for deleted agents. Known spending is the sum of reported charges;
 missing-cost and unresolved calls are shown separately. Reassigning an agent never
-moves existing employee charges. Months before tracking are unavailable, and the
+moves existing user charges. Months before tracking are unavailable, and the
 first tracking month is explicitly partial. Legacy run JSON is not counted here.
 
-`GET /api/v1/usage` returns totals, employee/agent breakdowns, coverage and filter
+`GET /api/v1/usage` returns totals, user/agent breakdowns, coverage and filter
 options. `GET /api/v1/usage/calls` returns paginated call details. Both accept
-`month=YYYY-MM`, `employee_id` and `agent_id`; filters intersect. Call pages accept
+`month=YYYY-MM`, `user_id` and `agent_id`; filters intersect. Call pages accept
 `limit` (1–100, default 50) and the opaque `next_cursor` from the previous response.
 New reporting APIs serialize USD values as decimal strings; unknown costs are null.
 
-## Employee monthly allowances
+## User monthly budgets
 
-Edit an employee and use **Monthly allowance (USD)** to set a shared allowance for
+Edit a user and use **Monthly budget (USD)** to set a shared budget for
 all their agents. Empty means unlimited (the default); zero blocks real-provider
-requests through Talos. Alerts appear inside Talos at 80% and 100% of the allowance.
-The Usage page, employee editor, agent settings and chat show current budget status.
-Historical usage pages do not compare past spending against today's allowance.
+requests through Talos. Alerts appear inside Talos at 80% and 100% of the budget.
+The Usage page, user editor, agent settings and chat show current budget status.
+Historical usage pages do not compare past spending against today's budget.
 
-Each managed or native OpenRouter call requires an employee assignment and checks
-known spending immediately before provider dispatch. Allowances use UTC calendar
+Each managed or native OpenRouter call requires a user assignment and checks
+known spending immediately before provider dispatch. Budgets use UTC calendar
 months; the entire call belongs to its admission month, including late completion.
 Budget edits apply to subsequent admissions. Already-admitted calls can finish,
-and concurrent calls can exceed the allowance. There are no reservations, rollover
-credits, or mid-request cancellation when an allowance changes. Unknown costs warn
+and concurrent calls can exceed the budget. There are no reservations, rollover
+credits, or mid-request cancellation when a budget changes. Unknown costs warn
 but do not block admission; this is not a guaranteed maximum provider bill.
 
-`GET /api/v1/employees/{id}/budget` reports the current allowance, known spend,
-UTC period, and status. `PUT` accepts `{ "monthly_allowance_usd": "25.00" }` or
-JSON null for that field to remove the limit. Ordinary employee updates do not
-change the allowance. Provider admission failures return OpenAI-compatible errors:
-402 `employee_budget_exceeded`, 403 `employee_assignment_required`, or 503
+`GET /api/v1/users/{id}/budget` reports the current budget, known spend,
+UTC period, and status. `PUT` accepts `{ "monthly_budget_usd": "25.00" }` or
+JSON null for that field to remove the limit. Ordinary user updates do not
+change the budget. Provider admission failures return OpenAI-compatible errors:
+402 `user_budget_exceeded`, 403 `user_assignment_required`, or 503
 `accounting_unavailable`. Denied requests do not contact OpenRouter. The offline
-simulator remains available without an employee assignment.
+simulator remains available without a user assignment.
 
-**Upgrading an older source installation:** before enabling allowance enforcement,
-assign employees to existing agents that use Talos-routed inference (stop an agent,
+**Upgrading an older source installation:** before enabling budget enforcement,
+assign users to existing agents that use Talos-routed inference (stop an agent,
 assign it in Settings, then start it). Unassigned provider requests will be rejected
-after the upgrade, even though every employee's initial allowance is unlimited.
+after the upgrade, even though every user's initial budget is unlimited.
 Native providers configured outside Talos remain outside both accounting and
-allowance enforcement. This feature does not add employee login accounts.
+budget enforcement. This feature does not add user login accounts.

@@ -5,13 +5,13 @@
 One built-in `admin`; host bootstrap/reset; browser login/logout; eight-hour revocable
 PostgreSQL sessions; management API authentication; React gate; persistent cooldown;
 explicit browser origins; focused tests and deployment/recovery documentation.
-No multi-admin, RBAC, SSO/MFA, email recovery, audit UI, offboarding or unrelated changes.
+No multi-admin, RBAC, SSO/MFA, email recovery, audit UI, access removal or unrelated changes.
 
 ## Route classification
 
 - Protected: all routers included by `backend/app/main.py`, plus `/api/v1/status`.
   Covers agents/operations, diagnostics/runs/events/cancel, availability/checks,
-  employees/roles/capabilities/budgets, channels/accesses/handoff, inference/provider,
+  users/profiles/capabilities/budgets, channels/accesses/handoff, inference/provider,
   connections and setups (including multipart imports and binary asset/export reads).
 - Public: `/health/live`, `/health/ready`, static UI, minimal auth session status,
   login and logout (logout is idempotent but still requires browser mutation protections).
@@ -97,7 +97,7 @@ audit below for evidence and the optional checks that could not run.
 - Real browser verified reset clears both tabs and 128-character Unicode login works.
   Manually advanced stored expiry cleared private views. Actual disposable-DB outage
   returned 503 and cleared management UI, then DB was restored. Hidden host recovery
-  prompts verified. This is local acceptance only; no real employee messages/provider charges.
+  prompts verified. This is local acceptance only; no real user messages/provider charges.
 - Final fixes: refuse getpass echo fallback; bound session status fetch to 8 seconds;
   clear outage error after revalidation; wrap host commands for smaller screens.
 - README now reflects authentication, first boot, upgrades, local HTTP, HTTPS proxy,
@@ -140,7 +140,7 @@ Requirement evidence:
 - Browser mutation protections: tests cover login/logout/agent requests with rejected origins
   and missing header; actual configured-origin browser login succeeded. Forwarded headers unused.
 - Gate/cache/cross-tab/expiry/reset: browser automation against compiled production UI, synthetic
-  private role record and operation cache; only auth status fetched before login.
+  private profile record and operation cache; only auth status fetched before login.
 - Service independence: full existing worker/gateway/Telegram/Slack suite passed; native Docker
   acceptance remains an explicitly unverified optional check while Docker daemon is stopped.
 - Docs: README setup/login/reset, local HTTP and HTTPS proxy config, upgrade and verification.

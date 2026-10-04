@@ -40,17 +40,17 @@ export function ConnectionBindings({
   return (
     <fieldset disabled={disabled} className="space-y-4">
       <legend className="mb-2 font-medium">
-        {overrides ? "Employee connections" : "Default connections"}
+        {overrides ? "User connections" : "Default connections"}
       </legend>
       <p className="text-xs text-muted-foreground">
         {overrides
-          ? "Use the role’s account, or choose a connection for this employee."
+          ? "Use the profile’s account, or choose a connection for this user."
           : "Choose the shared account for each slot. Agents validate required fields before applying."}
       </p>
       {slots.map((slot) => (
         <div key={slot.id}>
           <Label
-            htmlFor={`binding-${overrides ? "employee" : "role"}-${slot.id}`}
+            htmlFor={`binding-${overrides ? "user" : "profile"}-${slot.id}`}
           >
             {slot.label || slot.id}
           </Label>
@@ -66,13 +66,13 @@ export function ConnectionBindings({
           >
             <SelectTrigger
               className="mt-2 w-full"
-              id={`binding-${overrides ? "employee" : "role"}-${slot.id}`}
+              id={`binding-${overrides ? "user" : "profile"}-${slot.id}`}
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="inherit">
-                {overrides ? "Use role default" : "No connection"}
+                {overrides ? "Use profile default" : "No connection"}
               </SelectItem>
               {connections.map((connection) => (
                 <SelectItem key={connection.id} value={connection.id}>
@@ -109,7 +109,7 @@ export function ConnectionBindings({
   );
 }
 
-export function RoleSetupFields({
+export function ProfileSetupFields({
   setups,
   connections,
   revisionId,
@@ -136,7 +136,7 @@ export function RoleSetupFields({
   return (
     <div className="space-y-5 border-y py-5">
       <div>
-        <Label htmlFor="role-setup">Setup version</Label>
+        <Label htmlFor="profile-setup">Setup version</Label>
         <Select
           value={revisionId || "none"}
           disabled={disabled}
@@ -154,7 +154,7 @@ export function RoleSetupFields({
             onBindings({});
           }}
         >
-          <SelectTrigger id="role-setup" className="mt-2 w-full">
+          <SelectTrigger id="profile-setup" className="mt-2 w-full">
             <SelectValue placeholder="Choose a published setup" />
           </SelectTrigger>
           <SelectContent>
@@ -175,7 +175,7 @@ export function RoleSetupFields({
         </Select>
         <p className="mt-2 text-xs text-muted-foreground">
           Publish a setup, select its version here, then explicitly apply this
-          role to update agents.{" "}
+          profile to update agents.{" "}
           <a className="underline" href="#setups">
             Manage setups
           </a>
@@ -305,7 +305,7 @@ export function SetupStatus({ agent }: { agent: AgentPermissions }) {
         </Alert>
       )}
       <p className="text-xs text-muted-foreground">
-        Starting uses the selected configuration. Apply the saved role to change
+        Starting uses the selected configuration. Apply the saved profile to change
         its setup, permissions, or account versions.
       </p>
     </section>
@@ -338,7 +338,7 @@ export function ApplyPreview({
                   <li key={index}>{change}</li>
                 ))
               ) : (
-                <li>Reapply the saved role configuration.</li>
+                <li>Reapply the saved profile configuration.</li>
               )}
             </ul>
             {!!preview.blockers.length && (

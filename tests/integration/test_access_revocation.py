@@ -1,4 +1,4 @@
-"""Revocation during employee work cancels the runtime and blocks channel delivery."""
+"""Revocation during user work cancels the runtime and blocks channel delivery."""
 
 import asyncio
 from unittest.mock import AsyncMock
@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import select
 
-from backend.app.models import Agent, ChannelOutbox, EmployeeChannel, Run
+from backend.app.models import Agent, ChannelOutbox, Run, UserChannel
 from connector.delivery import Delivery
 
 # ruff: noqa: F401, F811
@@ -16,8 +16,8 @@ from tests.integration.test_channel_runs import (
     client,
     database_engine,
     lifecycle_sessions,
+    profile_agent,
     ready_accesses,
-    role_agent,
     session_maker,
     worker,
 )
@@ -33,7 +33,7 @@ pytestmark = pytest.mark.integration
 @pytest.mark.parametrize(
     "change", ["access", "credential", "channel", "assignment", "verification"]
 )
-def test_active_employee_run_is_cancelled_when_authorization_changes(
+def test_active_user_run_is_cancelled_when_authorization_changes(
     client, session_maker, ready_accesses, provider, change
 ):
     agent_id, pairs = ready_accesses
@@ -62,8 +62,7 @@ def test_active_employee_run_is_cancelled_when_authorization_changes(
             await wait_for(running)
             if change == "access":
                 assert (
-                    client.post(f"/api/v1/employee-accesses/{access['id']}/disable").status_code
-                    == 200
+                    client.post(f"/api/v1/user-accesses/{access['id']}/disable").status_code == 200
                 )
             elif change == "credential":
                 fields = ("bot_token",) if provider == "telegram" else ("bot_token", "app_token")
@@ -85,10 +84,10 @@ def test_active_employee_run_is_cancelled_when_authorization_changes(
             else:
                 with session_maker.begin() as session:
                     if change == "assignment":
-                        session.get(Agent, agent_id).employee_id = None
+                        session.get(Agent, agent_id).user_id = None
                     else:
-                        session.get(EmployeeChannel, UUID(channel["id"])).verified_version_id = None
-            # This is cancellation of employee work, independent of an admin UI connection.
+                        session.get(UserChannel, UUID(channel["id"])).verified_version_id = None
+            # This is cancellation of user work, independent of an admin UI connection.
             await asyncio.wait_for(abort_seen.wait(), 1.5)
             await asyncio.wait_for(task, 1.5)
         finally:
@@ -115,7 +114,7 @@ def test_rejected_revocation_abort_keeps_run_unresolved(client, session_maker, r
 
     async def send(*args):
         driver.sent += 1
-        client.post(f"/api/v1/employee-accesses/{pairs[0][0]['id']}/disable")
+        client.post(f"/api/v1/user-accesses/{pairs[0][0]['id']}/disable")
         return {"runId": str(inbox.run_id)}
 
     driver.send = send

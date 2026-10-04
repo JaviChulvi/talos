@@ -109,23 +109,23 @@ def test_upgrade_preserves_applied_and_pending_role_snapshots(status, action):
         with sessions() as session:
             agent = session.get(Agent, agent_id)
             pending = session.get(Operation, operation_id)
-            assert agent.applied_application["role"] == applied_role
+            assert agent.applied_application["profile"] == applied_role
             assert agent.applied_application["legacy_receipt"] is True
-            assert agent.selected_application["role"] == admitted_role
-            assert agent.selected_application["employee_id"] == str(employee_id)
+            assert agent.selected_application["profile"] == admitted_role
+            assert agent.selected_application["user_id"] == str(employee_id)
             assert "restart" not in agent.selected_application
-            assert pending.role_application["permissions"] == legacy_application["permissions"]
-            assert pending.role_application["restart"] == legacy_application["restart"]
-            assert pending.role_application["legacy_receipt"] is True
-            assert pending.role_application["employee_id"] == str(employee_id)
+            assert pending.profile_application["permissions"] == legacy_application["permissions"]
+            assert pending.profile_application["restart"] == legacy_application["restart"]
+            assert pending.profile_application["legacy_receipt"] is True
+            assert pending.profile_application["user_id"] == str(employee_id)
         worker = Worker(sessions=sessions, client=SimpleNamespace())
         worker.complete(pending, "stopped")
         with sessions() as session:
             restarted = request_lifecycle(session, agent_id, "start", "post-upgrade-start")
-            selected = normalize_application(restarted.role_application, "openclaw")
-            assert selected["role"]["revision"] == 2
-            assert selected["role"]["capabilities"] == ["web_research"]
-            assert selected["employee_id"] == str(employee_id)
+            selected = normalize_application(restarted.profile_application, "openclaw")
+            assert selected["profile"]["revision"] == 2
+            assert selected["profile"]["capabilities"] == ["web_research"]
+            assert selected["user_id"] == str(employee_id)
             assert "legacy_receipt" not in selected
             assert (
                 session.scalar(select(Operation.status).where(Operation.id == operation_id))

@@ -415,7 +415,7 @@ export function Setups({ setupId }: { setupId?: string }) {
       if (publish && result.valid) {
         await api(`/setups/${selected.id}/revisions`, { method: "POST" });
         setNotice(
-          "Version published. Select it on a role, then apply it to the agents you want to update.",
+          "Version published. Select it on a profile, then apply it to the agents you want to update.",
         );
       } else if (result.valid)
         setNotice("Draft saved and validated. Ready to publish.");
@@ -483,7 +483,7 @@ export function Setups({ setupId }: { setupId?: string }) {
           <p>
             {setupId
               ? "Review a draft and publish a version agents can reproduce."
-              : "Reusable instructions, skills, and tools for your roles."}
+              : "Reusable instructions, skills, and tools for your profiles."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -588,7 +588,7 @@ export function Setups({ setupId }: { setupId?: string }) {
             <p className="mt-2 max-w-prose text-sm leading-relaxed text-muted-foreground">
               Create a setup from a stopped agent’s Settings, import a prepared
               ZIP, or start with instructions. Publish a version before
-              assigning it to a role.
+              assigning it to a profile.
             </p>
             <Button className="mt-5" variant="outline" asChild>
               <a href="#agents">
@@ -766,7 +766,7 @@ export function Setups({ setupId }: { setupId?: string }) {
                     </Button>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Roles choose which of these tools their agents may use.
+                    Agent profiles choose which of these tools their agents may use.
                   </p>
                   <ul className="mt-3 divide-y border-y">
                     {(draft.connectors ?? []).map((connector, index) => (
@@ -845,7 +845,7 @@ export function Setups({ setupId }: { setupId?: string }) {
                   </p>
                 )}
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Bind actual accounts in Roles or Employees after publishing.
+                  Bind actual accounts in Agent profiles or Users after publishing.
                   Credentials stay outside this setup.
                 </p>
               </section>

@@ -21,7 +21,7 @@ from backend.app.connections import (
 )
 from backend.app.db import get_db
 from backend.app.main import create_app
-from backend.app.models import Agent, Employee, Operation, Role, Setup, SetupRevision
+from backend.app.models import Agent, AgentProfile, Operation, Setup, SetupRevision, User
 from tests.admin_client import administrator_client
 
 pytestmark = pytest.mark.integration
@@ -59,7 +59,7 @@ def session_maker(database_engine):
         connection.execute(
             text(
                 "TRUNCATE connections, connection_versions, agents, operations, "
-                "employees, roles CASCADE"
+                "users, profiles CASCADE"
             )
         )
     return sessionmaker(database_engine, expire_on_commit=False)
@@ -123,13 +123,13 @@ def test_metadata_rotation_is_write_only_and_keeps_old_version(client, session_m
 
 def test_defaults_overrides_and_unusable_override_never_falls_back(client, session_maker):
     default = create(client, name="Default", token="default-token")
-    override = create(client, name="Employee", token="employee-token")
+    override = create(client, name="User", token="user-token")
     empty = create(client, name="Empty", token=None)
     with session_maker.begin() as session:
         selected = resolve_bindings(
             session, MANIFEST, {"crm": default["id"]}, {"crm": override["id"]}
         )
-        assert load_bound_secrets(selected)["crm"]["token"] == "employee-token"
+        assert load_bound_secrets(selected)["crm"]["token"] == "user-token"
         for bad in (str(uuid4()), "invalid", None, empty["id"]):
             with pytest.raises(ConnectionBindingError):
                 resolve_bindings(session, MANIFEST, {"crm": default["id"]}, {"crm": bad})
@@ -150,15 +150,15 @@ def test_deletion_blocks_bindings_snapshots_and_active_operations(client, sessio
     identifier = connection["id"]
     path = f"/api/v1/connections/{identifier}"
     with session_maker.begin() as session:
-        role = Role(name="Sales", connection_bindings={"crm": identifier})
-        session.add(role)
+        profile = AgentProfile(name="Sales", connection_bindings={"crm": identifier})
+        session.add(profile)
         session.flush()
-        role_id = role.id
+        profile_id = profile.id
     assert client.delete(path).status_code == 409
     with session_maker.begin() as session:
-        session.get(Role, role_id).connection_bindings = {}
+        session.get(AgentProfile, profile_id).connection_bindings = {}
         application = {"connections": {"crm": {"connection_id": identifier}}}
-        agent = Agent(display_name="A", employee_label="E", selected_application=application)
+        agent = Agent(display_name="A", user_label="E", selected_application=application)
         session.add(agent)
         session.flush()
         agent_id = agent.id
@@ -168,8 +168,8 @@ def test_deletion_blocks_bindings_snapshots_and_active_operations(client, sessio
         session.add(
             Operation(
                 agent_id=agent_id,
-                role_application=application,
-                action="apply_role",
+                profile_application=application,
+                action="apply_profile",
                 target_revision=1,
                 idempotency_scope="test",
                 idempotency_key="test",
@@ -267,21 +267,21 @@ def test_agent_restart_preserves_credential_version_until_explicit_apply(client,
         )
         session.add(revision)
         session.flush()
-        role = Role(
+        profile = AgentProfile(
             name="Sales",
             setup_revision_id=revision.id,
             connector_grants=["crm"],
             connection_bindings={"crm": connection["id"]},
         )
-        session.add(role)
+        session.add(profile)
         session.flush()
-        employee = Employee(name="Alex", role_id=role.id)
-        session.add(employee)
+        user = User(name="Alex", profile_id=profile.id)
+        session.add(user)
         session.flush()
         agent = Agent(
             display_name="Sales helper",
-            employee_label="Alex",
-            employee_id=employee.id,
+            user_label="Alex",
+            user_id=user.id,
             runtime_mode="native",
             observed_state="stopped",
         )
@@ -315,19 +315,19 @@ def test_agent_restart_preserves_credential_version_until_explicit_apply(client,
     assert started.status_code == 202, started.text
     with session_maker.begin() as session:
         operation = session.get(Operation, UUID(started.json()["id"]))
-        assert normalize_application(operation.role_application, "openclaw") == selected
-        assert load_bound_secrets(operation.role_application["connections"]) == {
+        assert normalize_application(operation.profile_application, "openclaw") == selected
+        assert load_bound_secrets(operation.profile_application["connections"]) == {
             "crm": {"token": "sensitive-original"}
         }
         operation.status = "succeeded"
         session.get(Agent, agent_id).observed_state = "ready"
-    applied = client.post(path + "/apply-role", headers={"Idempotency-Key": "choose-rotation"})
+    applied = client.post(path + "/apply-profile", headers={"Idempotency-Key": "choose-rotation"})
     assert applied.status_code == 202, applied.text
     with session_maker() as session:
         operation = session.get(Operation, UUID(applied.json()["id"]))
         latest = session.get(Agent, agent_id).selected_application
         assert latest["connections"]["crm"]["version_id"] == rotated.json()["current_version_id"]
-        assert operation.role_application["connections"] == latest["connections"]
+        assert operation.profile_application["connections"] == latest["connections"]
         assert load_bound_secrets(latest["connections"]) == {"crm": {"token": "sensitive-rotated"}}
         assert session.get(Agent, agent_id).applied_application == selected
 
@@ -343,7 +343,7 @@ def test_deleted_agent_audit_snapshots_do_not_retain_connection_secrets(client, 
         }
         agent = Agent(
             display_name="Retired helper",
-            employee_label="Alex",
+            user_label="Alex",
             observed_state="stopped",
             selected_application=application,
             applied_application=application,

@@ -1,1 +1,1 @@
-"""Trusted messaging transport; no Docker or employee administrative endpoint."""
+"""Trusted messaging transport; no Docker or user administrative endpoint."""

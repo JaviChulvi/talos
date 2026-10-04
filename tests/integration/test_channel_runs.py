@@ -9,17 +9,17 @@ import pytest
 from fastapi import HTTPException
 
 from backend.app.connections import Connection
-from backend.app.diagnostics import admit_employee_run
-from backend.app.models import Agent, EmployeeChannel, Run
+from backend.app.diagnostics import admit_user_run
+from backend.app.models import Agent, Run, UserChannel
 from tests.integration.test_diagnostics import FakeDriver
 
 # ruff: noqa: F401, F811
-from tests.integration.test_employee_channels import (
+from tests.integration.test_user_channels import (
     channel_setup,
     client,
     database_engine,
     lifecycle_sessions,
-    role_agent,
+    profile_agent,
     session_maker,
     worker,
 )
@@ -31,13 +31,13 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def ready_accesses(client, session_maker, channel_setup, worker):
-    telegram, agent_id, employee = channel_setup
+    telegram, agent_id, user = channel_setup
     slack = client.post(
         "/api/v1/channels",
         json={"provider": "slack", "name": "Company", "workspace_id": "T12345"},
     ).json()
     pairs = []
-    for channel, user, scope in ((telegram, "123456789", ""), (slack, "U12345", "T12345")):
+    for channel, external_user, scope in ((telegram, "123456789", ""), (slack, "U12345", "T12345")):
         fields = ("bot_token",) if channel["provider"] == "telegram" else ("bot_token", "app_token")
         assert (
             client.put(
@@ -50,20 +50,20 @@ def ready_accesses(client, session_maker, channel_setup, worker):
             f"/api/v1/channels/{channel['id']}", json={"name": channel["name"], "enabled": True}
         ).json()
         with session_maker.begin() as session:
-            row = session.get(EmployeeChannel, UUID(channel["id"]))
+            row = session.get(UserChannel, UUID(channel["id"]))
             row.verified_version_id = session.get(Connection, row.connection_id).current_version_id
             row.verified_at = datetime.now(UTC)
         access = client.post(
-            "/api/v1/employee-accesses",
+            "/api/v1/user-accesses",
             json={
                 "channel_id": channel["id"],
                 "agent_id": str(agent_id),
-                "employee_id": employee["id"],
-                "external_user_id": user,
+                "user_id": user["id"],
+                "external_user_id": external_user,
                 "external_scope": scope,
             },
         ).json()
-        access = client.post(f"/api/v1/employee-accesses/{access['id']}/approve").json()
+        access = client.post(f"/api/v1/user-accesses/{access['id']}/approve").json()
         pairs.append((access, channel))
     assert (
         client.post(
@@ -78,7 +78,7 @@ def ready_accesses(client, session_maker, channel_setup, worker):
 def admit(sessions, pair, key, message="Hello"):
     access, channel = pair
     with sessions.begin() as session:
-        return admit_employee_run(
+        return admit_user_run(
             session, UUID(access["id"]), message, key, channel_revision=channel["revision"]
         )
 
@@ -96,15 +96,15 @@ def test_shared_admission_and_separate_sessions(client, session_maker, ready_acc
     assert slack.session_key != telegram.session_key
     assert ":employee:slack:" in slack.session_key
     assert ":employee:telegram:" in telegram.session_key
-    assert slack.employee_id == telegram.employee_id
+    assert slack.user_id == telegram.user_id
     assert client.get(f"/api/v1/agents/{agent_id}/runs").json() == []
-    assert len(client.get(f"/api/v1/agents/{agent_id}/runs?source=employee").json()) == 2
+    assert len(client.get(f"/api/v1/agents/{agent_id}/runs?source=user").json()) == 2
 
 
 def test_revoked_queued_run_never_connects(client, session_maker, ready_accesses):
     _, pairs = ready_accesses
     run = admit(session_maker, pairs[0], "revoked")
-    client.post(f"/api/v1/employee-accesses/{pairs[0][0]['id']}/disable")
+    client.post(f"/api/v1/user-accesses/{pairs[0][0]['id']}/disable")
     connector = AsyncMock()
     asyncio.run(DiagnosticManager(session_maker, connector)._execute(run.id))
     connector.assert_not_called()
@@ -118,7 +118,7 @@ def test_revocation_while_connecting_prevents_send(client, session_maker, ready_
     driver = FakeDriver()
 
     async def connect(_sessions, _agent_id):
-        client.post(f"/api/v1/employee-accesses/{pairs[0][0]['id']}/disable")
+        client.post(f"/api/v1/user-accesses/{pairs[0][0]['id']}/disable")
         return driver
 
     asyncio.run(DiagnosticManager(session_maker, connect)._execute(run.id))
@@ -127,7 +127,7 @@ def test_revocation_while_connecting_prevents_send(client, session_maker, ready_
         assert session.get(Run, run.id).status == "interrupted"
 
 
-def test_model_configuration_and_dispatch_use_employee_session(session_maker, ready_accesses):
+def test_model_configuration_and_dispatch_use_user_session(session_maker, ready_accesses):
     agent_id, pairs = ready_accesses
     run = admit(session_maker, pairs[0], "scoped")
     with session_maker.begin() as session:
@@ -174,15 +174,15 @@ def test_replacing_identity_does_not_inherit_prior_conversation(
         session.get(Run, old.id).status = "completed"
     access, channel = pairs[0]
     changed = client.put(
-        f"/api/v1/employee-accesses/{access['id']}",
+        f"/api/v1/user-accesses/{access['id']}",
         json={
             "channel_id": channel["id"],
-            "employee_id": access["employee_id"],
+            "user_id": access["user_id"],
             "agent_id": access["agent_id"],
             "external_user_id": "987654321",
         },
     )
     assert changed.status_code == 200
-    approved = client.post(f"/api/v1/employee-accesses/{access['id']}/approve").json()
+    approved = client.post(f"/api/v1/user-accesses/{access['id']}/approve").json()
     new = admit(session_maker, (approved, channel), "new-identity")
     assert new.session_key != old.session_key

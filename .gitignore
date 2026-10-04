@@ -18,7 +18,7 @@ docs/*
 !docs/*.md
 !docs/assets/
 docs/assets/*
-!docs/assets/dashboard.png
+!docs/assets/dashboard.jpg
 specs/
 
 !THIRD_PARTY_NOTICES.md

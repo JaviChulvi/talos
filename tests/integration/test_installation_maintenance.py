@@ -22,8 +22,8 @@ from gateway.identity import AdmissionDenied, admit_inference, validate_token
 from tests.integration.test_lifecycle import (
     client,
     database_engine,
+    profile_agent,
     provision,
-    role_agent,
     session_maker,
     worker,
 )
@@ -35,7 +35,7 @@ pytestmark = pytest.mark.integration
 @pytest.fixture(autouse=True)
 def reset_gate(session_maker):
     with session_maker.begin() as session:
-        session.execute(text("TRUNCATE employee_channels, connections CASCADE"))
+        session.execute(text("TRUNCATE user_channels, connections CASCADE"))
         state = session.get(InstallationState, 1)
         state.maintenance_operation_id = None
         state.maintenance_kind = None
@@ -60,14 +60,14 @@ def test_gate_survives_sessions_blocks_mutations_and_preserves_reads(client, ses
     status = client.get("/api/v1/installation")
     assert status.status_code == 200
     assert status.json()["maintenance"]["active"] is True
-    assert client.get("/api/v1/roles").status_code == 200
+    assert client.get("/api/v1/profiles").status_code == 200
     assert client.get("/api/v1/auth/session").status_code == 200
-    response = client.post("/api/v1/roles", json={"name": "Blocked", "capabilities": []})
+    response = client.post("/api/v1/profiles", json={"name": "Blocked", "capabilities": []})
     assert response.status_code == 503
     with session_maker.begin() as session:
         leave_maintenance(session, "backup-one")
     assert (
-        client.post("/api/v1/roles", json={"name": "Allowed", "capabilities": []}).status_code
+        client.post("/api/v1/profiles", json={"name": "Allowed", "capabilities": []}).status_code
         == 201
     )
 
@@ -89,9 +89,7 @@ def test_entry_waits_for_admitted_writer_then_rechecks_quiescence(session_maker)
             assert entered.wait(5)
             with pytest.raises(TimeoutError):
                 future.result(timeout=0.1)
-            writer.add(
-                Agent(display_name="Concurrent", employee_label="Test", desired_state="running")
-            )
+            writer.add(Agent(display_name="Concurrent", user_label="Test", desired_state="running"))
         assert future.result(timeout=5) == 409
     with session_maker() as session:
         assert not installation_status(session)["maintenance"]["active"]
@@ -193,9 +191,9 @@ def test_reboot_recovery_requires_current_permissions(
     client,
     worker,
     session_maker,
-    role_agent,
+    profile_agent,
 ):
-    agent_id, role, _ = role_agent
+    agent_id, profile, _ = profile_agent
     assert (
         client.post(
             f"/api/v1/agents/{agent_id}/start",
@@ -213,7 +211,7 @@ def test_reboot_recovery_requires_current_permissions(
     runtime.stop()
     assert (
         client.put(
-            f"/api/v1/roles/{role['id']}",
+            f"/api/v1/profiles/{profile['id']}",
             json={"name": "Sales", "capabilities": ["web_research"]},
         ).status_code
         == 200
@@ -260,7 +258,7 @@ def test_explicit_reconciliation_preserves_unknown_costs_and_delivery_evidence(
 
     from backend.app.connections import Connection
     from backend.app.installation import reconcile_uncertain
-    from backend.app.models import ChannelInbox, ChannelOutbox, EmployeeChannel
+    from backend.app.models import ChannelInbox, ChannelOutbox, UserChannel
     from connector.delivery import Delivery
 
     agent_id, _ = provision(client, worker)
@@ -287,7 +285,7 @@ def test_explicit_reconciliation_preserves_unknown_costs_and_delivery_evidence(
         connection = Connection(name="Reconcile test", purpose="channel")
         session.add_all([call, reported, connection])
         session.flush()
-        channel = EmployeeChannel(provider="telegram", name="Test", connection_id=connection.id)
+        channel = UserChannel(provider="telegram", name="Test", connection_id=connection.id)
         session.add(channel)
         session.flush()
         inbox = ChannelInbox(

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from backend.app.applications import application_identity
 from backend.app.db import Database
 from backend.app.models import Agent, AvailabilityCheck, InferenceConfig, ServiceHeartbeat
 
@@ -64,10 +65,10 @@ def agent_fingerprint(session: Session, agent: Agent) -> str:
     payload = {
         "revision": agent.revision,
         "incarnation": str(agent.current_incarnation_id),
-        "employee": str(agent.employee_id),
+        "employee": str(agent.user_id),
         "runtime": agent.runtime_release,
-        "application": agent.applied_application,
-        "selected": agent.selected_application,
+        "application": application_identity(agent.applied_application),
+        "selected": application_identity(agent.selected_application),
         "model": agent.inference_override,
         "default_model": {"model": config.model_id, "settings": config.settings}
         if config and not agent.inference_override
@@ -159,21 +160,21 @@ def availability(session: Session, agent: Agent, now: datetime | None = None) ->
     if (
         agent.runtime_mode != "native" and agent.model_route != "fixture"
     ) or agent.inference_override:
-        from backend.app.models import Employee
-        from backend.app.usage import employee_budget
+        from backend.app.models import User
+        from backend.app.usage import user_budget
 
-        employee = session.get(Employee, agent.employee_id) if agent.employee_id else None
-        budget = employee_budget(session, employee, now) if employee else None
+        user = session.get(User, agent.user_id) if agent.user_id else None
+        budget = user_budget(session, user, now) if user else None
         checks.append(
             {
-                "kind": "allowance",
-                "state": "blocked" if not employee or budget["status"] == "exhausted" else "ok",
-                "code": "employee_assignment_required"
-                if not employee
-                else "allowance_exhausted"
+                "kind": "budget",
+                "state": "blocked" if not user or budget["status"] == "exhausted" else "ok",
+                "code": "user_assignment_required"
+                if not user
+                else "budget_exhausted"
                 if budget["status"] == "exhausted"
-                else "allowance_available",
-                "action": "Assign an employee or review their monthly allowance",
+                else "budget_available",
+                "action": "Assign a user or review their monthly budget",
                 "checked_at": now,
                 "expires_at": None,
             }
@@ -192,14 +193,12 @@ def availability(session: Session, agent: Agent, now: datetime | None = None) ->
         else "available"
     )
     from backend.app.applications import annotate_agent
-    from backend.app.models import EmployeeAccess, EmployeeChannel
+    from backend.app.models import UserAccess, UserChannel
     from backend.app.readiness import channel_status
 
     accesses = []
-    for access in session.scalars(
-        select(EmployeeAccess).where(EmployeeAccess.agent_id == agent.id)
-    ):
-        channel = session.get(EmployeeChannel, access.channel_id)
+    for access in session.scalars(select(UserAccess).where(UserAccess.agent_id == agent.id)):
+        channel = session.get(UserChannel, access.channel_id)
         check = channel_status(session, channel, now)
         accesses.append(
             {

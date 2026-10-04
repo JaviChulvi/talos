@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from backend.app.connections import Connection
-from backend.app.models import ChannelCursor, ChannelInbox, ChannelOutbox, EmployeeChannel, Run
+from backend.app.models import ChannelCursor, ChannelInbox, ChannelOutbox, Run, UserChannel
 from connector.delivery import Delivery, TransportError
 from connector.main import Connector
 from connector.telegram import Telegram
@@ -20,8 +20,8 @@ from tests.integration.test_channel_runs import (
     client,
     database_engine,
     lifecycle_sessions,
+    profile_agent,
     ready_accesses,
-    role_agent,
     session_maker,
     worker,
 )
@@ -45,7 +45,7 @@ def receive(sessions, pair, event=1, message="Hello", **changes):
     with sessions.begin() as session:
         Telegram("synthetic", client=AsyncMock()).receive(
             session,
-            session.get(EmployeeChannel, UUID(channel["id"])),
+            session.get(UserChannel, UUID(channel["id"])),
             channel["revision"],
             "test-bot",
             update,
@@ -163,7 +163,7 @@ def test_revocation_between_response_parts_blocks_remaining(client, session_make
     transport.send.return_value = "part1"
     delivery = Delivery(session_maker)
     asyncio.run(delivery.send_one(UUID(pairs[0][1]["id"]), transport))
-    client.post(f"/api/v1/employee-accesses/{pairs[0][0]['id']}/disable")
+    client.post(f"/api/v1/user-accesses/{pairs[0][0]['id']}/disable")
     with session_maker.begin() as session:
         session.scalar(select(ChannelOutbox)).retry_at = datetime.now(UTC) - timedelta(seconds=1)
     assert not asyncio.run(delivery.send_one(UUID(pairs[0][1]["id"]), transport))
@@ -177,8 +177,8 @@ def test_invitation_is_pending_and_never_persisted_as_message(
 ):
     _, pairs = ready_accesses
     access, channel = pairs[0]
-    client.post(f"/api/v1/employee-accesses/{access['id']}/disable")
-    token = client.post(f"/api/v1/employee-accesses/{access['id']}/invitation").json()["token"]
+    client.post(f"/api/v1/user-accesses/{access['id']}/disable")
+    token = client.post(f"/api/v1/user-accesses/{access['id']}/invitation").json()["token"]
     inbox = receive(session_maker, pairs[0], message=f"/start {token}")
     assert inbox.code == "identity_pending" and inbox.run_id is None
     with session_maker() as session:
@@ -186,7 +186,7 @@ def test_invitation_is_pending_and_never_persisted_as_message(
         assert token not in str(session.scalar(select(ChannelOutbox)).parts)
         assert token not in str(inbox.__dict__)
     actual = next(
-        row for row in client.get("/api/v1/employee-accesses").json() if row["id"] == access["id"]
+        row for row in client.get("/api/v1/user-accesses").json() if row["id"] == access["id"]
     )
     assert actual["state"] == "pending"
 
@@ -238,7 +238,7 @@ def test_restored_telegram_discards_backlog_before_resuming(
     _, channel_data = pairs[0]
     identifier = UUID(channel_data["id"])
     with session_maker.begin() as session:
-        channel = session.get(EmployeeChannel, identifier)
+        channel = session.get(UserChannel, identifier)
         version = session.get(Connection, channel.connection_id).current_version_id
         session.add(ChannelCursor(channel_id=identifier, reconnect_required=True))
     transport = AsyncMock()

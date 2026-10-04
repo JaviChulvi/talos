@@ -3,14 +3,14 @@
 import pytest
 from sqlalchemy import event, select
 
-from backend.app.models import Employee
+from backend.app.models import User
 
 # Imported fixtures intentionally share the existing lifecycle test harness.
 # ruff: noqa: F401, F811
 from tests.integration.test_lifecycle import (  # noqa: F401
     client,
     database_engine,
-    role_agent,
+    profile_agent,
     session_maker,
     worker,
 )
@@ -18,8 +18,8 @@ from tests.integration.test_lifecycle import (  # noqa: F401
 pytestmark = pytest.mark.integration
 
 
-def test_status_reads_do_not_wait_for_employee_edits(client, session_maker, role_agent):
-    agent_id, _, _ = role_agent
+def test_status_reads_do_not_wait_for_user_edits(client, session_maker, profile_agent):
+    agent_id, _, _ = profile_agent
     engine = session_maker.kw["bind"]
 
     def bounded_lock_wait(connection, *_):
@@ -27,7 +27,7 @@ def test_status_reads_do_not_wait_for_employee_edits(client, session_maker, role
             cursor.execute("SET lock_timeout = '500ms'")
 
     with session_maker() as editor:
-        editor.scalar(select(Employee).with_for_update())
+        editor.scalar(select(User).with_for_update())
         event.listen(engine, "checkout", bounded_lock_wait)
         try:
             assert client.get("/api/v1/agents").status_code == 200
@@ -38,14 +38,15 @@ def test_status_reads_do_not_wait_for_employee_edits(client, session_maker, role
             event.remove(engine, "checkout", bounded_lock_wait)
 
 
-def test_restart_retains_selection_until_explicit_apply(client, worker, role_agent):
-    agent_id, role, _ = role_agent
+def test_restart_retains_selection_until_explicit_apply(client, worker, profile_agent):
+    agent_id, profile, _ = profile_agent
     path = f"/api/v1/agents/{agent_id}"
     assert client.post(path + "/start", headers={"Idempotency-Key": "initial"}).status_code == 202
     worker.process_one()
     first = client.get(path).json()["applied_application"]
     client.put(
-        f"/api/v1/roles/{role['id']}", json={"name": "Sales", "capabilities": ["web_research"]}
+        f"/api/v1/profiles/{profile['id']}",
+        json={"name": "Sales", "capabilities": ["web_research"]},
     )
     assert client.post(path + "/stop", headers={"Idempotency-Key": "stop"}).status_code == 202
     worker.process_one()
@@ -57,29 +58,30 @@ def test_restart_retains_selection_until_explicit_apply(client, worker, role_age
     preview = client.post(path + "/setup-preview").json()
     assert preview["changes"] and not preview["blockers"]
     assert (
-        client.post(path + "/apply-role", headers={"Idempotency-Key": "apply"}).status_code == 202
-    )
-    worker.process_one()
-    applied = client.get(path).json()
-    assert applied["applied_application"]["role"]["capabilities"] == ["web_research"]
-    assert not applied["setup_pending"]
-
-
-def test_reassignment_requires_explicit_apply(client, worker, role_agent):
-    agent_id, role, _ = role_agent
-    path = f"/api/v1/agents/{agent_id}"
-    client.post(path + "/apply-role", headers={"Idempotency-Key": "initial"})
-    worker.process_one()
-    employee = client.post(
-        "/api/v1/employees", json={"name": "Other employee", "role_id": role["id"]}
-    ).json()
-    assert client.put(path + "/employee", json={"employee_id": employee["id"]}).status_code == 200
-    response = client.post(path + "/start", headers={"Idempotency-Key": "start"})
-    assert response.status_code == 409
-    assert "Employee changed" in response.json()["detail"]
-    assert (
-        client.post(path + "/apply-role", headers={"Idempotency-Key": "reassign"}).status_code
+        client.post(path + "/apply-profile", headers={"Idempotency-Key": "apply"}).status_code
         == 202
     )
     worker.process_one()
-    assert client.get(path).json()["applied_application"]["employee_id"] == employee["id"]
+    applied = client.get(path).json()
+    assert applied["applied_application"]["profile"]["capabilities"] == ["web_research"]
+    assert not applied["setup_pending"]
+
+
+def test_reassignment_requires_explicit_apply(client, worker, profile_agent):
+    agent_id, profile, _ = profile_agent
+    path = f"/api/v1/agents/{agent_id}"
+    client.post(path + "/apply-profile", headers={"Idempotency-Key": "initial"})
+    worker.process_one()
+    user = client.post(
+        "/api/v1/users", json={"name": "Other user", "profile_id": profile["id"]}
+    ).json()
+    assert client.put(path + "/user", json={"user_id": user["id"]}).status_code == 200
+    response = client.post(path + "/start", headers={"Idempotency-Key": "start"})
+    assert response.status_code == 409
+    assert "User changed" in response.json()["detail"]
+    assert (
+        client.post(path + "/apply-profile", headers={"Idempotency-Key": "reassign"}).status_code
+        == 202
+    )
+    worker.process_one()
+    assert client.get(path).json()["applied_application"]["user_id"] == user["id"]

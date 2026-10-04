@@ -18,14 +18,14 @@ import {
   errorMessage,
   type AgentAvailability,
   type AvailabilityEvidence,
-  type EmployeeAccess,
-  type EmployeeChannel,
+  type UserAccess,
+  type UserChannel,
 } from "@/lib/api";
 
 type Agent = {
   id: string;
-  employee_id: string | null;
-  employee_name: string;
+  user_id: string | null;
+  user_name: string;
   display_name: string;
   runtime_mode: string;
   desired_state: string;
@@ -84,9 +84,9 @@ const causes: Record<string, string> = {
     "This Telegram bot has a webhook. Remove it in its owning integration before using Talos polling.",
   connector_unavailable:
     "Check the connector service, then check this channel again.",
-  allowance_exhausted: "Review the employee's monthly allowance.",
-  allowance_or_credit_exhausted:
-    "Review the employee allowance and provider balance.",
+  budget_exhausted: "Review the user's monthly budget.",
+  budget_or_credit_exhausted:
+    "Review the user budget and provider balance.",
   model_unavailable: "Choose an available model in agent settings.",
   model_send_uncertain:
     "The test timed out after sending. Stop the agent before trying again.",
@@ -159,8 +159,8 @@ export function AgentHandoff({
   const [availability, setAvailability] = useState<AgentAvailability | null>(
     null,
   );
-  const [channels, setChannels] = useState<EmployeeChannel[]>([]);
-  const [accesses, setAccesses] = useState<EmployeeAccess[]>([]);
+  const [channels, setChannels] = useState<UserChannel[]>([]);
+  const [accesses, setAccesses] = useState<UserAccess[]>([]);
   const [refresh, setRefresh] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -176,8 +176,8 @@ export function AgentHandoff({
         api<AgentAvailability>(`/agents/${agent.id}/availability`, {
           signal: controller.signal,
         }),
-        api<EmployeeChannel[]>("/channels", { signal: controller.signal }),
-        api<EmployeeAccess[]>("/employee-accesses", {
+        api<UserChannel[]>("/channels", { signal: controller.signal }),
+        api<UserAccess[]>("/user-accesses", {
           signal: controller.signal,
         }),
       ])
@@ -256,8 +256,8 @@ export function AgentHandoff({
         <div>
           <h2 className="text-lg font-semibold">Access & availability</h2>
           <p className="mt-1 max-w-prose text-sm text-muted-foreground">
-            Prepare {agent.employee_name || "the employee"}'s access to{" "}
-            {agent.display_name}. Employees talk to the agent in Telegram or
+            Prepare {agent.user_name || "the user"}'s access to{" "}
+            {agent.display_name}. Users talk to the agent in Telegram or
             Slack; Talos stays with the administrator.
           </p>
         </div>
@@ -371,11 +371,11 @@ export function AgentHandoff({
           </p>
         )}
       </section>
-      {agent.runtime_mode !== "native" || !agent.employee_id ? (
+      {agent.runtime_mode !== "native" || !agent.user_id ? (
         <Alert>
           <CircleAlert />
           <AlertDescription>
-            Assign an employee to a native agent in Permissions before preparing
+            Assign a user to a native agent in Permissions before preparing
             channel access.
           </AlertDescription>
         </Alert>
@@ -389,7 +389,7 @@ export function AgentHandoff({
               channel={channels.find((item) => item.provider === provider)}
               access={accesses.find(
                 (item) =>
-                  item.employee_id === agent.employee_id &&
+                  item.user_id === agent.user_id &&
                   item.channel_id ===
                     channels.find((channel) => channel.provider === provider)
                       ?.id,
@@ -426,8 +426,8 @@ function ChannelHandoff({
 }: {
   provider: "telegram" | "slack";
   agent: Agent;
-  channel?: EmployeeChannel;
-  access?: EmployeeAccess;
+  channel?: UserChannel;
+  access?: UserAccess;
   evidence?: AvailabilityEvidence;
   disabled: boolean;
   now: number;
@@ -483,7 +483,7 @@ function ChannelHandoff({
     await action(async () => {
       const configured =
         channel ??
-        (await api<EmployeeChannel>("/channels", {
+        (await api<UserChannel>("/channels", {
           method: "POST",
           body: JSON.stringify({
             provider,
@@ -509,12 +509,12 @@ function ChannelHandoff({
     await action(async () => {
       if (!channel) return;
       await api(
-        access ? `/employee-accesses/${access.id}` : "/employee-accesses",
+        access ? `/user-accesses/${access.id}` : "/user-accesses",
         {
           method: access ? "PUT" : "POST",
           body: JSON.stringify({
             channel_id: channel.id,
-            employee_id: agent.employee_id,
+            user_id: agent.user_id,
             agent_id: agent.id,
             external_scope: channel.workspace_id,
             external_user_id: userId.trim() || access?.external_user_id || null,
@@ -542,7 +542,7 @@ function ChannelHandoff({
   const checking = !!probe && ["queued", "running"].includes(probe.status);
   return (
     <section
-      aria-label={`${title} employee access`}
+      aria-label={`${title} user access`}
       className="space-y-5 rounded-lg border p-5"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -559,7 +559,7 @@ function ChannelHandoff({
       </div>
       <p className="text-sm text-muted-foreground">
         {provider === "telegram"
-          ? "One organization bot. Private text messages only."
+          ? "One shared bot. Private text messages only."
           : "One internal app in the configured workspace. Private DMs only."}
       </p>
       {error && (
@@ -611,8 +611,8 @@ function ChannelHandoff({
             </div>
           ))}
           <p className="text-xs text-muted-foreground">
-            Channel credentials are shared by the organization. Rotating them
-            affects every employee using this channel.
+            Channel credentials are shared across this installation. Rotating them
+            affects every user using this channel.
           </p>
           {provider === "slack" && (
             <p className="text-xs text-muted-foreground">
@@ -711,7 +711,7 @@ function ChannelHandoff({
               setInvitation(null);
               setProbe(null);
               onNotice(
-                "Workspace saved. Check and enable the channel, then save and approve employee identities again.",
+                "Workspace saved. Check and enable the channel, then save and approve user identities again.",
               );
             });
           }}
@@ -726,7 +726,7 @@ function ChannelHandoff({
             disabled={disabled || busy}
           />
           <p className="text-xs text-muted-foreground">
-            Changing the workspace disables Slack for every employee until the
+            Changing the workspace disables Slack for every user until the
             channel is checked and their identities are approved again.
           </p>
           <Button
@@ -745,7 +745,7 @@ function ChannelHandoff({
       {channel && (
         <div className="space-y-3 border-t pt-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-sm font-medium">Employee identity</h4>
+            <h4 className="text-sm font-medium">User identity</h4>
             {access && <State value={access.state} />}
           </div>
           {access?.external_user_id && (
@@ -758,7 +758,7 @@ function ChannelHandoff({
             <Alert>
               <CircleAlert />
               <AlertDescription>
-                This employee's {title} access currently points to another
+                This user's {title} access currently points to another
                 agent. Saving below moves the destination here and requires
                 approval again.
               </AlertDescription>
@@ -786,7 +786,7 @@ function ChannelHandoff({
             />
             <p className="text-xs text-muted-foreground">
               Use a stable platform ID. Leave blank to keep an existing ID or
-              invite a new employee. Saving resets approval.
+              invite a new user. Saving resets approval.
             </p>
             <Button variant="outline" size="sm" disabled={disabled || busy}>
               {access ? "Save identity / destination" : "Create pending access"}
@@ -803,7 +803,7 @@ function ChannelHandoff({
                     void action(async () => {
                       setInvitation(
                         await api<Invitation>(
-                          `/employee-accesses/${access.id}/invitation`,
+                          `/user-accesses/${access.id}/invitation`,
                           { method: "POST" },
                         ),
                       );
@@ -819,7 +819,7 @@ function ChannelHandoff({
                   disabled={disabled || busy || !access.external_user_id}
                   onClick={() =>
                     void action(async () => {
-                      await api(`/employee-accesses/${access.id}/approve`, {
+                      await api(`/user-accesses/${access.id}/approve`, {
                         method: "POST",
                       });
                       setInvitation(null);
@@ -835,7 +835,7 @@ function ChannelHandoff({
                   disabled={disabled || busy}
                   onClick={() =>
                     void action(async () => {
-                      await api(`/employee-accesses/${access.id}/disable`, {
+                      await api(`/user-accesses/${access.id}/disable`, {
                         method: "POST",
                       });
                       setInvitation(null);
@@ -870,10 +870,10 @@ function ChannelHandoff({
         access?.agent_id === agent.id &&
         (access.state === "active" || invitationValid) && (
           <div className="space-y-3 border-t pt-4">
-            <h4 className="text-sm font-medium">Share with the employee</h4>
+            <h4 className="text-sm font-medium">Share with the user</h4>
             {!channel?.enabled && (
               <p className="text-sm text-muted-foreground">
-                Enable this channel before the employee uses these instructions.
+                Enable this channel before the user uses these instructions.
               </p>
             )}
             <p className="whitespace-pre-line break-all text-sm text-muted-foreground">
@@ -906,7 +906,7 @@ function ChannelHandoff({
             </div>
             <p className="text-xs text-muted-foreground">
               Share these instructions yourself. A verified credential does not
-              prove that the employee received an agent response.
+              prove that the user received an agent response.
             </p>
           </div>
         )}
@@ -921,7 +921,7 @@ function HandoffVerification({
   disabled,
   now,
 }: {
-  access: EmployeeAccess;
+  access: UserAccess;
   provider: "telegram" | "slack";
   enabled: boolean;
   disabled: boolean;
@@ -935,7 +935,7 @@ function HandoffVerification({
     const controller = new AbortController();
     const load = () => {
       api<{ history: HandoffEvidence[] }>(
-        `/employee-accesses/${access.id}/handoff`,
+        `/user-accesses/${access.id}/handoff`,
         { signal: controller.signal },
       )
         .then((result) => {
@@ -982,7 +982,7 @@ function HandoffVerification({
         </Badge>
       </div>
       <p className="text-xs text-muted-foreground">
-        The channel test uses no model. The employee's following message uses
+        The channel test uses no model. The user's following message uses
         the agent normally and can consume credit. Provider acceptance does not
         prove the message was read.
       </p>
@@ -1004,7 +1004,7 @@ function HandoffVerification({
               ? "confirmation accepted by provider"
               : latest?.received_at
                 ? `received · ${latest.transport_state}`
-                : "waiting for employee test"}
+                : "waiting for user test"}
           .
         </li>
         <li>
@@ -1036,7 +1036,7 @@ function HandoffVerification({
         onClick={() => {
           setBusy(true);
           setError(null);
-          api<Invitation>(`/employee-accesses/${access.id}/challenge`, {
+          api<Invitation>(`/user-accesses/${access.id}/challenge`, {
             method: "POST",
           })
             .then((result) => setChallenge(result))

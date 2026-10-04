@@ -67,8 +67,8 @@ class ServiceHeartbeat(Base):
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
-class EmployeeChannel(Base):
-    __tablename__ = "employee_channels"
+class UserChannel(Base):
+    __tablename__ = "user_channels"
     __table_args__ = (
         CheckConstraint("provider IN ('telegram','slack')"),
         CheckConstraint("revision > 0"),
@@ -87,18 +87,18 @@ class EmployeeChannel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class EmployeeAccess(Base):
-    __tablename__ = "employee_accesses"
+class UserAccess(Base):
+    __tablename__ = "user_accesses"
     __table_args__ = (
-        UniqueConstraint("channel_id", "employee_id"),
+        UniqueConstraint("channel_id", "user_id"),
         UniqueConstraint("channel_id", "external_scope", "external_user_id"),
         CheckConstraint("state IN ('pending','active','disabled')"),
         CheckConstraint("revision > 0"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    channel_id: Mapped[UUID] = mapped_column(ForeignKey("employee_channels.id"), index=True)
-    employee_id: Mapped[UUID] = mapped_column(ForeignKey("employees.id"), index=True)
+    channel_id: Mapped[UUID] = mapped_column(ForeignKey("user_channels.id"), index=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
     external_scope: Mapped[str] = mapped_column(String(40), default="")
     external_user_id: Mapped[str | None] = mapped_column(String(40))
@@ -111,7 +111,7 @@ class AccessInvitation(Base):
     __tablename__ = "access_invitations"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    access_id: Mapped[UUID] = mapped_column(ForeignKey("employee_accesses.id"), index=True)
+    access_id: Mapped[UUID] = mapped_column(ForeignKey("user_accesses.id"), index=True)
     access_revision: Mapped[int] = mapped_column(Integer)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -121,7 +121,7 @@ class AccessInvitation(Base):
 class ChannelCursor(Base):
     __tablename__ = "channel_cursors"
 
-    channel_id: Mapped[UUID] = mapped_column(ForeignKey("employee_channels.id"), primary_key=True)
+    channel_id: Mapped[UUID] = mapped_column(ForeignKey("user_channels.id"), primary_key=True)
     credential_version_id: Mapped[UUID | None] = mapped_column(ForeignKey("connection_versions.id"))
     provider_identity: Mapped[str] = mapped_column(String(80), default="")
     offset: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -138,13 +138,13 @@ class ChannelInbox(Base):
     __table_args__ = (UniqueConstraint("channel_id", "event_id"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    channel_id: Mapped[UUID] = mapped_column(ForeignKey("employee_channels.id"), index=True)
+    channel_id: Mapped[UUID] = mapped_column(ForeignKey("user_channels.id"), index=True)
     channel_revision: Mapped[int] = mapped_column(Integer)
     event_id: Mapped[str] = mapped_column(String(160))
     external_user_id: Mapped[str] = mapped_column(String(40))
     external_scope: Mapped[str] = mapped_column(String(40), default="")
     destination: Mapped[str] = mapped_column(String(80))
-    access_id: Mapped[UUID | None] = mapped_column(ForeignKey("employee_accesses.id"))
+    access_id: Mapped[UUID | None] = mapped_column(ForeignKey("user_accesses.id"))
     access_revision: Mapped[int | None] = mapped_column(Integer)
     run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id"))
     challenge_id: Mapped[UUID | None] = mapped_column(ForeignKey("delivery_challenges.id"))
@@ -177,7 +177,7 @@ class DeliveryChallenge(Base):
     __tablename__ = "delivery_challenges"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    access_id: Mapped[UUID] = mapped_column(ForeignKey("employee_accesses.id"), index=True)
+    access_id: Mapped[UUID] = mapped_column(ForeignKey("user_accesses.id"), index=True)
     access_revision: Mapped[int] = mapped_column(Integer)
     channel_revision: Mapped[int] = mapped_column(Integer)
     credential_version_id: Mapped[UUID] = mapped_column(ForeignKey("connection_versions.id"))
@@ -223,7 +223,7 @@ class ChannelProbe(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    channel_id: Mapped[UUID] = mapped_column(ForeignKey("employee_channels.id"))
+    channel_id: Mapped[UUID] = mapped_column(ForeignKey("user_channels.id"))
     revision: Mapped[int] = mapped_column(Integer)
     credential_version_id: Mapped[UUID] = mapped_column(ForeignKey("connection_versions.id"))
     idempotency_key: Mapped[str] = mapped_column(String(128))
@@ -266,8 +266,8 @@ class SetupRevision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class Role(Base):
-    __tablename__ = "roles"
+class AgentProfile(Base):
+    __tablename__ = "profiles"
     __table_args__ = (CheckConstraint("revision > 0"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -280,18 +280,18 @@ class Role(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1)
 
 
-class Employee(Base):
-    __tablename__ = "employees"
-    __table_args__ = (CheckConstraint("monthly_allowance_usd >= 0"),)
+class User(Base):
+    __tablename__ = "users"
+    __table_args__ = (CheckConstraint("monthly_budget_usd >= 0"),)
 
-    monthly_allowance_usd: Mapped[Decimal | None] = mapped_column(Numeric(24, 12))
+    monthly_budget_usd: Mapped[Decimal | None] = mapped_column(Numeric(24, 12))
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(160))
     email: Mapped[str | None] = mapped_column(String(254))
     connection_overrides: Mapped[dict] = mapped_column(JSON, default=dict)
-    role_id: Mapped[UUID] = mapped_column(ForeignKey("roles.id"), index=True)
-    role: Mapped["Role"] = relationship(lazy="selectin")
+    profile_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id"), index=True)
+    profile: Mapped["AgentProfile"] = relationship(lazy="selectin")
 
 
 class Agent(Base):
@@ -306,42 +306,44 @@ class Agent(Base):
     dashboard_password_hash: Mapped[str | None] = mapped_column(Text)
     runtime_mode: Mapped[str] = mapped_column(String(20), default="managed")
     display_name: Mapped[str] = mapped_column(String(120))
-    employee_label: Mapped[str] = mapped_column(String(160))
-    employee_id: Mapped[UUID | None] = mapped_column(ForeignKey("employees.id"), index=True)
-    employee: Mapped["Employee | None"] = relationship(lazy="selectin")
+    user_label: Mapped[str] = mapped_column(String(160))
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), index=True)
+    user: Mapped["User | None"] = relationship(lazy="selectin")
 
     @property
-    def employee_name(self) -> str:
-        return self.employee.name if self.employee else self.employee_label
+    def user_name(self) -> str:
+        return self.user.name if self.user else self.user_label
 
     @property
-    def role(self) -> dict | None:
-        if self.employee is None:
+    def profile(self) -> dict | None:
+        if self.user is None:
             return None
-        role = self.employee.role
+        profile = self.user.profile
         return {
-            "id": role.id,
-            "name": role.name,
-            "revision": role.revision,
-            "capabilities": role.capabilities,
-            "setup_revision_id": str(role.setup_revision_id) if role.setup_revision_id else None,
-            "connector_grants": role.connector_grants,
+            "id": profile.id,
+            "name": profile.name,
+            "revision": profile.revision,
+            "capabilities": profile.capabilities,
+            "setup_revision_id": str(profile.setup_revision_id)
+            if profile.setup_revision_id
+            else None,
+            "connector_grants": profile.connector_grants,
         }
 
     selected_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     applied_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
 
-    applied_role: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    applied_profile: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
 
     @property
     def permissions_pending(self) -> bool:
-        role = self.role
+        profile = self.profile
         return bool(
-            role
+            profile
             and (
-                self.applied_role is None
-                or self.applied_role["id"] != str(role["id"])
-                or self.applied_role["revision"] != role["revision"]
+                self.applied_profile is None
+                or self.applied_profile["id"] != str(profile["id"])
+                or self.applied_profile["revision"] != profile["revision"]
             )
         )
 
@@ -408,7 +410,7 @@ class Operation(Base):
         Index("ix_operations_pending", "status", "next_retry_at", "created_at"),
         CheckConstraint(
             "action IN ('create', 'start', 'stop', 'delete', 'dashboard', "
-            "'apply_role', 'configure_model', 'capture_setup')"
+            "'apply_profile', 'configure_model', 'capture_setup')"
         ),
         CheckConstraint("status IN ('queued', 'running', 'retry_wait', 'succeeded', 'failed')"),
         CheckConstraint("target_revision > 0"),
@@ -417,7 +419,7 @@ class Operation(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"), index=True)
-    role_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
+    profile_application: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     model_selection: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     result: Mapped[dict | None] = mapped_column(JSON(none_as_null=True))
     dashboard_url: Mapped[str | None] = mapped_column(Text)
@@ -446,7 +448,7 @@ TERMINAL_RUN_STATUSES = ("completed", "cancelled", "failed", "interrupted")
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (
-        CheckConstraint("source IN ('admin','employee','probe')"),
+        CheckConstraint("source IN ('admin','user','probe')"),
         UniqueConstraint("agent_id", "idempotency_key", name="uq_run_idempotency"),
         Index(
             "uq_run_active_agent",
@@ -468,10 +470,10 @@ class Run(Base):
     source: Mapped[str] = mapped_column(String(20), default="admin")
     availability_fingerprint: Mapped[str | None] = mapped_column(String(64))
     session_key: Mapped[str | None] = mapped_column(String(255))
-    access_id: Mapped[UUID | None] = mapped_column(ForeignKey("employee_accesses.id"))
+    access_id: Mapped[UUID | None] = mapped_column(ForeignKey("user_accesses.id"))
     access_revision: Mapped[int | None] = mapped_column(Integer)
     channel_revision: Mapped[int | None] = mapped_column(Integer)
-    employee_id: Mapped[UUID | None] = mapped_column(ForeignKey("employees.id"))
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     model_id: Mapped[str] = mapped_column(String(255), default="fixture")
     inference: Mapped[dict] = mapped_column(JSON, default=dict)
     legacy_inference_calls: Mapped[list] = mapped_column("inference_calls", JSON, default=list)
@@ -526,14 +528,14 @@ class InferenceCall(Base):
     __tablename__ = "inference_calls"
     __table_args__ = (
         CheckConstraint("cost_usd >= 0"),
-        Index("ix_inference_calls_employee_month", "employee_id", "admitted_at"),
+        Index("ix_inference_calls_user_month", "user_id", "admitted_at"),
         Index("ix_inference_calls_agent_month", "agent_id", "admitted_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id"))
     incarnation_id: Mapped[UUID] = mapped_column(ForeignKey("workload_incarnations.id"))
-    employee_id: Mapped[UUID | None] = mapped_column(ForeignKey("employees.id"))
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id"), index=True)
     model: Mapped[str] = mapped_column(String(255))
     generation_id: Mapped[str | None] = mapped_column(String(200))

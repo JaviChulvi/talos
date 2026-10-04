@@ -1,4 +1,4 @@
-import { AgentBudget } from "@/components/employee-budget";
+import { AgentBudget } from "@/components/user-budget";
 import { AgentHandoff } from "@/components/agent-handoff";
 import {
   useEffect,
@@ -111,7 +111,7 @@ import {
   api,
   ApiError,
   errorMessage,
-  type Employee,
+  type User,
   type Capability,
   type AgentPermissions,
   type SetupPreview,
@@ -129,7 +129,7 @@ type Agent = AgentPermissions & {
   runtime_mode: "native" | "managed";
   runtime_release: string;
   display_name: string;
-  employee_label: string;
+  user_label: string;
   desired_state: string;
   observed_state: string;
   last_error: string | null;
@@ -251,7 +251,7 @@ export function AgentWorkspace({
   const [agentView, setAgentView] = useState("settings");
   const [createOpen, setCreateOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<{
-    action: "delete" | "apply-role";
+    action: "delete" | "apply-profile";
     agentId: string;
   } | null>(null);
   const [applyPreview, setApplyPreview] = useState<SetupPreview | null>(null);
@@ -316,9 +316,9 @@ export function AgentWorkspace({
   }
   const dashboardWindows = useRef<Record<string, Window>>({});
   const [displayName, setDisplayName] = useState("");
-  const [employeeLabel, setEmployeeLabel] = useState("");
-  const [employeeId, setEmployeeId] = useState("");
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [userLabel, setUserLabel] = useState("");
+  const [userId, setUserId] = useState("");
+  const [users, setUsers] = useState<User[]>([]);
   const [catalog, setCatalog] = useState<Capability[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [historyLoading, setHistoryLoading] = useState(true);
@@ -376,7 +376,7 @@ export function AgentWorkspace({
           nextRuns,
           nextModel,
           dashboards,
-          nextEmployees,
+          nextUsers,
           nextCatalog,
         ] = await Promise.all([
           api<Agent[]>("/agents", options),
@@ -392,7 +392,7 @@ export function AgentWorkspace({
                 : api<Operation>(`/operations/${id}`, options),
             ),
           ),
-          api<Employee[]>("/employees", options),
+          api<User[]>("/users", options),
           api<Capability[]>("/capabilities", options),
         ]);
         const nextRun = nextRuns[0];
@@ -418,7 +418,7 @@ export function AgentWorkspace({
           delete dashboardWindows.current[dashboard.id];
         }
         setAgents(nextAgents);
-        setEmployees(nextEmployees);
+        setUsers(nextUsers);
         setCatalog(nextCatalog);
         setModelId(nextModel.model_id);
         const nextSelectedId = nextAgents.some(
@@ -501,8 +501,8 @@ export function AgentWorkspace({
         setChatAgentId(result.agent_id);
         if (request.kind === "create") {
           setDisplayName("");
-          setEmployeeLabel("");
-          setEmployeeId("");
+          setUserLabel("");
+          setUserId("");
           setDashboardPassword("");
           setCreateOpen(false);
           window.location.assign("#agents");
@@ -528,8 +528,8 @@ export function AgentWorkspace({
     event.preventDefault();
     if (
       !displayName.trim() ||
-      (!employeeId && !employeeLabel.trim()) ||
-      employeeLabel.trim().length > 160 ||
+      (!userId && !userLabel.trim()) ||
+      userLabel.trim().length > 160 ||
       (runtimeMode === "native" &&
         (!runtimeChoices.length || !!runtimeTargetsError)) ||
       writesDisabled
@@ -542,9 +542,9 @@ export function AgentWorkspace({
       kind: "create",
       body: {
         display_name: displayName.trim(),
-        ...(employeeId
-          ? { employee_id: employeeId }
-          : { employee_label: employeeLabel.trim() }),
+        ...(userId
+          ? { user_id: userId }
+          : { user_label: userLabel.trim() }),
         runtime_mode: runtimeMode,
         runtime_kind: runtimeKind,
         ...(runtimeMode === "native" ? { runtime_version: runtimeVersion } : {}),
@@ -559,7 +559,7 @@ export function AgentWorkspace({
   }
 
   function lifecycle(
-    action: "start" | "stop" | "delete" | "apply-role",
+    action: "start" | "stop" | "delete" | "apply-profile",
     confirmed = false,
     agent = selected,
   ) {
@@ -570,13 +570,13 @@ export function AgentWorkspace({
       (agent.id === selectedId && operationActive)
     )
       return;
-    if (!confirmed && (action === "delete" || action === "apply-role")) {
+    if (!confirmed && (action === "delete" || action === "apply-profile")) {
       confirmationTrigger.current =
         document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null;
       setConfirmation({ action, agentId: agent.id });
-      if (action === "apply-role") {
+      if (action === "apply-profile") {
         const request = ++previewRequest.current;
         setApplyPreview(null);
         setPreviewLoading(true);
@@ -611,14 +611,14 @@ export function AgentWorkspace({
     });
   }
 
-  async function assignEmployee(id: string) {
+  async function assignUser(id: string) {
     if (!selected || !id || writesDisabled) return;
     setSubmitting(true);
     setActionError(null);
     try {
-      const updated = await api<Agent>(`/agents/${selected.id}/employee`, {
+      const updated = await api<Agent>(`/agents/${selected.id}/user`, {
         method: "PUT",
-        body: JSON.stringify({ employee_id: id }),
+        body: JSON.stringify({ user_id: id }),
       });
       setAgents((current) =>
         current.map((agent) => (agent.id === updated.id ? updated : agent)),
@@ -683,15 +683,15 @@ export function AgentWorkspace({
     ? selected.inference_override ? "gateway" : "external"
     : effectiveModel === "fixture" ? "simulator" : "gateway";
   const pageTitle = page.startsWith("onboarding")
-    ? "Employee setup"
+    ? "Access setup"
     : page.startsWith("setups")
     ? "Setups"
     : page.startsWith("usage")
       ? "Usage"
-      : page === "employees"
-      ? "Employees"
-      : page === "roles"
-        ? "Roles"
+      : page === "users"
+      ? "Users"
+      : page === "profiles"
+        ? "Agent profiles"
         : page === "settings"
           ? "Settings"
           : "Platform status";
@@ -880,10 +880,10 @@ export function AgentWorkspace({
         <SidebarFooter className="gap-3 p-3">
           <SidebarMenu>
             {[
-              { id: "onboarding", label: "Employee setup", icon: ListChecks },
+              { id: "onboarding", label: "Access setup", icon: ListChecks },
               { id: "usage", label: "Usage", icon: DollarSign },
-              { id: "employees", label: "Employees", icon: Users },
-              { id: "roles", label: "Roles", icon: ShieldCheck },
+              { id: "users", label: "Users", icon: Users },
+              { id: "profiles", label: "Agent profiles", icon: ShieldCheck },
               { id: "setups", label: "Setups", icon: Package },
               { id: "settings", label: "Settings", icon: Settings },
               { id: "platform", label: "Platform status", icon: Activity },
@@ -1206,7 +1206,7 @@ export function AgentWorkspace({
                   )}
                   {active && !settingsActive && (
                     <div className="mb-4">
-                      <AgentBudget employeeId={selected.employee_id} agentId={selected.id} coverage={budgetCoverage} />
+                      <AgentBudget userId={selected.user_id} agentId={selected.id} coverage={budgetCoverage} />
                     </div>
                   )}
                   <form onSubmit={sendDiagnostic}>
@@ -1378,7 +1378,7 @@ export function AgentWorkspace({
                     <p className="mt-1 text-sm text-muted-foreground">
                       {selected.display_name} · {runtimeName}{" "}
                       {selected.runtime_release.slice(selected.runtime_kind.length + 1)} ·{" "}
-                      {selected.employee_name || "Unassigned"}
+                      {selected.user_name || "Unassigned"}
                     </p>
                   </div>
                   <Tabs
@@ -1394,7 +1394,7 @@ export function AgentWorkspace({
                     <TabsContent value="settings">
                       {settingsActive && (
                         <div className="mb-5">
-                          <AgentBudget employeeId={selected.employee_id} agentId={selected.id} coverage={budgetCoverage} />
+                          <AgentBudget userId={selected.user_id} agentId={selected.id} coverage={budgetCoverage} />
                         </div>
                       )}
                       <a href={`#usage?agent_id=${selected.id}`} className="mb-5 block text-sm text-primary underline">View agent usage</a>
@@ -1469,8 +1469,8 @@ export function AgentWorkspace({
                               : `First visit: ${selected.runtime_kind === "hermes" ? "sign in as talos with the dashboard password you chose, then " : ""}configure a provider in ${runtimeName} if you selected “Handled by agent”.`}
                           </p>
                           <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
-                            Assigned agents use their applied role permissions.
-                            Saving a role does not change running agents. Remote
+                            Assigned agents use their applied profile permissions.
+                            Saving a profile does not change running agents. Remote
                             Docker hosts require a tunnel for the workspace
                             port.
                           </p>
@@ -1504,31 +1504,31 @@ export function AgentWorkspace({
                       )}
                       <div>
                         <Label
-                          htmlFor="assigned-employee"
+                          htmlFor="assigned-user"
                           className="mb-2 block text-sm font-medium"
                         >
-                          Employee assignment
+                          Assigned user
                         </Label>
                         <Select
-                          value={selected.employee_id ?? ""}
+                          value={selected.user_id ?? ""}
                           disabled={
                             writesDisabled ||
                             operationActive ||
                             selected.desired_state !== "stopped" ||
                             selected.observed_state !== "stopped"
                           }
-                          onValueChange={(value) => void assignEmployee(value)}
+                          onValueChange={(value) => void assignUser(value)}
                         >
                           <SelectTrigger
-                            id="assigned-employee"
+                            id="assigned-user"
                             className="w-full"
                           >
-                            <SelectValue placeholder="Choose an employee" />
+                            <SelectValue placeholder="Choose a user" />
                           </SelectTrigger>
                           <SelectContent>
-                            {employees.map((employee) => (
-                              <SelectItem key={employee.id} value={employee.id}>
-                                {employee.name}
+                            {users.map((user) => (
+                              <SelectItem key={user.id} value={user.id}>
+                                {user.name}
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -1536,23 +1536,23 @@ export function AgentWorkspace({
                         <p className="mt-2 text-xs text-muted-foreground">
                           Stop the agent before changing its assignment.{" "}
                           <a
-                            href="#employees"
+                            href="#users"
                             className="text-primary underline"
                           >
-                            Manage employees
+                            Manage users
                           </a>
                         </p>
                       </div>
                       {selected.runtime_mode === "managed" ? (
                         <p className="text-sm text-muted-foreground">
                           Managed conversations have no native tools, regardless
-                          of the assigned role.
+                          of the assigned profile.
                         </p>
-                      ) : selected.role ? (
+                      ) : selected.profile ? (
                         <>
                           <div className="flex flex-wrap items-center gap-3">
                             <h3 className="font-semibold">
-                              {selected.role.name}
+                              {selected.profile.name}
                             </h3>
                             <Badge
                               variant={
@@ -1570,10 +1570,10 @@ export function AgentWorkspace({
                             <div>
                               <dt className="text-sm font-medium">
                                 Saved permissions · revision{" "}
-                                {selected.role.revision}
+                                {selected.profile.revision}
                               </dt>
                               <dd className="mt-2 text-sm text-muted-foreground">
-                                {selected.role.capabilities
+                                {selected.profile.capabilities
                                   .map(
                                     (id) =>
                                       catalog.find(
@@ -1586,13 +1586,13 @@ export function AgentWorkspace({
                             <div>
                               <dt className="text-sm font-medium">
                                 Applied permissions
-                                {selected.applied_role
-                                  ? ` · ${selected.applied_role.name}, revision ${selected.applied_role.revision}`
+                                {selected.applied_profile
+                                  ? ` · ${selected.applied_profile.name}, revision ${selected.applied_profile.revision}`
                                   : ""}
                               </dt>
                               <dd className="mt-2 text-sm text-muted-foreground">
-                                {selected.applied_role
-                                  ? selected.applied_role.capabilities
+                                {selected.applied_profile
+                                  ? selected.applied_profile.capabilities
                                       .map(
                                         (id) =>
                                           catalog.find(
@@ -1613,21 +1613,21 @@ export function AgentWorkspace({
                           <Button
                             variant="outline"
                             disabled={writesDisabled || operationActive}
-                            onClick={() => lifecycle("apply-role")}
+                            onClick={() => lifecycle("apply-profile")}
                           >
-                            Apply saved role
+                            Apply saved profile
                           </Button>
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             Terminal execution permits file and network
                             operations even when dedicated tools are disabled.
                             Native settings are a trusted administrator surface;
-                            direct edits there are outside role management.
+                            direct edits there are outside profile management.
                           </p>
                         </>
                       ) : (
                         <p className="text-sm text-muted-foreground">
                           This agent uses its existing native permissions.
-                          Assign an employee to manage it through a role.
+                          Assign a user to manage it through a profile.
                         </p>
                       )}
                     </TabsContent>
@@ -1649,7 +1649,7 @@ export function AgentWorkspace({
             <div className="mx-auto max-w-5xl px-5 py-8 sm:px-10 sm:py-10">
               {children}
               <p className="mt-10 text-xs leading-relaxed text-muted-foreground">
-                Local administrator workspace. Employee sign-in is not enabled.
+                Local administrator workspace. User sign-in is not enabled.
               </p>
             </div>
           </div>
@@ -1704,53 +1704,53 @@ export function AgentWorkspace({
             </div>
             <div>
               <Label
-                htmlFor="create-employee"
+                htmlFor="create-user"
                 className="mb-1.5 block text-xs text-muted-foreground"
               >
-                Employee
+                User
               </Label>
               <Select
-                value={employeeId || "unassigned"}
+                value={userId || "unassigned"}
                 onValueChange={(value) =>
-                  setEmployeeId(value === "unassigned" ? "" : value)
+                  setUserId(value === "unassigned" ? "" : value)
                 }
                 disabled={writesDisabled}
               >
-                <SelectTrigger id="create-employee" className="w-full">
+                <SelectTrigger id="create-user" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="unassigned">
                     Unassigned — use a label
                   </SelectItem>
-                  {employees.map((employee) => (
-                    <SelectItem key={employee.id} value={employee.id}>
-                      {employee.name}
+                  {users.map((user) => (
+                    <SelectItem key={user.id} value={user.id}>
+                      {user.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <a
-                href="#employees"
+                href="#users"
                 onClick={() => setCreateOpen(false)}
                 className="mt-2 block text-xs text-primary underline"
               >
-                Manage employees
+                Manage users
               </a>
             </div>
-            {!employeeId && (
+            {!userId && (
               <div>
                 <Label
-                  htmlFor="employee-label"
+                  htmlFor="user-label"
                   className="mb-1.5 block text-xs text-muted-foreground"
                 >
-                  Employee label
+                  User label
                 </Label>
                 <Input
-                  id="employee-label"
+                  id="user-label"
                   className="w-full"
-                  value={employeeLabel}
-                  onChange={(event) => setEmployeeLabel(event.target.value)}
+                  value={userLabel}
+                  onChange={(event) => setUserLabel(event.target.value)}
                   placeholder="Alex"
                   required
                   minLength={1}
@@ -1790,7 +1790,7 @@ export function AgentWorkspace({
               <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
                 {runtimeMode === "managed"
                   ? "OpenClaw with model settings and conversations managed by Talos."
-                  : `Your own ${runtimes[runtimeKind]} workspace with the employee’s native tool permissions.`}
+                  : `Your own ${runtimes[runtimeKind]} workspace with the user’s native tool permissions.`}
               </p>
             </fieldset>
             {runtimeMode === "native" && (
@@ -1935,7 +1935,7 @@ export function AgentWorkspace({
                   (runtimeMode === "native" &&
                     (!runtimeChoices.length || !!runtimeTargetsError)) ||
                   !displayName.trim() ||
-                  (!employeeId && !employeeLabel.trim()) ||
+                  (!userId && !userLabel.trim()) ||
                   (runtimeKind === "hermes" && dashboardPassword.length < 12)
                 }
               >
@@ -1970,7 +1970,7 @@ export function AgentWorkspace({
               <AlertDialogTitle>
                 {confirmation.action === "delete"
                   ? `Delete ${agents.find((agent) => agent.id === confirmation.agentId)?.display_name ?? "agent"}?`
-                  : "Apply saved role?"}
+                  : "Apply saved profile?"}
               </AlertDialogTitle>
               <AlertDialogDescription>
                 {confirmation.action === "delete"
@@ -1981,7 +1981,7 @@ export function AgentWorkspace({
                     : "Apply the saved setup, permissions, and account versions. This agent will remain stopped."}
               </AlertDialogDescription>
             </AlertDialogHeader>
-            {confirmation.action === "apply-role" && (
+            {confirmation.action === "apply-profile" && (
               <ApplyPreview
                 loading={previewLoading}
                 previews={
@@ -2003,7 +2003,7 @@ export function AgentWorkspace({
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 disabled={
-                  confirmation.action === "apply-role" &&
+                  confirmation.action === "apply-profile" &&
                   (previewLoading ||
                     !applyPreview ||
                     !!applyPreview.blockers.length)
@@ -2021,7 +2021,7 @@ export function AgentWorkspace({
               >
                 {confirmation.action === "delete"
                   ? "Delete agent"
-                  : "Apply saved role"}
+                  : "Apply saved profile"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

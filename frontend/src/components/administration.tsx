@@ -1,4 +1,4 @@
-import { EmployeeBudget } from "@/components/employee-budget";
+import { UserBudget } from "@/components/user-budget";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Plus,
@@ -13,8 +13,8 @@ import {
   api,
   ApiError,
   errorMessage,
-  type Role,
-  type Employee,
+  type AgentProfile,
+  type User,
   type Capability,
   type AgentPermissions,
   type SetupPreview,
@@ -64,7 +64,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   ApplyPreview,
   ConnectionBindings,
-  RoleSetupFields,
+  ProfileSetupFields,
 } from "@/components/setup-controls";
 import type { Setup } from "@/components/setups";
 import type { Connection } from "@/components/connections";
@@ -84,12 +84,12 @@ export function Administration({
   active,
   onOperation,
 }: {
-  kind: "roles" | "employees";
+  kind: "profiles" | "users";
   active: boolean;
   onOperation: (agentId: string, id: string) => void;
 }) {
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [agents, setAgents] = useState<AgentPermissions[]>([]);
   const [setups, setSetups] = useState<Setup[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -111,7 +111,7 @@ export function Administration({
   const [description, setDescription] = useState("");
   const [capabilities, setCapabilities] = useState<string[]>([]);
   const [email, setEmail] = useState("");
-  const [roleId, setRoleId] = useState("");
+  const [profileId, setProfileId] = useState("");
   const [checked, setChecked] = useState<string[]>([]);
   const [results, setResults] = useState<Result[]>([]);
   const [loading, setLoading] = useState(true);
@@ -125,10 +125,10 @@ export function Administration({
   const [confirmation, setConfirmation] = useState<"apply" | "delete" | null>(
     null,
   );
-  const isRole = kind === "roles";
-  const records = isRole ? roles : employees;
+  const isProfile = kind === "profiles";
+  const records = isProfile ? profiles : users;
   const associated = agents.filter((agent) =>
-    isRole ? agent.role?.id === selectedId : agent.employee_id === selectedId,
+    isProfile ? agent.profile?.id === selectedId : agent.user_id === selectedId,
   );
   const selectedAgentIds = checked.filter((id) =>
     associated.some(
@@ -153,14 +153,14 @@ export function Administration({
         };
         const [
           nextRoles,
-          nextEmployees,
+          nextUsers,
           nextAgents,
           nextCatalog,
           nextSetups,
           nextConnections,
         ] = await Promise.all([
-          api<Role[]>("/roles", options),
-          api<Employee[]>("/employees", options),
+          api<AgentProfile[]>("/profiles", options),
+          api<User[]>("/users", options),
           api<AgentPermissions[]>("/agents", options),
           api<Capability[]>("/capabilities", options),
           api<Setup[]>("/setups", options),
@@ -175,8 +175,8 @@ export function Administration({
             })),
         );
         if (controller.signal.aborted) return;
-        setRoles(nextRoles);
-        setEmployees(nextEmployees);
+        setProfiles(nextRoles);
+        setUsers(nextUsers);
         setAgents(nextAgents);
         setCatalog(nextCatalog);
         setSetups(nextSetups);
@@ -219,7 +219,7 @@ export function Administration({
     };
   }, [active, applicationPending, refresh, results]);
 
-  function choose(record?: Role | Employee) {
+  function choose(record?: AgentProfile | User) {
     setEditorOpen(true);
     setSelectedId(record?.id ?? "");
     setName(record?.name ?? "");
@@ -230,7 +230,7 @@ export function Administration({
       record && "capabilities" in record ? record.capabilities : [],
     );
     setEmail(record && "email" in record ? (record.email ?? "") : "");
-    setRoleId(record && "role_id" in record ? record.role_id : "");
+    setProfileId(record && "profile_id" in record ? record.profile_id : "");
     setSetupRevisionId(
       record && "capabilities" in record
         ? (record.setup_revision_id ?? "")
@@ -245,7 +245,7 @@ export function Administration({
         : {},
     );
     setConnectionOverrides(
-      record && "role_id" in record ? (record.connection_overrides ?? {}) : {},
+      record && "profile_id" in record ? (record.connection_overrides ?? {}) : {},
     );
     setChecked([]);
     setError(null);
@@ -258,12 +258,12 @@ export function Administration({
     setError(null);
     setNotice("");
     try {
-      const result = await api<Role | Employee>(
+      const result = await api<AgentProfile | User>(
         `/${kind}${selectedId ? `/${selectedId}` : ""}`,
         {
           method: selectedId ? "PUT" : "POST",
           body: JSON.stringify(
-            isRole
+            isProfile
               ? {
                   name,
                   description,
@@ -275,7 +275,7 @@ export function Administration({
               : {
                   name,
                   email: email || null,
-                  role_id: roleId,
+                  profile_id: profileId,
                   connection_overrides: connectionOverrides,
                 },
           ),
@@ -284,9 +284,9 @@ export function Administration({
       choose(result);
       setRefresh((value) => value + 1);
       setNotice(
-        isRole
-          ? "Role saved. Apply it explicitly to update agents. Starts preserve their selected configuration."
-          : "Employee saved. Apply the saved role to update agents and their account bindings.",
+        isProfile
+          ? "Agent profile saved. Apply it explicitly to update agents. Starts preserve their selected configuration."
+          : "User saved. Apply the saved profile to update agents and their account bindings.",
       );
     } catch (cause) {
       setError(errorMessage(cause));
@@ -318,7 +318,7 @@ export function Administration({
     ]);
     try {
       const operation = await api<Result & { id: string }>(
-        `/agents/${agentId}/apply-role`,
+        `/agents/${agentId}/apply-profile`,
         {
           method: "POST",
           headers: { "Idempotency-Key": key },
@@ -379,13 +379,13 @@ export function Administration({
 
   return (
     <section
-      aria-label={isRole ? "Role administration" : "Employee administration"}
+      aria-label={isProfile ? "Agent profile administration" : "User administration"}
     >
       <div className="page-heading">
         <div>
-          <h1>{isRole ? "Roles" : "Employees"}</h1>
+          <h1>{isProfile ? "Agent profiles" : "Users"}</h1>
           <p>
-            {isRole
+            {isProfile
               ? "Define what your agents can do."
               : "The people your agents work with."}
           </p>
@@ -398,7 +398,7 @@ export function Administration({
           }}
         >
           <Plus />
-          New {isRole ? "role" : "employee"}
+          New {isProfile ? "profile" : "user"}
         </Button>
       </div>
       {error && !editorOpen && (
@@ -434,12 +434,12 @@ export function Administration({
       ) : !records.length ? (
         <div className="py-16 text-center">
           <h2 className="font-medium">
-            {isRole ? "No roles yet" : "No employees yet"}
+            {isProfile ? "No profiles yet" : "No users yet"}
           </h2>
           <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted-foreground">
-            {isRole
-              ? "Create a role and choose the tools its agents can use. New roles start with no tools enabled."
-              : "Create a role first, then add employees and assign their agents."}
+            {isProfile
+              ? "Create a profile and choose the tools its agents can use. New profiles start with no tools enabled."
+              : "Create a profile first, then add users and assign their agents."}
           </p>
           <Button
             variant="outline"
@@ -450,7 +450,7 @@ export function Administration({
             }}
           >
             <Plus />
-            Create {isRole ? "a role" : "an employee"}
+            Create {isProfile ? "a profile" : "a user"}
           </Button>
         </div>
       ) : (
@@ -458,9 +458,9 @@ export function Administration({
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
-              <TableHead>{isRole ? "Capabilities" : "Role"}</TableHead>
+              <TableHead>{isProfile ? "Capabilities" : "Agent profile"}</TableHead>
               <TableHead className="hidden sm:table-cell">
-                {isRole ? "Revision" : "Email"}
+                {isProfile ? "Revision" : "Email"}
               </TableHead>
               <TableHead className="w-10">
                 <span className="sr-only">Edit</span>
@@ -486,7 +486,7 @@ export function Administration({
                 <TableCell className="text-muted-foreground">
                   {"capabilities" in record
                     ? `${record.capabilities.length} enabled`
-                    : (roles.find((role) => role.id === record.role_id)?.name ??
+                    : (profiles.find((profile) => profile.id === record.profile_id)?.name ??
                       "Unassigned")}
                 </TableCell>
                 <TableCell className="hidden text-muted-foreground sm:table-cell">
@@ -538,12 +538,12 @@ export function Administration({
             <SheetTitle>
               {selectedId
                 ? `Edit ${name}`
-                : `Create ${isRole ? "role" : "employee"}`}
+                : `Create ${isProfile ? "profile" : "user"}`}
             </SheetTitle>
             <SheetDescription>
-              {isRole
-                ? "Choose the capabilities agents inherit from this role."
-                : "Assign a role, then attach agents to this employee."}
+              {isProfile
+                ? "Choose the capabilities agents inherit from this profile."
+                : "Assign a profile, then attach agents to this user."}
             </SheetDescription>
           </SheetHeader>
           <div className="px-5 pb-8">
@@ -579,26 +579,26 @@ export function Administration({
                 <Input
                   id={`${kind}-name`}
                   required
-                  maxLength={isRole ? 120 : 160}
+                  maxLength={isProfile ? 120 : 160}
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   className="w-full"
                   disabled={saving}
-                  placeholder={isRole ? "Sales" : "Alex"}
+                  placeholder={isProfile ? "Research" : "Alex"}
                 />
               </div>
-              {isRole ? (
+              {isProfile ? (
                 <>
                   <div>
                     <Label
-                      htmlFor="role-description"
+                      htmlFor="profile-description"
                       className="mb-2 block text-sm"
                     >
                       Description{" "}
                       <span className="text-muted-foreground">(optional)</span>
                     </Label>
                     <Textarea
-                      id="role-description"
+                      id="profile-description"
                       rows={2}
                       maxLength={2000}
                       value={description}
@@ -607,7 +607,7 @@ export function Administration({
                       disabled={saving}
                     />
                   </div>
-                  <RoleSetupFields
+                  <ProfileSetupFields
                     setups={setups}
                     connections={connections}
                     revisionId={setupRevisionId}
@@ -621,7 +621,7 @@ export function Administration({
                   <fieldset disabled={saving}>
                     <legend className="mb-1 font-medium">Capabilities</legend>
                     <p className="mb-3 text-sm text-muted-foreground">
-                      An empty role allows text conversations with no native
+                      An empty profile allows text conversations with no native
                       tools.
                     </p>
                     {catalog.map((capability) => (
@@ -678,21 +678,21 @@ export function Administration({
                   <p className="text-xs leading-relaxed text-muted-foreground">
                     Permissions control native tools, not arbitrary code. Native
                     settings are a trusted administrator surface; changes made
-                    there are outside role management.
+                    there are outside profile management.
                   </p>
                 </>
               ) : (
                 <>
                   <div>
                     <Label
-                      htmlFor="employee-email"
+                      htmlFor="user-email"
                       className="mb-2 block text-sm"
                     >
                       Email{" "}
                       <span className="text-muted-foreground">(optional)</span>
                     </Label>
                     <Input
-                      id="employee-email"
+                      id="user-email"
                       type="email"
                       maxLength={254}
                       value={email}
@@ -703,37 +703,37 @@ export function Administration({
                   </div>
                   <div>
                     <Label
-                      htmlFor="employee-role"
+                      htmlFor="user-profile"
                       className="mb-2 block text-sm"
                     >
-                      Role
+                      Agent profile
                     </Label>
                     <Select
                       required
-                      value={roleId}
+                      value={profileId}
                       onValueChange={(id) => {
-                        setRoleId(id);
+                        setProfileId(id);
                         setConnectionOverrides({});
                       }}
                       disabled={saving}
                     >
-                      <SelectTrigger id="employee-role" className="w-full">
-                        <SelectValue placeholder="Choose a role" />
+                      <SelectTrigger id="user-profile" className="w-full">
+                        <SelectValue placeholder="Choose a profile" />
                       </SelectTrigger>
                       <SelectContent>
-                        {roles.map((role) => (
-                          <SelectItem key={role.id} value={role.id}>
-                            {role.name}
+                        {profiles.map((profile) => (
+                          <SelectItem key={profile.id} value={profile.id}>
+                            {profile.name}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    {!roles.length && (
+                    {!profiles.length && (
                       <a
-                        href="#roles"
+                        href="#profiles"
                         className="mt-2 block text-sm text-primary underline"
                       >
-                        Create a role first
+                        Create a profile first
                       </a>
                     )}
                   </div>
@@ -744,7 +744,7 @@ export function Administration({
                         .find(
                           (revision) =>
                             revision.id ===
-                            roles.find((role) => role.id === roleId)
+                            profiles.find((profile) => profile.id === profileId)
                               ?.setup_revision_id,
                         )?.manifest.connection_slots ?? []
                     }
@@ -760,10 +760,10 @@ export function Administration({
                 <Button
                   type="submit"
                   disabled={
-                    saving || loading || !name.trim() || (!isRole && !roleId)
+                    saving || loading || !name.trim() || (!isProfile && !profileId)
                   }
                 >
-                  {saving ? "Saving…" : `Save ${isRole ? "role" : "employee"}`}
+                  {saving ? "Saving…" : `Save ${isProfile ? "profile" : "user"}`}
                 </Button>
                 {selectedId && (
                   <Button
@@ -782,18 +782,18 @@ export function Administration({
                 )}
               </div>
             </form>
-            {!isRole && selectedId && (
+            {!isProfile && selectedId && (
               <div className="mt-6 border-t pt-5">
-                <EmployeeBudget key={selectedId} employeeId={selectedId} editable />
+                <UserBudget key={selectedId} userId={selectedId} editable />
               </div>
             )}
-            {!isRole && selectedId && <a className="mt-5 block text-sm text-primary underline" href={`#usage?employee_id=${selectedId}`} onClick={() => setEditorOpen(false)}>View employee usage</a>}
+            {!isProfile && selectedId && <a className="mt-5 block text-sm text-primary underline" href={`#usage?user_id=${selectedId}`} onClick={() => setEditorOpen(false)}>View user usage</a>}
             {selectedId && (
               <div className="mt-8 border-t pt-6">
                 <h3 className="font-semibold">Assigned agents</h3>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  {isRole
-                    ? "Apply the saved role to selected native agents. Running work will be interrupted."
+                  {isProfile
+                    ? "Apply the saved profile to selected native agents. Running work will be interrupted."
                     : "Manage assignments and test each agent on the Agents page."}
                 </p>
                 {!associated.length ? (
@@ -817,7 +817,7 @@ export function Administration({
                       return (
                         <li key={agent.id} className="py-3">
                           <Label className="flex items-start gap-3">
-                            {isRole && (
+                            {isProfile && (
                               <Checkbox
                                 className="mt-1"
                                 checked={checked.includes(agent.id)}
@@ -837,13 +837,13 @@ export function Administration({
                               <span className="block break-words text-sm font-medium">
                                 {agent.display_name}{" "}
                                 <span className="font-normal text-muted-foreground">
-                                  · {agent.employee_name}
+                                  · {agent.user_name}
                                 </span>
                               </span>
                               <span className="mt-1 block text-xs text-muted-foreground">
                                 {agent.runtime_mode === "managed"
                                   ? "Managed conversations · no tools"
-                                  : `Saved revision ${agent.role?.revision} · applied ${agent.applied_role?.revision ?? "never"}`}
+                                  : `Saved revision ${agent.profile?.revision} · applied ${agent.applied_profile?.revision ?? "never"}`}
                               </span>
                             </span>
                             <Badge
@@ -886,7 +886,7 @@ export function Administration({
                     })}
                   </ul>
                 )}
-                {isRole && !!associated.length && (
+                {isProfile && !!associated.length && (
                   <Button
                     className="mt-4"
                     variant="outline"
@@ -901,7 +901,7 @@ export function Administration({
                     }
                     onClick={() => applySelected()}
                   >
-                    Apply saved role to {selectedAgentIds.length || "selected"}{" "}
+                    Apply saved profile to {selectedAgentIds.length || "selected"}{" "}
                     agents
                   </Button>
                 )}
@@ -928,11 +928,11 @@ export function Administration({
             <AlertDialogTitle>
               {confirmation === "delete"
                 ? `Delete ${name}?`
-                : "Apply saved role?"}
+                : "Apply saved profile?"}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirmation === "delete"
-                ? `Referenced ${isRole ? "roles" : "employees"} cannot be deleted.`
+                ? `Referenced ${isProfile ? "profiles" : "users"} cannot be deleted.`
                 : "Running work on the selected agents will be interrupted. Agents that were running will restart with the captured permissions."}
             </AlertDialogDescription>
           </AlertDialogHeader>

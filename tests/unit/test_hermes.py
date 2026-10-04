@@ -10,7 +10,7 @@ import pytest
 from worker.hermes import BRIDGE
 
 
-def test_employee_sessions_have_separate_private_checkpoints(tmp_path):
+def test_user_sessions_have_separate_private_checkpoints(tmp_path):
     (tmp_path / "hermes_state.py").write_text(
         "class SessionDB:\n"
         " def __enter__(self): return self\n"

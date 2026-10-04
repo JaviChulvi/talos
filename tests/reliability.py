@@ -53,7 +53,7 @@ TESTS = [
             "lifecycle",
             "diagnostics",
             "channel_runs",
-            "employee_channels",
+            "user_channels",
             "telegram_delivery",
             "slack_delivery",
             "budgets",

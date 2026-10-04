@@ -19,9 +19,9 @@ from backend.app.models import (
     ACTIVE_RUN_STATUSES,
     RUNTIME_RELEASES,
     Agent,
-    Employee,
     Operation,
     Run,
+    User,
     WorkloadIncarnation,
 )
 from backend.app.runtime_versions import VERSION_PATTERN, resolve_version
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api/v1")
 IdempotencyKey = Annotated[
     str, Header(alias="Idempotency-Key", min_length=1, max_length=128, pattern=r"^[!-~]+$")
 ]
-LifecycleAction = Literal["start", "stop", "delete", "dashboard", "apply_role"]
+LifecycleAction = Literal["start", "stop", "delete", "dashboard", "apply_profile"]
 
 
 class CreateAgent(BaseModel):
@@ -56,14 +56,14 @@ class CreateAgent(BaseModel):
         return self
 
     display_name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
-    employee_label: str = Field(default="", max_length=160, pattern=r"^[^\x00]*$")
-    employee_id: UUID | None = None
+    user_label: str = Field(default="", max_length=160, pattern=r"^[^\x00]*$")
+    user_id: UUID | None = None
     model_id: str | None = Field(default=None, min_length=1, max_length=255)
 
     @model_validator(mode="after")
-    def employee_identity(self):
-        if self.employee_id is None and not self.employee_label:
-            raise ValueError("Choose an employee or supply an employee label")
+    def user_identity(self):
+        if self.user_id is None and not self.user_label:
+            raise ValueError("Choose a user or supply a user label")
         return self
 
 
@@ -74,11 +74,11 @@ class AgentResponse(BaseModel):
     runtime_kind: str
     runtime_mode: str
     display_name: str
-    employee_label: str
-    employee_id: UUID | None
-    employee_name: str
-    role: dict | None
-    applied_role: dict | None
+    user_label: str
+    user_id: UUID | None
+    user_name: str
+    profile: dict | None
+    applied_profile: dict | None
     selected_application: dict | None
     applied_application: dict | None
     permissions_pending: bool
@@ -168,10 +168,10 @@ async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, sessi
     scope = "create-agent"
     payload = body.model_dump(exclude={"dashboard_password", "model_id", "runtime_version"})
     request = {key: value for key, value in payload.items() if key != "runtime_kind"}
-    if body.employee_id is not None:
-        request["employee_id"] = str(body.employee_id)
-    if body.employee_id is None:
-        request.pop("employee_id")  # Retain replay hashes for legacy requests.
+    if body.user_id is not None:
+        request["user_id"] = str(body.user_id)
+    if body.user_id is None:
+        request.pop("user_id")  # Retain replay hashes for legacy requests.
     if body.model_id is not None:
         request["model_id"] = body.model_id
     if body.runtime_version != "latest":
@@ -189,6 +189,10 @@ async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, sessi
                 dklen=32,
             ).hex(),
         )
+    # Existing create-operation hashes cannot be rebuilt from mutable agent records.
+    request["employee_label"] = request.pop("user_label")
+    if "user_id" in request:
+        request["employee_id"] = request.pop("user_id")
     digest = request_hash(request)
     # Replay before catalog/network validation so a provider outage cannot hide a success.
     replay = find_replay(session, scope, idempotency_key, digest)
@@ -213,11 +217,8 @@ async def create_agent(body: CreateAgent, idempotency_key: IdempotencyKey, sessi
             replay = find_replay(session, scope, idempotency_key, digest)
             if replay:
                 return replay
-            if (
-                body.employee_id
-                and session.get(Employee, body.employee_id, with_for_update=True) is None
-            ):
-                raise HTTPException(404, "Employee not found")
+            if body.user_id and session.get(User, body.user_id, with_for_update=True) is None:
+                raise HTTPException(404, "User not found")
             password_hash = None
             if body.dashboard_password:
                 # Format verified against Hermes's bundled password provider.
@@ -313,13 +314,13 @@ def request_lifecycle(
                     raise HTTPException(409, "Start a native agent first")
                 return enqueue_operation(session, agent, action, scope, idempotency_key, digest)
             application = None
-            if action == "apply_role" and (
-                agent.employee_id is None or agent.runtime_mode != "native"
+            if action == "apply_profile" and (
+                agent.user_id is None or agent.runtime_mode != "native"
             ):
-                raise HTTPException(409, "Choose an employee for a native agent first")
+                raise HTTPException(409, "Choose a user for a native agent first")
             if (
-                action in {"start", "apply_role"}
-                and agent.employee_id
+                action in {"start", "apply_profile"}
+                and agent.user_id
                 and agent.runtime_mode == "native"
             ):
                 from backend.app.applications import desired_application, normalize_application
@@ -334,8 +335,8 @@ def request_lifecycle(
                         load_bound_secrets(application.get("connections", {}))
                     except ConnectionBindingError as error:
                         raise HTTPException(409, str(error)) from None
-                    if application.get("employee_id") != str(agent.employee_id):
-                        raise HTTPException(409, "Employee changed; apply the role before starting")
+                    if application.get("user_id") != str(agent.user_id):
+                        raise HTTPException(409, "User changed; apply the profile before starting")
                 else:
                     application = desired_application(session, agent)
                     agent.selected_application = application
@@ -348,14 +349,14 @@ def request_lifecycle(
                 "start": "running",
                 "stop": "stopped",
                 "delete": "deleted",
-                "apply_role": agent.desired_state,
+                "apply_profile": agent.desired_state,
             }[action]
             if action in {"stop", "delete"} and agent.current_incarnation_id:
                 incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
                 incarnation.revoked_at = datetime.now(UTC)
             agent.last_error = None
             operation = enqueue_operation(session, agent, action, scope, idempotency_key, digest)
-            operation.role_application = application
+            operation.profile_application = application
             return operation
     except IntegrityError as error:
         return recover_duplicate(session, scope, idempotency_key, digest, error)
@@ -393,13 +394,13 @@ def open_dashboard(
     return request_lifecycle(session, agent_id, "dashboard", idempotency_key)
 
 
-class AssignEmployee(BaseModel):
+class AssignUser(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    employee_id: UUID
+    user_id: UUID
 
 
-@router.put("/agents/{agent_id}/employee", response_model=AgentResponse)
-def assign_employee(agent_id: UUID, body: AssignEmployee, session: Database):
+@router.put("/agents/{agent_id}/user", response_model=AgentResponse)
+def assign_user(agent_id: UUID, body: AssignUser, session: Database):
     with session.begin():
         agent = session.get(Agent, agent_id, with_for_update=True)
         if agent is None or agent.desired_state == "deleted":
@@ -414,16 +415,16 @@ def assign_employee(agent_id: UUID, body: AssignEmployee, session: Database):
             )
         ):
             raise HTTPException(409, "Stop the agent and wait for its operation before assigning")
-        employee = session.get(Employee, body.employee_id, with_for_update=True)
-        if employee is None:
-            raise HTTPException(404, "Employee not found")
-        agent.employee = employee
+        user = session.get(User, body.user_id, with_for_update=True)
+        if user is None:
+            raise HTTPException(404, "User not found")
+        agent.user = user
     return agent
 
 
-@router.post("/agents/{agent_id}/apply-role", status_code=202, response_model=OperationResponse)
-def apply_role(agent_id: UUID, idempotency_key: IdempotencyKey, session: Database):
-    return request_lifecycle(session, agent_id, "apply_role", idempotency_key)
+@router.post("/agents/{agent_id}/apply-profile", status_code=202, response_model=OperationResponse)
+def apply_profile(agent_id: UUID, idempotency_key: IdempotencyKey, session: Database):
+    return request_lifecycle(session, agent_id, "apply_profile", idempotency_key)
 
 
 @router.post("/agents/{agent_id}/setup-preview")

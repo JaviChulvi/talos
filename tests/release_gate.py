@@ -27,7 +27,7 @@ COMMON_SCENARIOS = {
     "diagnostics",
     "backup_restore_second_host",
     "reboot_recovery",
-    "employee_reboot_recovery",
+    "user_reboot_recovery",
     "failed_update_recovery",
     "native_channels",
     "installation_failure_contracts",

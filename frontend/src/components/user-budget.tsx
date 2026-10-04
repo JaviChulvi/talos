@@ -10,25 +10,25 @@ export function BudgetStatus({ budget }: { budget: Budget }) {
   return (
     <div className="space-y-3 text-sm">
       <p>
-        {budget.employee_name}: {formatUsd(budget.known_spend_usd)} known spend
+        {budget.user_name}: {formatUsd(budget.known_spend_usd)} known spend
         ·{" "}
-        {budget.monthly_allowance_usd === null
-          ? "Unlimited allowance"
-          : `${formatUsd(budget.monthly_allowance_usd)} monthly allowance`}
+        {budget.monthly_budget_usd === null
+          ? "Unlimited budget"
+          : `${formatUsd(budget.monthly_budget_usd)} monthly budget`}
       </p>
       {budget.status === "warning" && (
         <Alert role="status">
           <AlertDescription>
-            Approaching monthly allowance (80% or more used). All agents
-            assigned to this employee share this allowance.
+            Approaching monthly budget (80% or more used). All agents
+            assigned to this user share this budget.
           </AlertDescription>
         </Alert>
       )}
       {budget.status === "exhausted" && (
         <Alert role="alert">
           <AlertDescription>
-            Monthly allowance reached. New provider requests through Talos are
-            blocked. Increase the allowance in Employees or wait for the next
+            Monthly budget reached. New provider requests through Talos are
+            blocked. Increase the budget in Users or wait for the next
             UTC month.
           </AlertDescription>
         </Alert>
@@ -42,23 +42,23 @@ export function BudgetStatus({ budget }: { budget: Budget }) {
       )}
       <p className="text-xs text-muted-foreground">
         Resets {new Date(budget.period.end).toISOString().slice(0, 10)} at 00:00
-        UTC. Already-admitted requests may exceed the allowance.{" "}
+        UTC. Already-admitted requests may exceed the budget.{" "}
         <a
           className="underline"
-          href={`#usage?employee_id=${budget.employee_id}`}
+          href={`#usage?user_id=${budget.user_id}`}
         >
-          View employee usage
+          View user usage
         </a>
       </p>
     </div>
   );
 }
 
-export function EmployeeBudget({
-  employeeId,
+export function UserBudget({
+  userId,
   editable = false,
 }: {
-  employeeId: string;
+  userId: string;
   editable?: boolean;
 }) {
   const [budget, setBudget] = useState<Budget | null>(null);
@@ -66,8 +66,8 @@ export function EmployeeBudget({
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
-  const allowance =
-    budget?.monthly_allowance_usd
+  const limit =
+    budget?.monthly_budget_usd
       ?.replace(/(\.\d*?[1-9])0+$|\.0+$/, "$1")
       .replace(/^0E[+-]?\d+$/i, "0") ?? "";
   useEffect(() => {
@@ -76,7 +76,7 @@ export function EmployeeBudget({
     let timer: number;
     async function poll() {
       try {
-        const data = await api<Budget>(`/employees/${employeeId}/budget`, {
+        const data = await api<Budget>(`/users/${userId}/budget`, {
           signal: AbortSignal.any([
             controller.signal,
             AbortSignal.timeout(8000),
@@ -98,21 +98,21 @@ export function EmployeeBudget({
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [employeeId, saving]);
+  }, [userId, saving]);
   async function save(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
     setError("");
     setNotice("");
     try {
-      const value = (draft ?? allowance).trim();
-      const data = await api<Budget>(`/employees/${employeeId}/budget`, {
+      const value = (draft ?? limit).trim();
+      const data = await api<Budget>(`/users/${userId}/budget`, {
         method: "PUT",
-        body: JSON.stringify({ monthly_allowance_usd: value || null }),
+        body: JSON.stringify({ monthly_budget_usd: value || null }),
       });
       setBudget(data);
       setDraft(null);
-      setNotice("Allowance saved. Applies to subsequent provider requests.");
+      setNotice("Budget saved. Applies to subsequent provider requests.");
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -120,7 +120,7 @@ export function EmployeeBudget({
     }
   }
   return (
-    <section className="space-y-3" aria-label="Employee allowance">
+    <section className="space-y-3" aria-label="Monthly budget">
       {error && (
         <Alert role="alert">
           <AlertDescription>
@@ -131,20 +131,20 @@ export function EmployeeBudget({
       {budget ? (
         <BudgetStatus budget={budget} />
       ) : (
-        <p className="text-xs text-muted-foreground">Loading allowance…</p>
+        <p className="text-xs text-muted-foreground">Loading budget…</p>
       )}
       {editable && (
         <form onSubmit={save} className="space-y-3">
-          <Label htmlFor={`allowance-${employeeId}`}>
-            Monthly allowance (USD)
+          <Label htmlFor={`limit-${userId}`}>
+            Monthly budget (USD)
           </Label>
           <Input
-            id={`allowance-${employeeId}`}
+            id={`limit-${userId}`}
             type="number"
             min="0"
             step="any"
             placeholder="Unlimited"
-            value={draft ?? allowance}
+            value={draft ?? limit}
             onChange={(event) => {
               setDraft(event.target.value);
               setNotice("");
@@ -156,7 +156,7 @@ export function EmployeeBudget({
             Talos. Changes do not interrupt admitted calls.
           </p>
           <Button type="submit" disabled={saving || !budget}>
-            {saving ? "Saving…" : "Save allowance"}
+            {saving ? "Saving…" : "Save budget"}
           </Button>
           {notice && (
             <p className="text-sm" role="status">
@@ -170,11 +170,11 @@ export function EmployeeBudget({
 }
 
 export function AgentBudget({
-  employeeId,
+  userId,
   coverage,
   agentId,
 }: {
-  employeeId: string | null;
+  userId: string | null;
   coverage: "gateway" | "external" | "simulator";
   agentId: string;
 }) {
@@ -182,20 +182,20 @@ export function AgentBudget({
     return (
       <p className="text-xs text-muted-foreground">
         Provider handled by agent: usage unavailable. Direct-provider traffic is
-        outside Talos allowance enforcement.
+        outside Talos budget enforcement.
       </p>
     );
   if (coverage === "simulator")
     return (
       <p className="text-xs text-muted-foreground">
-        The local simulator does not spend an employee allowance.
+        The local simulator does not spend a user budget.
       </p>
     );
-  if (!employeeId)
+  if (!userId)
     return (
       <Alert role="alert">
         <AlertDescription>
-          Employee assignment required.{" "}
+          Assign a user to this agent.{" "}
           <a className="underline" href={`#agents/${agentId}/settings`}>
             Assign this agent in settings
           </a>{" "}
@@ -203,5 +203,5 @@ export function AgentBudget({
         </AlertDescription>
       </Alert>
     );
-  return <EmployeeBudget key={employeeId} employeeId={employeeId} />;
+  return <UserBudget key={userId} userId={userId} />;
 }

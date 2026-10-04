@@ -10,7 +10,7 @@ The complete synthetic reliability run used clean commit
 Subsequent changes add inventory evidence and release-gate fixes; they do not change
 application/runtime behavior. Container image IDs from that run:
 
-| Role | Local immutable build ID |
+| Agent profile | Local immutable build ID |
 | --- | --- |
 | runner | `sha256:6671fad4ea20303651b16ff649870dcf25407daca141f39551f0a243655681ca` |
 | openclaw | `sha256:14de9a410aae6572e817ed2883c0afc593766d18670d638312de715e5b29c96f` |
@@ -49,7 +49,7 @@ bit-for-bit repeatability. Release SBOMs must describe the actual resulting imag
 | Packaging | Python wheel/sdist include license texts; release assembly/backup tests preserve the checksummed notices and SBOM archives. Built Talos image targets contain `/usr/share/licenses/talos/`; platform browser assets contain the collected notices. |
 | Upstream manifests | All eight pinned upstream digests fetched; raw manifest SHA-256 matched each pin and both amd64/arm64 entries were present. BuildKit was used after Docker 27’s manifest client rejected the valid Python OCI index. An empty Docker config did not exclude OS credential helpers, so this run does not prove anonymous access. |
 | Source dependencies | A dedicated BuildKit builder with a fresh cache and empty Docker credential config built verification, management, both native wrappers and Squid using `--no-cache --pull`. Platform also built and served the application. These builds did not exclude OS credential helpers and must be repeated with authentication disabled before claiming anonymous source setup. |
-| Compose source smoke | New project and disk-backed volumes: migrations, readiness, interactive admin bootstrap, login, role/employee creation, stop/start and persistence all passed. Synthetic credentials only; owned resources were removed afterward. |
+| Compose source smoke | New project and disk-backed volumes: migrations, readiness, interactive admin bootstrap, login, profile/user creation, stop/start and persistence all passed. Synthetic credentials only; owned resources were removed afterward. |
 | History secret scan | All reachable fetched history scanned with redacted Gitleaks output: 198 commits, no leaks after two exact historical false-positive fingerprints for a private-key type annotation. This is not an exhaustive private-material or intellectual-property review. |
 | PR CI | Read-only Python, frontend and secret-scanning jobs pass without production secrets. |
 | Release-gate review fixes | 91 focused release/backup tests passed, including private-package destination guards for user and organization owners. A live Docker 27.3.1 probe reproduced two OS-helper calls with an empty config; the fixed check made zero helper calls, verified pinned Caddy and OpenClaw manifests for both architectures, and rejected an inaccessible GHCR reference. This is manifest access evidence, not a full-pull or cold-build rerun. |
@@ -82,5 +82,5 @@ establish the documented minimum-resource acceptance on a fresh host.
   researcher's private submission reaches the maintainer's notifications.
 
 No repository/package visibility was changed and no release was published by these
-checks. Real providers and employee channels still require the operator's own keys,
+checks. Real providers and user channels still require the operator's own keys,
 accounts and recipients; all executed conversation/delivery checks used fixtures.

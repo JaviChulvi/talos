@@ -1,4 +1,4 @@
-"""Organization connection metadata and write-only, immutable credential versions."""
+"""Shared connection metadata and write-only, immutable credential versions."""
 
 import json
 import os
@@ -30,10 +30,10 @@ from backend.app.db import Base, Database
 from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     Agent,
-    Employee,
-    EmployeeChannel,
+    AgentProfile,
     Operation,
-    Role,
+    User,
+    UserChannel,
 )
 
 router = APIRouter(prefix="/api/v1/connections", tags=["connections"])
@@ -154,7 +154,7 @@ def write_credential_version(version_id: UUID, values: dict[str, str]) -> Path:
 
 
 def validate_connection_bindings(session: Session, bindings: dict | None) -> None:
-    """Lock referenced rows while a role/employee binding is persisted."""
+    """Lock referenced rows while a profile/user binding is persisted."""
     for connection_id in sorted(set((bindings or {}).values())):
         try:
             identifier = UUID(str(connection_id))
@@ -164,20 +164,20 @@ def validate_connection_bindings(session: Session, bindings: dict | None) -> Non
         if connection is None:
             raise ConnectionBindingError("Connection binding does not exist")
         if connection.purpose != "tools":
-            raise ConnectionBindingError("Employee channel credentials cannot be given to agents")
+            raise ConnectionBindingError("User channel credentials cannot be given to agents")
 
 
 def resolve_bindings(
     session: Session,
     manifest: dict,
-    role_bindings: dict | None,
-    employee_overrides: dict | None,
+    profile_bindings: dict | None,
+    user_overrides: dict | None,
     *,
     lock: bool = True,
 ) -> dict:
     """Snapshot exact versions for requested slots; an invalid override never falls back."""
     resolved = {}
-    defaults, overrides = role_bindings or {}, employee_overrides or {}
+    defaults, overrides = profile_bindings or {}, user_overrides or {}
     slots = sorted(manifest.get("connection_slots", []), key=lambda item: item["id"])
     identifiers = {}
     for slot in slots:
@@ -189,7 +189,7 @@ def resolve_bindings(
             identifiers[slot_id] = UUID(str(identifier))
         except (ValueError, TypeError, AttributeError):
             raise ConnectionBindingError(f"Invalid connection for slot {slot_id}") from None
-    # Consistent lock ordering also covers two agents with reversed employee overrides.
+    # Consistent lock ordering also covers two agents with reversed user overrides.
     locked = {
         identifier: session.get(
             Connection, identifier, with_for_update=lock, populate_existing=True
@@ -202,7 +202,7 @@ def resolve_bindings(
         if connection is None or connection.current_version_id is None:
             raise ConnectionBindingError(f"Credentials required for slot {slot_id}")
         if connection.purpose != "tools":
-            raise ConnectionBindingError("Employee channel credentials cannot be given to agents")
+            raise ConnectionBindingError("User channel credentials cannot be given to agents")
         version = session.get(ConnectionVersion, connection.current_version_id)
         required_fields = sorted(set(slot["fields"]))
         if (
@@ -250,16 +250,14 @@ def _references(value, identifier: str) -> bool:
 
 
 def connection_is_referenced(session: Session, connection_id: UUID) -> bool:
-    if session.scalar(
-        select(EmployeeChannel.id).where(EmployeeChannel.connection_id == connection_id)
-    ):
+    if session.scalar(select(UserChannel.id).where(UserChannel.connection_id == connection_id)):
         return True
     identifier = str(connection_id)
     # JSON ownership is intentionally inspected in Python for portable backend semantics.
     # All writers of these fields hold the connection row lock until commit.
     for model, field in (
-        (Role, "connection_bindings"),
-        (Employee, "connection_overrides"),
+        (AgentProfile, "connection_bindings"),
+        (User, "connection_overrides"),
         (Agent, "selected_application"),
         (Agent, "applied_application"),
     ):
@@ -276,7 +274,7 @@ def connection_is_referenced(session: Session, connection_id: UUID) -> bool:
     return any(
         _references(value, identifier)
         for value in session.scalars(
-            select(Operation.role_application).where(
+            select(Operation.profile_application).where(
                 Operation.status.in_(ACTIVE_OPERATION_STATUSES)
             )
         )
@@ -324,7 +322,7 @@ def get_connection(connection_id: UUID, session: Database):
 def update_connection(connection_id: UUID, body: ConnectionInput, session: Database):
     connection = _connection(session, connection_id, lock=True)
     if connection.purpose == "channel" and body.fields != connection.fields:
-        raise HTTPException(409, "Employee channel credential fields cannot change")
+        raise HTTPException(409, "User channel credential fields cannot change")
     if body.fields != connection.fields and connection.current_version_id is not None:
         raise HTTPException(409, "Credential fields cannot change after credentials are stored")
     for key, value in body.model_dump().items():
@@ -354,7 +352,7 @@ def rotate_credentials(connection_id: UUID, body: CredentialsInput, session: Dat
         connection.current_version_id = version.id
         if connection.purpose == "channel":
             channel = session.scalar(
-                select(EmployeeChannel).where(EmployeeChannel.connection_id == connection.id)
+                select(UserChannel).where(UserChannel.connection_id == connection.id)
             )
             if channel is not None:
                 channel.revision += 1
@@ -377,7 +375,7 @@ def delete_connection(connection_id: UUID, session: Database):
     connection = _connection(session, connection_id, lock=True)
     if connection_is_referenced(session, connection.id):
         raise HTTPException(
-            409, "Connection is referenced by a role, employee, or agent application"
+            409, "Connection is referenced by a profile, user, or agent application"
         )
     versions = session.scalars(
         select(ConnectionVersion).where(ConnectionVersion.connection_id == connection.id)

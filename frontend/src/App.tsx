@@ -106,7 +106,7 @@ function pageFromHash(hash: string) {
   if (/^#setups(?:\/[^/]+)?$/.test(hash)) return hash.slice(1);
   if (hash === "#usage" || hash.startsWith("#usage?")) return hash.slice(1);
   if (/^#agents\/[^/]+\/settings$/.test(hash)) return hash.slice(1);
-  if (["#platform", "#settings", "#roles", "#employees"].includes(hash))
+  if (["#platform", "#settings", "#profiles", "#users"].includes(hash))
     return hash.slice(1);
   if (hash === "" || hash === "#agents") return "agents";
   return null;
@@ -209,17 +209,17 @@ function Dashboard({ onSignOut, signingOut }: { onSignOut: () => void; signingOu
         signingOut={signingOut}
       >
         {page.startsWith("onboarding") && <Onboarding key={page} query={page.split("?")[1] ?? ""} />}
-        <div hidden={page !== "roles"}>
+        <div hidden={page !== "profiles"}>
           <Administration
-            kind="roles"
-            active={page === "roles"}
+            kind="profiles"
+            active={page === "profiles"}
             onOperation={recordOperation}
           />
         </div>
-        <div hidden={page !== "employees"}>
+        <div hidden={page !== "users"}>
           <Administration
-            kind="employees"
-            active={page === "employees"}
+            kind="users"
+            active={page === "users"}
             onOperation={recordOperation}
           />
         </div>

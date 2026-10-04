@@ -10,7 +10,7 @@ Inspect asynchronous operations, diagnose runtime failures, and maintain a sourc
 evidence, including when it was checked and expires. It never probes a service or
 makes a model request. A ready container alone is not a verified available agent.
 Configuration changes and new incarnations invalidate previous evidence; pending
-role edits are shown separately from the currently applied configuration.
+profile edits are shown separately from the currently applied configuration.
 `GET /api/v1/status` reports recent worker/gateway heartbeats rather than assuming
 configured services are alive. Unknown or expired evidence is explicit.
 
@@ -18,7 +18,7 @@ Create/start/stop/delete/dashboard return HTTP 202 and an operation ID. **Queued
 
 | Request | Purpose |
 | --- | --- |
-| `POST /api/v1/agents` | Create with `display_name`, `employee_label`, and optional `runtime_mode` (`native`, the default, or `managed`) |
+| `POST /api/v1/agents` | Create with `display_name`, `user_label`, and optional `runtime_mode` (`native`, the default, or `managed`) |
 | `POST /api/v1/agents/{id}/dashboard` | Request a native UI handoff; poll its operation for `dashboard_url` |
 | `GET /api/v1/agents` | List agents |
 | `POST /api/v1/agents/{id}/start` or `/stop` | Change desired runtime state |
@@ -44,7 +44,7 @@ For a source checkout, backups are manual. After stopping agents, stop API/worke
 For updates, retain those backups, keep the Compose project and installation identifiers unchanged, check out a reviewed commit, pull its approved runtime digest, and rerun `docker compose up --build -d`. Migrations run before services start. When upgrading an existing local HTTP installation,
 add `TALOS_ADMIN_COOKIE_SECURE=false` to its `.env` explicitly, bootstrap the administrator
 after migration, hard-refresh the dashboard to load the login UI, and sign in.
-Existing agent/employee data is retained; the first
+Existing agent/user data is retained; the first
 administrator bootstrap does not alter it. Reset requires host access and never deletes
 agents, credentials, conversations, or usage.
 
@@ -68,4 +68,4 @@ docker compose logs migrate api worker gateway connector
 
 While idle, the worker checks running agents and reconnects replaced platform containers. Failed probes mark an agent Degraded; a successful later probe restores Ready. These checks yield to queued lifecycle work.
 
-The worker restarts automatically after a process failure; an explicit Compose stop keeps it stopped. Run only one worker per installation and preserve its private state. A lock prevents workers sharing that state directory from running concurrently; it does not coordinate separate worker volumes. `GET /api/v1/status` reports recent worker/gateway heartbeats; use operation results and service logs to investigate failures. A recent heartbeat alone does not verify employee delivery.
+The worker restarts automatically after a process failure; an explicit Compose stop keeps it stopped. Run only one worker per installation and preserve its private state. A lock prevents workers sharing that state directory from running concurrently; it does not coordinate separate worker volumes. `GET /api/v1/status` reports recent worker/gateway heartbeats; use operation results and service logs to investigate failures. A recent heartbeat alone does not verify user delivery.

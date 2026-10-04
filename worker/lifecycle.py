@@ -675,7 +675,7 @@ class Worker:
                 raise RuntimeReadinessError(
                     "Work is unresolved; stop the agent explicitly before restarting"
                 )
-            if agent.runtime_mode == "native" and agent.employee_id:
+            if agent.runtime_mode == "native" and agent.user_id:
                 desired = desired_application(session, agent)
                 if (
                     not agent.applied_application
@@ -685,7 +685,7 @@ class Worker:
                     ]
                 ):
                     raise RuntimeReadinessError(
-                        "Permissions or credentials changed; apply the role before restarting"
+                        "Permissions or credentials changed; apply the profile before restarting"
                     )
             read_credentials(current)
             container = self.owned_container(current)
@@ -970,12 +970,12 @@ class Worker:
             self.ensure_network(operation.agent_id, native=agent.runtime_mode == "native")
             self.ensure_state(operation.agent_id)
             observed = "stopped"
-        elif operation.action in {"start", "apply_role"}:
+        elif operation.action in {"start", "apply_profile"}:
             if agent.runtime_mode == "native":
                 image = self.native_image(agent)
             else:
                 self.client.images.get(IMAGE)
-            application = operation.role_application
+            application = operation.profile_application
             if application:
                 from backend.app.applications import normalize_application
 
@@ -983,9 +983,9 @@ class Worker:
                     **normalize_application(application, agent.runtime_kind),
                     "restart": application["restart"],
                 }
-                operation.role_application = application
+                operation.profile_application = application
                 with self.sessions.begin() as session:
-                    session.get(Operation, operation.id).role_application = application
+                    session.get(Operation, operation.id).profile_application = application
             # Empty applications must also remove any partially installed setup.
             has_setup = bool(application)
             prepared_setup = None
@@ -1026,7 +1026,7 @@ class Worker:
             )
             if incarnation.revoked_at is not None or incarnation.expires_at <= datetime.now(UTC):
                 raise RuntimeError("Start identity is revoked or expired")
-            if operation.role_application:
+            if operation.profile_application:
                 if application.get("legacy_receipt"):
                     # A pre-upgrade operation may already have created a container
                     # without a receipt. Recreate it with the captured selection.
@@ -1040,7 +1040,7 @@ class Worker:
             credentials, config = self.ensure_credentials(incarnation)
             self.ensure_network(operation.agent_id, native=agent.runtime_mode == "native")
             state, network = self.names(operation.agent_id)
-            restart = not operation.role_application or operation.role_application["restart"]
+            restart = not operation.profile_application or operation.profile_application["restart"]
             control_origin = ""
             if agent.runtime_mode == "native" and restart:
                 proxy = self.ui_proxy(incarnation, ensure=True)
@@ -1149,11 +1149,11 @@ class Worker:
     def complete(self, operation, observed):
         with self.sessions.begin() as session:
             agent = session.get(Agent, operation.agent_id, with_for_update=True)
-            if operation.role_application:
-                agent.applied_role = operation.role_application["role"]
+            if operation.profile_application:
+                agent.applied_profile = operation.profile_application["profile"]
                 agent.applied_application = {
                     k: v
-                    for k, v in operation.role_application.items()
+                    for k, v in operation.profile_application.items()
                     if k not in {"restart", "legacy_receipt"}
                 }
                 agent.selected_application = agent.applied_application
@@ -1224,7 +1224,7 @@ class Worker:
             agent.observed_state = {
                 "create": "provisioning",
                 "start": "starting",
-                "apply_role": "applying",
+                "apply_profile": "applying",
                 "stop": "stopping",
                 "delete": "deleting",
             }.get(operation.action, agent.observed_state)
@@ -1235,9 +1235,9 @@ class Worker:
         except Exception as error:
             stop_error = None
             preflight_failed = bool(
-                operation.role_application and operation.step != "applying_setup"
+                operation.profile_application and operation.step != "applying_setup"
             )
-            if operation.role_application and not preflight_failed:
+            if operation.profile_application and not preflight_failed:
                 with self.sessions() as session:
                     incarnations = session.scalars(
                         select(WorkloadIncarnation).where(
@@ -1255,10 +1255,10 @@ class Worker:
                 else StorageFullError.message
                 if isinstance(error, StorageFullError)
                 else (
-                    f"Role application failed ({type(error).__name__}). "
+                    f"Agent profile application failed ({type(error).__name__}). "
                     + ("Existing runtime preserved; " if preflight_failed else "Agent stopped; ")
                     + "check native configuration and retry Start or Apply."
-                    if operation.role_application
+                    if operation.profile_application
                     else (
                         f"Model configuration failed ({type(error).__name__}). "
                         "Check native configuration and retry Save model."
@@ -1269,7 +1269,8 @@ class Worker:
             )
             if stop_error is not None:
                 message = (
-                    f"Role application failed ({type(error).__name__}); runtime stop could not "
+                    f"Agent profile application failed ({type(error).__name__}); "
+                    "runtime stop could not "
                     f"be confirmed ({type(stop_error).__name__}). Inspect Docker runtime state "
                     "before retrying Start or Apply."
                 )
@@ -1304,11 +1305,11 @@ class Worker:
                         previous_observed_state
                         if preflight_failed
                         else "stopped"
-                        if operation.role_application and stop_error is None
+                        if operation.profile_application and stop_error is None
                         else "error",
                         current.error,
                     )
-                    if operation.role_application and not preflight_failed:
+                    if operation.profile_application and not preflight_failed:
                         if stop_error is None:
                             self.mark_stopped(session, agent)
                         if terminal:

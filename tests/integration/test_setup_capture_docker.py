@@ -42,7 +42,7 @@ def test_native_capture_roundtrip_is_offline_and_leaves_source_unchanged(runtime
         "sessions/chat.json": b'{"content":"PRIVATE-TEST-SENTINEL"}',
         "memory/MEMORY.md": b"PRIVATE-TEST-SENTINEL",
         "workspace/private.csv": b"PRIVATE-TEST-SENTINEL",
-        "workspace/AGENTS.md": b"PRIVATE-TEST-SENTINEL employee identity",
+        "workspace/AGENTS.md": b"PRIVATE-TEST-SENTINEL user identity",
     }
     if runtime_kind == "hermes":
         # Exercise safe YAML parsing, not a native loader that would hydrate .env.

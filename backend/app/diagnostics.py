@@ -17,12 +17,12 @@ from backend.app.models import (
     ACTIVE_OPERATION_STATUSES,
     ACTIVE_RUN_STATUSES,
     Agent,
-    EmployeeAccess,
-    EmployeeChannel,
     InferenceConfig,
     Operation,
     Run,
     RunEvent,
+    UserAccess,
+    UserChannel,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -43,7 +43,7 @@ class RunResponse(BaseModel):
     message: str
     source: str
     access_id: UUID | None
-    employee_id: UUID | None
+    user_id: UUID | None
     status: str
     model_id: str
     inference: dict
@@ -93,14 +93,12 @@ def admit_run(
     access = None
     channel = None
     if access_id is not None:
-        access = session.get(
-            EmployeeAccess, access_id, with_for_update=True, populate_existing=True
-        )
+        access = session.get(UserAccess, access_id, with_for_update=True, populate_existing=True)
         if agent is None or not authorized_access(
             session, access, agent, channel_revision=expected_channel_revision
         ):
-            raise HTTPException(403, "Employee access is inactive or changed")
-        channel = session.get(EmployeeChannel, access.channel_id)
+            raise HTTPException(403, "User access is inactive or changed")
+        channel = session.get(UserChannel, access.channel_id)
     digest = request_hash(
         body.model_dump()
         if access is None
@@ -141,12 +139,13 @@ def admit_run(
         agent_id=agent_id,
         incarnation_id=agent.current_incarnation_id,
         message=body.message,
-        source="employee" if access else "admin",
+        source="user" if access else "admin",
         availability_fingerprint=agent_fingerprint(session, agent),
-        employee_id=agent.employee_id,
+        user_id=agent.user_id,
         access_id=access.id if access else None,
         access_revision=access.revision if access else None,
         channel_revision=channel.revision if channel else None,
+        # This opaque namespace is persisted in native runtime chat histories.
         session_key=f"agent:main:employee:{channel.provider}:{access.id}:{access.revision}:{agent.id}"
         if access
         else None,
@@ -169,7 +168,7 @@ def admit_run(
     return run
 
 
-def admit_employee_run(
+def admit_user_run(
     session: Session,
     access_id: UUID,
     message: str,
@@ -177,9 +176,9 @@ def admit_employee_run(
     *,
     channel_revision: int,
 ) -> Run:
-    access = session.get(EmployeeAccess, access_id)
+    access = session.get(UserAccess, access_id)
     if access is None:
-        raise HTTPException(403, "Employee access is inactive or changed")
+        raise HTTPException(403, "User access is inactive or changed")
     return admit_run(
         session,
         access.agent_id,
@@ -191,11 +190,11 @@ def admit_employee_run(
 
 
 def authorized_run(session: Session, run: Run, agent: Agent) -> bool:
-    if run.source != "employee":
+    if run.source != "user":
         return True
-    if run.employee_id != agent.employee_id:
+    if run.user_id != agent.user_id:
         return False
-    access = session.get(EmployeeAccess, run.access_id, populate_existing=True)
+    access = session.get(UserAccess, run.access_id, populate_existing=True)
     return authorized_access(
         session,
         access,
@@ -217,7 +216,7 @@ def create_run(
 def list_runs(
     agent_id: UUID,
     session: Database,
-    source: Literal["admin", "employee", "probe", "all"] = "admin",
+    source: Literal["admin", "user", "probe", "all"] = "admin",
 ):
     if session.get(Agent, agent_id) is None:
         raise HTTPException(404, "Agent not found")

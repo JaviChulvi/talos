@@ -36,7 +36,7 @@ homeassistant kanban discord discord_admin yuanbao feishu_doc feishu_drive spoti
 
 def compile_permissions(capabilities: list[str], runtime_kind: str) -> dict:
     if set(capabilities) - CAPABILITIES.keys():
-        raise ValueError("Unknown role capability")
+        raise ValueError("Unknown profile capability")
     if runtime_kind == "openclaw":
         allowed = sorted({tool for key in capabilities for tool in CAPABILITIES[key]["openclaw"]})
         return {"allow": allowed, "deny": [] if allowed else ["*"]}

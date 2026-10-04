@@ -15,7 +15,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from sqlalchemy import select
 
 from backend.app.connections import Connection
-from backend.app.models import ChannelInbox, EmployeeChannel, Run
+from backend.app.models import ChannelInbox, Run, UserChannel
 from connector.delivery import Delivery
 from connector.main import Connector
 from connector.slack import PRIVATE_LOGGER, Slack
@@ -26,8 +26,8 @@ from tests.integration.test_channel_runs import (
     client,
     database_engine,
     lifecycle_sessions,
+    profile_agent,
     ready_accesses,
-    role_agent,
     session_maker,
     worker,
 )
@@ -44,7 +44,7 @@ def test_real_sdk_private_dm_commit_ack_and_http_reply(
     _, pairs = ready_accesses
     channel_id = UUID(pairs[1][1]["id"])
     with session_maker() as session:
-        channel = session.get(EmployeeChannel, channel_id)
+        channel = session.get(UserChannel, channel_id)
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(x509.oid.NameOID.COMMON_NAME, "localhost")])
     cert = (
@@ -178,7 +178,7 @@ def test_real_sdk_private_dm_commit_ack_and_http_reply(
         try:
             await transport.verify("T12345")
             with session_maker.begin() as session:
-                row = session.get(EmployeeChannel, channel.id)
+                row = session.get(UserChannel, channel.id)
                 version = session.get(Connection, row.connection_id).current_version_id
                 row.verified_version_id = None
             owner = Connector(session_maker)

@@ -144,8 +144,8 @@ export function Connections() {
             Connections
           </h2>
           <p className="mt-2 max-w-prose text-sm text-muted-foreground">
-            Shared account credentials for setup tools. Roles choose defaults;
-            employees can use their own connections.
+            Shared account credentials for setup tools. Agent profiles choose defaults;
+            users can use their own connections.
           </p>
         </div>
         <Button variant="outline" onClick={() => edit(null)}>
@@ -213,7 +213,7 @@ export function Connections() {
       ) : (
         <p className="border-y py-6 text-sm text-muted-foreground">
           No connections yet. Add the account fields required by your setup,
-          then bind the connection in Roles.
+          then bind the connection in Agent profiles.
         </p>
       )}
       <Sheet
@@ -327,7 +327,7 @@ export function Connections() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete {remove?.name}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Connections referenced by roles, employees, or agent applications
+              Connections referenced by profiles, users, or agent applications
               cannot be deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -16,7 +16,7 @@ from worker.setup_runtime import (
 
 def application(kind, *, skills=True):
     return {
-        "role": {"id": "role"},
+        "profile": {"id": "profile"},
         "permissions": compile_permissions([], kind),
         "connector_grants": ["fixture"],
         "setup": {

@@ -258,7 +258,7 @@ class Scenarios:
             raise AssertionError("Missing real native runtime reboot fixtures")
         for row in rows:
             row["marker"] = self.volume_marker(row["state_volume"], write=True)
-        if self.sql("SELECT count(*) FROM employee_channels WHERE enabled") != "2":
+        if self.sql("SELECT count(*) FROM user_channels WHERE enabled") != "2":
             raise AssertionError("Restore channel-disable fixture was not seeded")
         if self.sql("SELECT count(*) FROM administrator_sessions") != "1":
             raise AssertionError("Restore administrator-session fixture was not seeded")
@@ -277,7 +277,7 @@ class Scenarios:
                 break
             time.sleep(2)
         else:
-            raise AssertionError("Native running employees did not recover after host reboot")
+            raise AssertionError("Native running users did not recover after host reboot")
         for before in expected:
             after = rows[before["id"]]
             if any(before[key] != after[key] for key in ("incarnation", "image", "runs")):
@@ -294,10 +294,10 @@ class Scenarios:
             )
             running = inspected.returncode == 0 and inspected.stdout.strip() == "true"
             if running != before["name"].endswith("-running"):
-                raise AssertionError("Host recovery restarted a stopped or uncertain employee")
+                raise AssertionError("Host recovery restarted a stopped or uncertain user")
             if self.volume_marker(before["state_volume"]) != before["marker"]:
                 raise AssertionError("Runtime state or Unix permissions changed after reboot")
-        # Administrator explicitly stops all remaining employees before manual backup.
+        # Administrator explicitly stops all remaining users before manual backup.
         self.runtime_fixture("stop")
 
     def backup(self):
@@ -371,9 +371,9 @@ class Scenarios:
         if actual != expected:
             raise AssertionError("Second-host restore lost persistent identity, secrets, or data")
         if self.sql("SELECT count(*) FROM agents WHERE desired_state <> 'stopped'") != "0":
-            raise AssertionError("Restore enabled employee agents")
-        if self.sql("SELECT count(*) FROM employee_channels WHERE enabled") != "0":
-            raise AssertionError("Restore enabled employee channels")
+            raise AssertionError("Restore enabled user agents")
+        if self.sql("SELECT count(*) FROM user_channels WHERE enabled") != "0":
+            raise AssertionError("Restore enabled user channels")
         if self.sql("SELECT count(*) FROM administrator_sessions") != "0":
             raise AssertionError("Restore retained administrator sessions")
         for row in json.loads((self.root / "runtime.json").read_text()):

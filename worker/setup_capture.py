@@ -378,7 +378,7 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
             "external-workspace", "The configured workspace is outside the captured state volume."
         )
     elif (workspace / "AGENTS.md").exists():
-        # Personal identity text is not silently made into a reusable role.
+        # Personal identity text is not silently made into a reusable profile.
         metadata["instructions_review_required"] = True
 
     seen_roots = set()

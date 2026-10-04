@@ -123,4 +123,4 @@ def update(installation, bundle: Path, archive: Path, identity: Path) -> None:
     installation.journal("update", "reopening")
     resume(installation, operation_id)
     installation.journal("update", "complete")
-    print(f"Talos updated to {target['version']}; employee runtime versions are preserved.")
+    print(f"Talos updated to {target['version']}; user runtime versions are preserved.")

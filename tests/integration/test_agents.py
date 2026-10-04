@@ -52,7 +52,7 @@ def session_maker(database_engine):
     # the development stack are unaffected.
     with database_engine.begin() as connection:
         connection.execute(
-            text("TRUNCATE agents, workload_incarnations, operations, employees, roles CASCADE")
+            text("TRUNCATE agents, workload_incarnations, operations, users, profiles CASCADE")
         )
     return sessionmaker(database_engine, expire_on_commit=False)
 
@@ -77,7 +77,7 @@ def client(session_maker):
 def create(client, key="create-one", name="Sales helper"):
     return client.post(
         "/api/v1/agents",
-        json={"display_name": name, "employee_label": "Alex", "runtime_mode": "managed"},
+        json={"display_name": name, "user_label": "Alex", "runtime_mode": "managed"},
         headers={"Idempotency-Key": key},
     )
 
@@ -98,7 +98,7 @@ def test_native_model_creation_and_durable_selection(client, session_maker, monk
         "/api/v1/agents",
         json={
             "display_name": "Native",
-            "employee_label": "Alex",
+            "user_label": "Alex",
             "model_id": "test/model",
         },
         headers={"Idempotency-Key": "native-model-create"},
@@ -185,20 +185,20 @@ def test_create_replay_validation_and_restart_persistence(client, session_maker)
         client.post(
             "/api/v1/agents",
             headers={"Idempotency-Key": "override"},
-            json={"display_name": "Agent", "employee_label": "Alex", "runtime_release": "unsafe"},
+            json={"display_name": "Agent", "user_label": "Alex", "runtime_release": "unsafe"},
         ).status_code
         == 422
     )
     assert (
         client.post(
-            "/api/v1/agents", json={"display_name": "Agent", "employee_label": "Alex"}
+            "/api/v1/agents", json={"display_name": "Agent", "user_label": "Alex"}
         ).status_code
         == 422
     )
     assert create(client, key="blank", name="   ").status_code == 422
     assert create(client, key=" ").status_code == 422
-    for field in ("display_name", "employee_label"):
-        payload = {"display_name": "Agent", "employee_label": "Alex", field: "A\x00B"}
+    for field in ("display_name", "user_label"):
+        payload = {"display_name": "Agent", "user_label": "Alex", field: "A\x00B"}
         assert (
             client.post(
                 "/api/v1/agents", json=payload, headers={"Idempotency-Key": "invalid-text"}
@@ -312,7 +312,7 @@ def test_start_does_not_replace_a_ready_runtime(client, session_maker):
 def test_native_default_dashboard_admission_and_idempotency(client, session_maker):
     response = client.post(
         "/api/v1/agents",
-        json={"display_name": "Native", "employee_label": "Owner"},
+        json={"display_name": "Native", "user_label": "Owner"},
         headers={"Idempotency-Key": "native"},
     )
     assert response.status_code == 202
@@ -354,7 +354,7 @@ def test_hermes_password_is_hashed_private_and_part_of_idempotency(client, sessi
 
     payload = {
         "display_name": "Hermes helper",
-        "employee_label": "Owner",
+        "user_label": "Owner",
         "runtime_kind": "hermes",
         "dashboard_password": "hermes-test-password-only",
     }
@@ -401,62 +401,63 @@ def test_hermes_password_is_hashed_private_and_part_of_idempotency(client, sessi
         assert payload["dashboard_password"] not in rejected.text
 
 
-def test_employee_role_assignment_preserves_legacy_agents(client, session_maker):
+def test_user_profile_assignment_preserves_legacy_agents(client, session_maker):
     legacy = create(client).json()
     complete_operation(session_maker, legacy["id"])
-    role = client.post("/api/v1/roles", json={"name": "Sales"}).json()
-    assert role["capabilities"] == [] and role["revision"] == 1
-    assert client.post("/api/v1/roles", json={"name": "Sales"}).status_code == 409
+    profile = client.post("/api/v1/profiles", json={"name": "Sales"}).json()
+    assert profile["capabilities"] == [] and profile["revision"] == 1
+    assert client.post("/api/v1/profiles", json={"name": "Sales"}).status_code == 409
     assert (
         client.post(
-            "/api/v1/roles", json={"name": "Bad", "capabilities": ["send_mail"]}
+            "/api/v1/profiles", json={"name": "Bad", "capabilities": ["send_mail"]}
         ).status_code
         == 422
     )
-    employee = client.post("/api/v1/employees", json={"name": "Alex", "role_id": role["id"]}).json()
+    user = client.post("/api/v1/users", json={"name": "Alex", "profile_id": profile["id"]}).json()
     path = f"/api/v1/agents/{legacy['agent_id']}"
     before = client.get(path).json()
-    assert before["employee_id"] is None and before["employee_label"] == "Alex"
-    assigned = client.put(path + "/employee", json={"employee_id": employee["id"]})
+    assert before["user_id"] is None and before["user_label"] == "Alex"
+    assigned = client.put(path + "/user", json={"user_id": user["id"]})
     assert assigned.status_code == 200
-    assert assigned.json()["role"]["id"] == role["id"]
-    assert assigned.json()["employee_label"] == "Alex"
-    assert client.delete("/api/v1/roles/" + role["id"]).status_code == 409
-    assert client.delete("/api/v1/employees/" + employee["id"]).status_code == 409
+    assert assigned.json()["profile"]["id"] == profile["id"]
+    assert assigned.json()["user_label"] == "Alex"
+    assert client.delete("/api/v1/profiles/" + profile["id"]).status_code == 409
+    assert client.delete("/api/v1/users/" + user["id"]).status_code == 409
     updated = client.put(
-        "/api/v1/roles/" + role["id"], json={"name": "Sales", "capabilities": ["web_research"]}
+        "/api/v1/profiles/" + profile["id"],
+        json={"name": "Sales", "capabilities": ["web_research"]},
     ).json()
     assert updated["revision"] == 2
-    assert client.get(path).json()["role"]["capabilities"] == ["web_research"]
+    assert client.get(path).json()["profile"]["capabilities"] == ["web_research"]
     created = client.post(
         "/api/v1/agents",
-        json={"display_name": "Assigned", "employee_id": employee["id"]},
+        json={"display_name": "Assigned", "user_id": user["id"]},
         headers={"Idempotency-Key": "assigned"},
     )
     assert created.status_code == 202
     assert (
         client.put(
-            f"/api/v1/agents/{created.json()['agent_id']}/employee",
-            json={"employee_id": employee["id"]},
+            f"/api/v1/agents/{created.json()['agent_id']}/user",
+            json={"user_id": user["id"]},
         ).status_code
         == 409
     )
     assert len(client.get("/api/v1/capabilities").json()) == 3
 
 
-def test_employee_and_role_edits_and_deletion(client):
-    role = client.post("/api/v1/roles", json={"name": "Sales"}).json()
-    path = "/api/v1/roles/" + role["id"]
+def test_user_and_profile_edits_and_deletion(client):
+    profile = client.post("/api/v1/profiles", json={"name": "Sales"}).json()
+    path = "/api/v1/profiles/" + profile["id"]
     assert client.put(path, json={"name": "Renamed"}).json()["revision"] == 1
-    employee = client.post("/api/v1/employees", json={"name": "Alex", "role_id": role["id"]}).json()
-    ep = "/api/v1/employees/" + employee["id"]
+    user = client.post("/api/v1/users", json={"name": "Alex", "profile_id": profile["id"]}).json()
+    ep = "/api/v1/users/" + user["id"]
     assert (
         client.put(
-            ep, json={"name": "Alexander", "email": "alex@example.com", "role_id": role["id"]}
+            ep, json={"name": "Alexander", "email": "alex@example.com", "profile_id": profile["id"]}
         ).status_code
         == 200
     )
-    assert client.put(ep, json={"name": "Alex", "role_id": str(uuid4())}).status_code == 404
+    assert client.put(ep, json={"name": "Alex", "profile_id": str(uuid4())}).status_code == 404
     assert client.delete(ep).status_code == 204
     assert client.delete(path).status_code == 204
 
@@ -470,7 +471,7 @@ def test_native_version_selection_and_replay_after_catalog_change(
     image = "sha256:" + "a" * 64
     catalog[kind][version] = image
     monkeypatch.setattr(get_settings(), "runtime_versions", catalog)
-    payload = {"display_name": "Versioned", "employee_label": "Alex", "runtime_kind": kind}
+    payload = {"display_name": "Versioned", "user_label": "Alex", "runtime_kind": kind}
     if kind == "hermes":
         payload["dashboard_password"] = "synthetic-version-password"
     if requested is not None:
@@ -505,7 +506,7 @@ def test_native_version_selection_and_replay_after_catalog_change(
 def test_unapproved_version_or_caller_image_is_rejected(client, extra):
     response = client.post(
         "/api/v1/agents",
-        json={"display_name": "Rejected", "employee_label": "Alex", **extra},
+        json={"display_name": "Rejected", "user_label": "Alex", **extra},
         headers={"Idempotency-Key": "bad-version"},
     )
     assert response.status_code == 422
@@ -518,7 +519,7 @@ def test_explicit_bundled_version_does_not_float_to_latest(client, session_maker
     monkeypatch.setattr(get_settings(), "runtime_versions", catalog)
     response = client.post(
         "/api/v1/agents",
-        json={"display_name": "Pinned", "employee_label": "Alex", "runtime_version": "2026.9.6"},
+        json={"display_name": "Pinned", "user_label": "Alex", "runtime_version": "2026.9.6"},
         headers={"Idempotency-Key": "pinned-version"},
     )
     assert response.status_code == 202
@@ -532,7 +533,7 @@ def test_upgrade_backfills_only_existing_native_image_pins(database_engine, sess
     image = "sha256:" + "a" * 64
     with session_maker.begin() as session:
         agents = [
-            Agent(display_name=mode, employee_label="Alex", runtime_mode=mode)
+            Agent(display_name=mode, user_label="Alex", runtime_mode=mode)
             for mode in ("native", "managed", "native")
         ]
         session.add_all(agents)
