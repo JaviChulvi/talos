@@ -282,17 +282,23 @@ def test_workspace_edits_validate_provider_and_preserve_existing_update_requests
 ):
     telegram, _, _ = channel_setup
     path = f"/api/v1/channels/{telegram['id']}"
-    assert client.put(
-        path, json={"name": "Staff", "enabled": False, "workspace_id": "T12345"}
-    ).status_code == 422
+    assert (
+        client.put(
+            path, json={"name": "Staff", "enabled": False, "workspace_id": "T12345"}
+        ).status_code
+        == 422
+    )
     slack = client.post(
         "/api/v1/channels", json={"provider": "slack", "name": "Slack", "workspace_id": "T12345"}
     ).json()
     path = f"/api/v1/channels/{slack['id']}"
     for workspace in ("", "invalid", "T1"):
-        assert client.put(
-            path, json={"name": "Slack", "enabled": False, "workspace_id": workspace}
-        ).status_code == 422
+        assert (
+            client.put(
+                path, json={"name": "Slack", "enabled": False, "workspace_id": workspace}
+            ).status_code
+            == 422
+        )
     updated = client.put(path, json={"name": "Renamed", "enabled": True}).json()
     assert updated["workspace_id"] == "T12345" and updated["enabled"]
     assert updated["revision"] == slack["revision"] + 1

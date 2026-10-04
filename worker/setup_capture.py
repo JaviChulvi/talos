@@ -251,10 +251,10 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
                         raise ValueError("Invalid managed asset path")
                     source = artifact_root.joinpath(*path.parts)
                     content = read_file(source)
-                    if (
-                        hashlib.sha256(content).hexdigest() != digest
-                        or source.stat().st_mode & 0o111
-                        != (0o100 if relative in original_executables else 0)
+                    if hashlib.sha256(
+                        content
+                    ).hexdigest() != digest or source.stat().st_mode & 0o111 != (
+                        0o100 if relative in original_executables else 0
                     ):
                         raise ValueError("Managed assets were changed")
                     asset_data[relative] = content
@@ -264,10 +264,10 @@ def inspect_state(root, runtime_kind, runtime_release, architecture):
                         raise ValueError("Invalid managed runtime asset path")
                     source = artifact_root.joinpath(*path.parts)
                     content = read_file(source)
-                    if (
-                        hashlib.sha256(content).hexdigest() != digest
-                        or source.stat().st_mode & 0o111
-                        != (0o100 if relative in receipt.get("executables", []) else 0)
+                    if hashlib.sha256(
+                        content
+                    ).hexdigest() != digest or source.stat().st_mode & 0o111 != (
+                        0o100 if relative in receipt.get("executables", []) else 0
                     ):
                         raise ValueError("Managed runtime assets were changed")
                 managed_skill_roots.add(artifact_root / "enabled-skills")

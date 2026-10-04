@@ -85,8 +85,7 @@ def test_server_name_collisions_follow_each_native_runtime(kind):
     identifiers = ["customer-support-production-a", "customer-support-production-b"]
     app["connector_grants"] = identifiers
     app["setup"]["manifest"]["connectors"] = [
-        {"id": identifier, "tools": ["lookup"], "enabled": True}
-        for identifier in identifiers
+        {"id": identifier, "tools": ["lookup"], "enabled": True} for identifier in identifiers
     ]
     if kind == "openclaw":
         with pytest.raises(RuntimeReadinessError, match="collide"):

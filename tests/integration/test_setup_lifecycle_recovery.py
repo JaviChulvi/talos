@@ -62,9 +62,9 @@ def apply_role(client, running, key):
     return UUID(response.json()["id"])
 
 
-
 def require_prepared_volume(monkeypatch, writer):
     """Match the adapter's preparation timing and dependency on both volumes."""
+
     def prepare(client, state, incarnation, *args, **kwargs):
         client.volumes.get(state)
         client.volumes.get(incarnation.config_volume)
@@ -254,7 +254,6 @@ def test_retry_prepares_only_after_successor_config_volume_exists(
     assert writer.call_args.kwargs["prepared"] is None
     assert preparation.call_count == (2 if previous else 1)
     assert preparation.call_args.args[2].config_volume == successor.config_volume
-
 
 
 def test_new_apply_recovers_revoked_incarnation_without_a_config_volume(

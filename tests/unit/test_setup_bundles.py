@@ -202,11 +202,13 @@ def test_executable_assets_survive_import_export_without_execution(tmp_path):
     manifest["assets"] = {p: hashlib.sha256(v).hexdigest() for p, v in files.items()}
     executable = zipfile.ZipInfo(path)
     executable.external_attr = (stat.S_IFREG | 0o755) << 16
-    original = archive_with([
-        ("manifest.json", json.dumps(manifest)),
-        *[(p, v) for p, v in files.items() if p != path],
-        (executable, files[path]),
-    ])
+    original = archive_with(
+        [
+            ("manifest.json", json.dumps(manifest)),
+            *[(p, v) for p, v in files.items() if p != path],
+            (executable, files[path]),
+        ]
+    )
     imported, restored = read_bundle(original, publication=True)
     assert imported["executables"] == [path]
     exported = write_bundle(imported, restored)
@@ -218,9 +220,14 @@ def test_executable_assets_survive_import_export_without_execution(tmp_path):
     assert not sentinel.exists()
     imported["executables"] = []
     with pytest.raises(BundleError, match="ZIP permissions"):
-        read_bundle(archive_with([
-            ("manifest.json", json.dumps(imported)), (executable, files[path]),
-        ]))
+        read_bundle(
+            archive_with(
+                [
+                    ("manifest.json", json.dumps(imported)),
+                    (executable, files[path]),
+                ]
+            )
+        )
 
 
 @pytest.mark.parametrize("executables", [["../escape"], ["missing"], [None], "path"])

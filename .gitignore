@@ -22,3 +22,8 @@ docs/assets/*
 specs/
 
 !THIRD_PARTY_NOTICES.md
+!CONTRIBUTING.md
+!SECURITY.md
+.playwright-mcp/
+.artifacts/
+coverage/
