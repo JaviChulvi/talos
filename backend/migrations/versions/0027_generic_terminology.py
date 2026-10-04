@@ -87,18 +87,24 @@ def rename_snapshots(*, reverse=False):
     # Only Talos-owned top-level keys change. User-authored setup manifests,
     # credentials, names, instructions and native receipts remain untouched.
     pairs = (("role", "profile"), ("employee_id", "user_id"))
+    bind = op.get_bind()
     for table, column in (
         ("agents", "selected_application"),
         ("agents", "applied_application"),
         ("operations", "profile_application"),
     ):
-        for old, new in pairs:
-            before, after = (new, old) if reverse else (old, new)
-            op.execute(
-                f"UPDATE {table} SET {column} = "
-                f"(({column}::jsonb - '{before}') || "
-                f"jsonb_build_object('{after}', {column}::jsonb -> '{before}'))::json "
-                f"WHERE {column}::jsonb ? '{before}'"
+        records = sa.table(table, sa.column("id", sa.Uuid()), sa.column(column, sa.JSON()))
+        snapshots = sa.select(records.c.id, records.c[column]).where(
+            sa.func.json_typeof(records.c[column]) == "object"
+        )
+        # JSONB rejects accepted JSON content such as escaped nulls in instructions.
+        for identifier, snapshot in bind.execute(snapshots.execution_options(yield_per=100)):
+            for old, new in pairs:
+                before, after = (new, old) if reverse else (old, new)
+                if before in snapshot:
+                    snapshot[after] = snapshot.pop(before)
+            bind.execute(
+                records.update().where(records.c.id == identifier).values({column: snapshot})
             )
 
 

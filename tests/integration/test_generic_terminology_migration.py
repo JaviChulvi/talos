@@ -30,7 +30,8 @@ def digest(payload, *, compact=True):
     return hashlib.sha256(json.dumps(payload, sort_keys=True, **options).encode()).hexdigest()
 
 
-def test_populated_upgrade_preserves_budget_channels_receipts_and_replays():
+@pytest.mark.parametrize("instructions", ["Keep my notes", "Keep my \x00 notes"])
+def test_populated_upgrade_preserves_budget_channels_receipts_and_replays(instructions):
     import asyncio
 
     url = os.environ.get("TALOS_TEST_DATABASE_URL")
@@ -64,7 +65,13 @@ def test_populated_upgrade_preserves_budget_channels_receipts_and_replays():
     application = {
         "role": profile,
         "employee_id": str(ids["user"]),
-        "setup": {"manifest": {"description": "employee role", "role": "user-authored"}},
+        "setup": {
+            "manifest": {
+                "description": "employee role",
+                "role": "user-authored",
+                "instructions": instructions,
+            }
+        },
         "connections": {},
     }
     application["fingerprint"] = digest(application)
@@ -251,7 +258,7 @@ def test_populated_upgrade_preserves_budget_channels_receipts_and_replays():
             assert session.get(UserAccess, ids["access"]).state == "active"
             operation = session.get(Operation, ids["operation"])
             assert operation.action == operation.step == "apply_profile"
-            assert operation.profile_application["restart"] is False
+            assert operation.profile_application == {**agent.applied_application, "restart": False}
         with sessions() as session:
             assert (
                 request_lifecycle(session, ids["agent"], "apply_profile", "operation").id
@@ -268,10 +275,14 @@ def test_populated_upgrade_preserves_budget_channels_receipts_and_replays():
             assert connection.execute(
                 text("SELECT monthly_allowance_usd FROM employees")
             ).scalar_one() == Decimal("25")
-            assert (
-                connection.execute(text("SELECT selected_application FROM agents")).scalar_one()
-                == application
-            )
+            for column in ("selected_application", "applied_application"):
+                assert (
+                    connection.execute(text(f"SELECT {column} FROM agents")).scalar_one()
+                    == application
+                )
+            assert connection.execute(
+                text("SELECT role_application FROM operations WHERE action='apply_role'")
+            ).scalar_one() == {**application, "restart": False}
             assert connection.execute(text("SELECT source FROM runs")).scalar_one() == "employee"
             assert connection.execute(
                 text("SELECT request_hash FROM operations WHERE action='apply_role'")
