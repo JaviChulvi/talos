@@ -19,6 +19,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -31,26 +32,6 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Require private repository and private package destinations
-        env:
-          GH_TOKEN: ${{ github.token }}
-          OWNER_TYPE: ${{ github.event.repository.owner.type }}
-          PRIVATE: ${{ github.event.repository.private }}
-        run: |
-          test "$PRIVATE" = true
-          owner_path=users
-          if [ "$OWNER_TYPE" = Organization ]; then owner_path=orgs; fi
-          repository_name="${GITHUB_REPOSITORY#*/}"
-          repository_name="${repository_name,,}"
-          for role in platform management verification egress openclaw hermes; do
-            endpoint="/$owner_path/$GITHUB_REPOSITORY_OWNER/packages/container/$repository_name-$role"
-            if gh api "$endpoint" > package.json 2> package.err; then
-              test "$(jq -r .visibility package.json)" = private
-            elif ! grep -q 'HTTP 404' package.err; then
-              cat package.err >&2
-              exit 1
-            fi
-          done
       - name: Authenticate and create native builder
         env:
           GH_TOKEN: ${{ github.token }}

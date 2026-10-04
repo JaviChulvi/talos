@@ -2,7 +2,7 @@
 
 [← Talos](../README.md) · [Documentation index](../README.md#documentation)
 
-Build Talos from source, run local checks, and inspect runtime acceptance evidence. All shell commands in this guide run from the repository root. For a promoted release bundle, use [Installation and recovery](installation.md) instead.
+Build Talos from source, run local checks, and inspect runtime acceptance evidence. All shell commands in this guide run from the repository root. Source builds pull public upstream images and build Talos wrappers locally; they do not need Talos registry credentials. For a promoted release bundle, use [Installation and recovery](installation.md) instead.
 
 ## Stack and layout
 
@@ -21,7 +21,7 @@ Build Talos from source, run local checks, and inspect runtime acceptance eviden
 
 ## Run locally
 
-Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus Python 3 to read the runtime pin. Allow disk space for the pinned runtime image and persistent volumes; each agent has a 2 GiB memory limit. Obtain the private repository with `git clone git@github.com:JaviChulvi/talos.git`, then `cd talos`. Run these commands from the repository root:
+Use Docker Engine with Compose on Linux, or Docker Desktop for development, plus Python 3 to read the runtime pin. Allow disk space for the pinned runtime image and persistent volumes; each agent has a 2 GiB memory limit. Clone with `git clone https://github.com/JaviChulvi/talos.git` (repository access is still required while it remains private), then `cd talos`. Run these commands from the repository root:
 
 ```sh
 cp .env.example .env

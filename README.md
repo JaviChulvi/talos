@@ -47,18 +47,21 @@ and allowance checks.
 
 ## Get started
 
-**Current stage: development preview, with a gated private-beta release pipeline.**
+**Current stage: development preview, with a gated preview release pipeline.**
 Use the source path below to run the project today. Prebuilt installation requires
 a promoted release; candidate artifacts are not installable releases.
 
 ### Run from source
 
-You need repository access, Git, Python 3 to read the runtime pin, and Docker Engine
-with Compose on Linux or Docker Desktop for development. Each agent has a 2 GiB
+You need Git, Python 3 to read the runtime pin, and Docker Engine
+with Compose on Linux or Docker Desktop for development. While the repository
+remains private, cloning still requires repository access. Source builds use public
+upstream dependencies and do not require access to Talos GHCR packages.
+Each agent has a 2 GiB
 memory limit; allow additional memory and disk space for the platform and images.
 
 ```sh
-git clone git@github.com:JaviChulvi/talos.git
+git clone https://github.com/JaviChulvi/talos.git
 cd talos
 cp .env.example .env
 ```
@@ -81,11 +84,12 @@ See [source setup](docs/development.md#run-locally) for remote-host tunnels, nat
 interfaces, and runtime credentials. If startup fails, use
 [troubleshooting](docs/operations.md#troubleshooting).
 
-### Install a promoted private-beta release
+### Install a promoted preview release
 
 The release installer targets Ubuntu 24.04 x86_64 with local rootful Docker Engine
 and Apple Silicon macOS with local Docker Desktop. It requires at least 4 CPUs,
-8 GB RAM, 30 GiB free disk, and access to the private repository and GHCR packages.
+8 GB RAM and 30 GiB free disk. Public release assets and public images require no
+registry credentials; private previews require access.
 
 When a promoted version is available in [Releases](https://github.com/JaviChulvi/talos/releases),
 follow [Installation and recovery](docs/installation.md). That guide covers

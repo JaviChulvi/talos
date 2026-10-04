@@ -1,4 +1,4 @@
-name: Promote private beta release
+name: Promote preview release
 on:
   workflow_dispatch:
     inputs:

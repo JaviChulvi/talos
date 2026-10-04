@@ -109,7 +109,7 @@ def load_manifest(path: Path) -> dict:
 
 
 def verify_bundle(directory: Path) -> dict:
-    """Check downloaded bytes; authentication comes from the private release download."""
+    """Check downloaded bytes; obtain the bundle through the official HTTPS release."""
     entries = {}
     for line in (directory / "checksums.txt").read_text().splitlines():
         match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9_.-]+)", line)

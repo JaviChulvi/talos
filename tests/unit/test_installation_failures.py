@@ -33,7 +33,7 @@ def test_launcher_rejects_insufficient_resources(launcher, resources):
 def test_launcher_registry_credentials_failure_prevents_installation(launcher):
     result, commands, directory = launcher(MOCK_PULL_EXIT="1")
     assert result.returncode != 0
-    assert "Check Docker GHCR credentials" in result.stderr
+    assert "Check registry availability/access" in result.stderr
     assert not any(line.startswith("run ") for line in commands.splitlines())
     assert not (directory / "installation.json").exists()
     assert not (directory / ".talos-lock").exists()
@@ -75,7 +75,7 @@ cp "$MOCK_DOWNLOAD_SOURCE/"* "$destination/"
         MOCK_DOWNLOAD_SOURCE=str(bundle),
     )
     assert result.returncode != 0
-    assert "Private release download failed" in result.stderr
+    assert "Release download failed" in result.stderr
     assert not any(line.startswith(("pull ", "run ")) for line in commands.splitlines())
     identity = directory / "installation.json"
     identity.write_text('{"installation_id":"saved"}')
