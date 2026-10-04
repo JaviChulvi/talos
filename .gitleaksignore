@@ -1,0 +1,4 @@
+# Historical false positives: the Ed25519PrivateKey type annotation on DeviceIdentity.key.
+# Exact finding fingerprints only; new occurrences and changes remain scanned.
+54c4f019c3a702fcefb089cb725efbea61810d5f:worker/openclaw.py:generic-api-key:29
+0c97e1e8111785e26205b05c12e2699e19c487f3:worker/openclaw.py:generic-api-key:29

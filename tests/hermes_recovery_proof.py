@@ -122,8 +122,7 @@ for case in ("compaction", "first-turn-compaction", "native-turn", "legacy-check
     pending_before = pending.read_bytes()
     refused = subprocess.run(
         [sys.executable, "-u", "-c", bridge],
-        input=json.dumps({"session": "test", "message": "Inspect only", "max_frame": 65536})
-        + "\n",
+        input=json.dumps({"session": "test", "message": "Inspect only", "max_frame": 65536}) + "\n",
         text=True,
         capture_output=True,
         timeout=30,

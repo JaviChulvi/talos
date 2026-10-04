@@ -53,9 +53,9 @@ def pinned_node(monkeypatch):
 def test_capture_preserves_complete_skills_and_source_without_private_state(tmp_path, runtime_kind):
     root = state(tmp_path, runtime_kind)
     put(root, "skills/sales/SKILL.md", b"---\nname: sales\n---\nQualify incoming leads.")
-    put(
-        root, "skills/sales/scripts/qualify.py", b"raise RuntimeError('must never run')\n"
-    ).chmod(0o751)
+    put(root, "skills/sales/scripts/qualify.py", b"raise RuntimeError('must never run')\n").chmod(
+        0o751
+    )
     put(root, "skills/sales/references/process.md", b"Our qualification rubric\n")
     for path in (
         ".env",
@@ -343,7 +343,6 @@ def test_managed_enabled_skill_directory_is_not_reported_as_external(tmp_path):
     assert "managed-drift" in {b["kind"] for b in result["manifest"]["unresolved"]}
 
 
-
 @pytest.mark.parametrize("runtime_kind", ["openclaw", "hermes"])
 @pytest.mark.parametrize("drift_path", ["skills/sales/run.sh", "enabled-skills/sales/run.sh"])
 @pytest.mark.parametrize("executable", [False, True])
@@ -381,13 +380,12 @@ def test_managed_capture_checks_original_and_enabled_copy_executable_modes(
     assert result["manifest"].get("executables", []) == ([original_path] if executable else [])
 
     target = root / f".talos/setups/{artifact_hash}/{drift_path}"
-    for permissions in ((0o600, 0o610) if executable else (0o700, 0o610)):
+    for permissions in (0o600, 0o610) if executable else (0o700, 0o610):
         target.chmod(permissions)
         result = inspect(root, runtime_kind)
         assert "managed-drift" in {item["kind"] for item in result["manifest"]["unresolved"]}
         assert original_path not in result["files"]
         assert not result["manifest"].get("executables")
-
 
 
 def test_setup_free_receipt_does_not_block_first_capture(tmp_path):
