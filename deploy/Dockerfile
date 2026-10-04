@@ -7,6 +7,8 @@ RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
+COPY licenses/ /build/licenses/
+COPY LICENSE NOTICE /build/
 RUN pnpm build
 
 FROM python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS platform
@@ -14,7 +16,12 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.21@sha256:ff07b86af50d4d9391d9daf4ff89ce42
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
 COPY pyproject.toml uv.lock ./
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/licenses/talos/
+COPY licenses/ /usr/share/licenses/talos/upstream/
 RUN uv sync --frozen --no-dev --no-install-project
+COPY deploy/python_notices.py /tmp/talos-python-notices.py
+RUN /app/.venv/bin/python /tmp/talos-python-notices.py /usr/share/licenses/talos \
+    && rm /tmp/talos-python-notices.py
 COPY backend/ backend/
 COPY worker/ worker/
 COPY gateway/ gateway/
@@ -46,11 +53,14 @@ FROM platform AS verification
 USER root
 COPY tests/ tests/
 COPY deploy/ deploy/
-RUN uv sync --frozen
+RUN uv sync --frozen \
+    && /app/.venv/bin/python deploy/python_notices.py /usr/share/licenses/talos
 CMD ["python", "-m", "tests.runtime_proof"]
 
 # Native runtime: the upstream image plus a pinned key-free search plugin.
 FROM ${OPENCLAW_IMAGE} AS native-runtime
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/licenses/talos/
+COPY licenses/ /usr/share/licenses/talos/upstream/
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends chromium \
     && rm -rf /var/lib/apt/lists/*
@@ -64,6 +74,8 @@ USER node
 
 # Standard forwarding proxy; agents retain their internal Docker networks.
 FROM python:3.13-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26 AS egress
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/licenses/talos/
+COPY licenses/ /usr/share/licenses/talos/upstream/
 RUN apt-get update && apt-get install -y --no-install-recommends squid && rm -rf /var/lib/apt/lists/*
 COPY deploy/squid.conf /etc/squid/squid.conf
 USER proxy
@@ -71,6 +83,8 @@ CMD ["squid", "-N", "-f", "/etc/squid/squid.conf"]
 
 # Official Hermes image plus dependencies for its native browser tools.
 FROM ${HERMES_IMAGE} AS hermes-runtime
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /usr/share/licenses/talos/
+COPY licenses/ /usr/share/licenses/talos/upstream/
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends chromium \
     && rm -rf /var/lib/apt/lists/* \

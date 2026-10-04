@@ -10,6 +10,7 @@ from pathlib import Path
 
 from backend.app.runtime_versions import DEFAULT_RUNTIME_VERSIONS
 from backend.management.release import PLATFORMS, RELEASE_PATTERN, validate_manifest
+from deploy.image_inventory import inventory
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = {
@@ -39,12 +40,15 @@ UPSTREAM = {
 
 def check_upstream_platforms():
     for reference in UPSTREAM.values():
-        index = json.loads(subprocess.check_output(
-            ["docker", "buildx", "imagetools", "inspect", "--raw", reference], text=True
-        ))
+        index = json.loads(
+            subprocess.check_output(
+                ["docker", "buildx", "imagetools", "inspect", "--raw", reference], text=True
+            )
+        )
         available = {
             f"{item['platform']['os']}/{item['platform']['architecture']}"
-            for item in index.get("manifests", []) if "platform" in item
+            for item in index.get("manifests", [])
+            if "platform" in item
         }
         if not set(PLATFORMS) <= available:
             raise ValueError(f"Upstream image does not support both architectures: {reference}")
@@ -64,26 +68,60 @@ def build(platform: str, registry: str, revision: str, output: Path):
         metadata = output / f"{role}.metadata.json"
         repository = f"{registry}-{role}"
         subprocess.run(
-            ["docker", "buildx", "build", "--platform", platform, "--file", "deploy/Dockerfile",
-             "--target", target, "--label", f"org.opencontainers.image.revision={revision}",
-             "--label", f"org.opencontainers.image.source=https://github.com/{registry[8:]}",
-             "--tag", f"{repository}:candidate-{revision}-{native_arch}",
-             "--metadata-file", str(metadata), "--push", "."],
-            cwd=ROOT, check=True,
+            [
+                "docker",
+                "buildx",
+                "build",
+                "--platform",
+                platform,
+                "--file",
+                "deploy/Dockerfile",
+                "--target",
+                target,
+                "--label",
+                f"org.opencontainers.image.revision={revision}",
+                "--label",
+                f"org.opencontainers.image.source=https://github.com/{registry[8:]}",
+                "--tag",
+                f"{repository}:candidate-{revision}-{native_arch}",
+                "--metadata-file",
+                str(metadata),
+                "--push",
+                ".",
+            ],
+            cwd=ROOT,
+            check=True,
         )
         digest = json.loads(metadata.read_text())["containerimage.digest"]
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
             raise ValueError("Build did not produce an immutable image digest")
         images[role] = f"{repository}@{digest}"
-    record = {"platform": platform, "source_revision": revision, "images": images}
+    license_inventory = inventory(images, platform, revision, output)
+    record = {
+        "platform": platform,
+        "source_revision": revision,
+        "images": images,
+        "license_inventory": license_inventory,
+    }
     (output / f"images-{native_arch}.json").write_text(json.dumps(record, indent=2) + "\n")
 
 
-def bundle(version: str, revision: str, database_revision: str, images_dir: Path,
-           output: Path, compatible_from: list):
+def bundle(
+    version: str,
+    revision: str,
+    database_revision: str,
+    images_dir: Path,
+    output: Path,
+    compatible_from: list,
+):
+    inventory_archives = []
     manifest = {
-        "schema_version": 1, "version": version, "source_revision": revision,
-        "database_revision": database_revision, "images": {}, "runtime_versions": {},
+        "schema_version": 1,
+        "version": version,
+        "source_revision": revision,
+        "database_revision": database_revision,
+        "images": {},
+        "runtime_versions": {},
         "compatible_from": compatible_from,
     }
     for platform in PLATFORMS:
@@ -93,6 +131,14 @@ def bundle(version: str, revision: str, database_revision: str, images_dir: Path
             raise ValueError("Candidate images come from a different source or architecture")
         images = record["images"]
         manifest["images"][platform] = images
+        evidence = record["license_inventory"]
+        archive = images_dir / f"licenses-{arch}.tar.gz"
+        if (
+            evidence["file"] != archive.name
+            or hashlib.sha256(archive.read_bytes()).hexdigest() != evidence["sha256"]
+        ):
+            raise ValueError("Image license inventory does not match the candidate")
+        inventory_archives.append(archive)
         manifest["runtime_versions"][platform] = {
             family: {version: images[family] for version in versions}
             for family, versions in DEFAULT_RUNTIME_VERSIONS.items()
@@ -101,7 +147,15 @@ def bundle(version: str, revision: str, database_revision: str, images_dir: Path
     # An output directory must be new: never leave stale assets outside the checksum set.
     output.mkdir(parents=True, exist_ok=False)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    assets = [ROOT / "deploy/talos", ROOT / "deploy/compose.release.yaml"]
+    assets = [
+        ROOT / "deploy/talos",
+        ROOT / "deploy/compose.release.yaml",
+        ROOT / "LICENSE",
+        ROOT / "NOTICE",
+        ROOT / "THIRD_PARTY_NOTICES.md",
+        *inventory_archives,
+    ]
+    shutil.make_archive(str(output / "license-texts"), "gztar", ROOT, "licenses")
     assets.extend(sorted((ROOT / "deploy").glob("Caddyfile*")))
     assets.extend(sorted((ROOT / "deploy").glob("compose.https.yaml")))
     for asset in assets:
@@ -118,7 +172,8 @@ def bundle(version: str, revision: str, database_revision: str, images_dir: Path
     (output / "release.env").write_text("\n".join(env) + "\n")
     checksum_lines = [
         f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
-        for path in sorted(output.iterdir()) if path.is_file()
+        for path in sorted(output.iterdir())
+        if path.is_file()
     ]
     (output / "checksums.txt").write_text("\n".join(checksum_lines) + "\n")
 
@@ -149,8 +204,14 @@ def main():
         if not re.fullmatch(RELEASE_PATTERN, args.version):
             parser.error("version must be an explicit release version")
         compatibility = json.loads(args.compatible_from.read_text()) if args.compatible_from else []
-        bundle(args.version, args.source_revision, args.database_revision,
-               args.images, args.output, compatibility)
+        bundle(
+            args.version,
+            args.source_revision,
+            args.database_revision,
+            args.images,
+            args.output,
+            compatibility,
+        )
 
 
 if __name__ == "__main__":

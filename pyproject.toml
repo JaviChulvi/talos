@@ -2,6 +2,9 @@
 name = "talos"
 version = "0.1.0"
 description = "Self-hosted employee agent control plane"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
+authors = [{name = "Javier Chulvi Bernad"}]
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "alembic>=1.16,<2",

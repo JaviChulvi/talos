@@ -180,3 +180,9 @@ identify their respective projects; the bundled [OpenClaw](frontend/public/runti
 and [Hermes](frontend/public/runtime-icons/LICENSE.hermes) icons retain their upstream
 MIT licenses. Model-provider logos use [Lobe Icons](https://github.com/lobehub/lobe-icons)
 with their [bundled license](frontend/public/lab-icons/LICENSE.txt).
+
+## License
+
+Talos original code is licensed under [Apache-2.0](LICENSE). Copyright 2026
+Javier Chulvi Bernad. Third-party runtimes, dependencies, and assets retain their
+own licenses; see [Third-party notices](THIRD_PARTY_NOTICES.md).

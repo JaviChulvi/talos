@@ -40,6 +40,12 @@ CONFIG_FILES = (
     "bundle/Caddyfile.template",
     "bundle/images-amd64.txt",
     "bundle/images-arm64.txt",
+    "bundle/LICENSE",
+    "bundle/NOTICE",
+    "bundle/THIRD_PARTY_NOTICES.md",
+    "bundle/license-texts.tar.gz",
+    "bundle/licenses-amd64.tar.gz",
+    "bundle/licenses-arm64.tar.gz",
 )
 SAFE_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}\Z")
 

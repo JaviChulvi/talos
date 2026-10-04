@@ -488,7 +488,7 @@ def test_new_recovery_identity_is_durable_before_use(tmp_path, monkeypatch):
 def test_config_snapshot_preserves_complete_checksummed_release_bundle(tmp_path):
     from backend.management.release import PLATFORMS, verify_bundle
     from deploy import build_release
-    from tests.unit.test_release import release_manifest
+    from tests.unit.test_release import license_evidence, release_manifest
 
     manifest = release_manifest()
     installation = tmp_path / "source"
@@ -501,6 +501,7 @@ def test_config_snapshot_preserves_complete_checksummed_release_bundle(tmp_path)
                     "platform": platform,
                     "source_revision": manifest["source_revision"],
                     "images": manifest["images"][platform],
+                    "license_inventory": license_evidence(tmp_path, manifest, platform),
                 }
             )
         )

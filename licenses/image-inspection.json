@@ -1,0 +1,30 @@
+[
+  {
+    "image": {
+      "userInput": "ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15",
+      "imageID": "sha256:d7ab75c627f361d362fff6b1a495c0901aca110c80c7d89add0a6a4bd0df63db",
+      "manifestDigest": "sha256:52ee077ddb74bd2c7766c0e099afc872e2479385055fb527ab32906033815c61",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 1773,
+    "missing_license": 194,
+    "review_required": 385
+  },
+  {
+    "image": {
+      "userInput": "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db",
+      "imageID": "sha256:1032a0c581a06e4aaa41e0ea4aa2f9d484048f7598642debfb00abb5ce2e469f",
+      "manifestDigest": "sha256:ad185e6d15f3ba1b55860534cb33e642f06dac4dc93af9c2ad5c91e722f70b34",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 2537,
+    "missing_license": 1055,
+    "review_required": 1546
+  }
+]

@@ -1,5 +1,7 @@
 import hashlib
+import io
 import json
+import tarfile
 from copy import deepcopy
 from pathlib import Path
 
@@ -25,26 +27,58 @@ def release_manifest():
         for platform in PLATFORMS
     }
     return {
-        "schema_version": 1, "version": "0.1.0-beta.1", "source_revision": "a" * 40,
-        "database_revision": "0025", "images": images,
+        "schema_version": 1,
+        "version": "0.1.0-beta.1",
+        "source_revision": "a" * 40,
+        "database_revision": "0025",
+        "images": images,
         "runtime_versions": {
             platform: {
                 "openclaw": {"2026.9.6": images[platform]["openclaw"]},
                 "hermes": {"0.21.5": images[platform]["hermes"]},
-            } for platform in PLATFORMS
+            }
+            for platform in PLATFORMS
         },
         "compatible_from": [],
     }
 
 
-@pytest.mark.parametrize("field,value", [
-    ("schema_version", 2),
-    ("schema_version", True),
-    ("version", "latest"),
-    ("source_revision", "HEAD"),
-    ("database_revision", "head;exit"),
-    ("compatible_from", [{"version": "0.1.0-beta.1", "database_revision": "0025"}]),
-])
+def license_evidence(directory, manifest, platform):
+    arch = platform.split("/")[1]
+    report = {
+        "images": manifest["images"][platform],
+        "platform": platform,
+        "source_revision": manifest["source_revision"],
+        "scope": "all-layers",
+    }
+    path = directory / f"licenses-{arch}.tar.gz"
+    with tarfile.open(path, "w:gz") as archive:
+        files = {"inventory.json": json.dumps(report)}
+        files.update(
+            {
+                f"{role}.spdx.json": '{"spdxVersion":"SPDX-2.3"}'
+                for role in manifest["images"][platform]
+            }
+        )
+        for name, content in files.items():
+            data = content.encode()
+            member = tarfile.TarInfo(f"licenses-{arch}/{name}")
+            member.size = len(data)
+            archive.addfile(member, io.BytesIO(data))
+    return {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", 2),
+        ("schema_version", True),
+        ("version", "latest"),
+        ("source_revision", "HEAD"),
+        ("database_revision", "head;exit"),
+        ("compatible_from", [{"version": "0.1.0-beta.1", "database_revision": "0025"}]),
+    ],
+)
 def test_unsupported_release_rejected_before_installation(field, value):
     manifest = release_manifest()
     manifest[field] = value
@@ -74,6 +108,9 @@ def test_bundle_preserves_architecture_and_checksums_every_download(tmp_path, mo
     manifest = release_manifest()
     root = tmp_path / "source"
     (root / "deploy").mkdir(parents=True)
+    (root / "licenses").mkdir()
+    for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
+        (root / name).write_text("Test license notice")
     (root / "deploy/talos").write_text("#!/bin/bash\nexit 0\n")
     (root / "deploy/talos").chmod(0o755)
     (root / "deploy/compose.release.yaml").write_text("services: {}\n")
@@ -81,16 +118,25 @@ def test_bundle_preserves_architecture_and_checksums_every_download(tmp_path, mo
     monkeypatch.setattr(build_release, "ROOT", root)
     for platform in PLATFORMS:
         arch = platform.split("/")[1]
-        (tmp_path / f"images-{arch}.json").write_text(json.dumps({
-            "platform": platform, "source_revision": manifest["source_revision"],
-            "images": manifest["images"][platform],
-        }))
+        (tmp_path / f"images-{arch}.json").write_text(
+            json.dumps(
+                {
+                    "platform": platform,
+                    "source_revision": manifest["source_revision"],
+                    "images": manifest["images"][platform],
+                    "license_inventory": license_evidence(tmp_path, manifest, platform),
+                }
+            )
+        )
     output = tmp_path / "bundle"
-    build_release.bundle(manifest["version"], manifest["source_revision"], "0025",
-                         tmp_path, output, [])
+    build_release.bundle(
+        manifest["version"], manifest["source_revision"], "0025", tmp_path, output, []
+    )
     assert verify_bundle(output) == manifest
     assert (output / "talos").stat().st_mode & 0o111
     assert "Caddyfile" in (output / "checksums.txt").read_text()
+    assert "licenses-arm64.tar.gz" in (output / "checksums.txt").read_text()
+    assert (output / "NOTICE").read_text() == "Test license notice"
     for platform in PLATFORMS:
         arch = platform.split("/")[1]
         refs = set((output / f"images-{arch}.txt").read_text().splitlines())
@@ -100,20 +146,27 @@ def test_bundle_preserves_architecture_and_checksums_every_download(tmp_path, mo
     with pytest.raises(ValueError, match="checksum mismatch"):
         verify_bundle(output)
     with pytest.raises(FileExistsError):
-        build_release.bundle(manifest["version"], manifest["source_revision"], "0025",
-                             tmp_path, output, [])
+        build_release.bundle(
+            manifest["version"], manifest["source_revision"], "0025", tmp_path, output, []
+        )
 
 
 def test_bundle_rejects_images_from_different_source_before_writing(tmp_path):
     manifest = release_manifest()
-    (tmp_path / "images-amd64.json").write_text(json.dumps({
-        "platform": "linux/amd64", "source_revision": "b" * 40,
-        "images": manifest["images"]["linux/amd64"],
-    }))
+    (tmp_path / "images-amd64.json").write_text(
+        json.dumps(
+            {
+                "platform": "linux/amd64",
+                "source_revision": "b" * 40,
+                "images": manifest["images"]["linux/amd64"],
+            }
+        )
+    )
     output = tmp_path / "bundle"
     with pytest.raises(ValueError, match="different source"):
-        build_release.bundle(manifest["version"], manifest["source_revision"], "0025",
-                             tmp_path, output, [])
+        build_release.bundle(
+            manifest["version"], manifest["source_revision"], "0025", tmp_path, output, []
+        )
     assert not output.exists()
 
 
@@ -136,3 +189,22 @@ def test_upstream_inventory_includes_the_actual_helper_image():
     from worker.runtime import IMAGE
 
     assert build_release.UPSTREAM["openclaw_base"] == IMAGE
+
+
+def test_unknown_and_reciprocal_licenses_are_never_automatically_cleared():
+    from deploy.image_inventory import component_rows
+
+    packages = [
+        {"name": name, "version": "1", "type": "python", "licenses": licenses}
+        for name, licenses in (
+            ("unknown", []),
+            ("reciprocal", [{"spdxExpression": "LGPL-3.0-only"}]),
+            ("permissive", [{"spdxExpression": "MIT"}]),
+        )
+    ]
+    rows = component_rows({"artifacts": packages}, "platform", "repo@sha256:test")
+    assert [row["disposition"] for row in rows] == [
+        "license_review_required",
+        "source_or_reciprocity_review_required",
+        "retain_notices",
+    ]
