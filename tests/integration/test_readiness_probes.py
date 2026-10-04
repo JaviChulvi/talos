@@ -14,10 +14,10 @@ from backend.app.models import (
     Agent,
     ChannelOutbox,
     ChannelProbe,
-    EmployeeChannel,
     InferenceConfig,
     Run,
     ServiceHeartbeat,
+    UserChannel,
     WorkloadIncarnation,
 )
 from connector.delivery import TransportError
@@ -29,8 +29,8 @@ from tests.integration.test_channel_runs import (
     client,
     database_engine,
     lifecycle_sessions,
+    profile_agent,
     ready_accesses,
-    role_agent,
     session_maker,
     worker,
 )

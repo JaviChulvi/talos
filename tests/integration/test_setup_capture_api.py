@@ -7,7 +7,7 @@ import pytest
 from tests.integration.test_lifecycle import (  # noqa: F401
     client,
     database_engine,
-    role_agent,
+    profile_agent,
     session_maker,
     worker,
 )
@@ -28,12 +28,12 @@ def stop_initialized(client, worker, agent_id):
 
 
 def test_capture_creates_one_reviewable_draft_and_preserves_source(
-    client, worker, role_agent, monkeypatch, tmp_path
+    client, worker, profile_agent, monkeypatch, tmp_path
 ):
     from backend.app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "setup_artifacts_dir", tmp_path)
-    agent_id, _, _ = role_agent
+    agent_id, _, _ = profile_agent
     path = stop_initialized(client, worker, agent_id)
     before = client.get(path).json()
     capture = Mock(
@@ -77,8 +77,10 @@ def test_capture_creates_one_reviewable_draft_and_preserves_source(
         assert before[key] == after[key]
 
 
-def test_capture_failure_leaves_stopped_source_unchanged(client, worker, role_agent, monkeypatch):
-    agent_id, _, _ = role_agent
+def test_capture_failure_leaves_stopped_source_unchanged(
+    client, worker, profile_agent, monkeypatch
+):
+    agent_id, _, _ = profile_agent
     path = stop_initialized(client, worker, agent_id)
     before = client.get(path).json()
     monkeypatch.setattr(
@@ -95,8 +97,8 @@ def test_capture_failure_leaves_stopped_source_unchanged(client, worker, role_ag
     assert after["applied_application"] == before["applied_application"]
 
 
-def test_capture_rejects_uninitialized_and_running_agents(client, worker, role_agent):
-    agent_id, _, _ = role_agent
+def test_capture_rejects_uninitialized_and_running_agents(client, worker, profile_agent):
+    agent_id, _, _ = profile_agent
     path = f"/api/v1/agents/{agent_id}"
     assert (
         client.post(path + "/capture-setup", headers={"Idempotency-Key": "empty"}).status_code

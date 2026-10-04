@@ -9,8 +9,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from backend.app.db import session_factory
 from backend.app.installation import writable
-from backend.app.models import Agent, Employee, InferenceCall, Run, WorkloadIncarnation
-from backend.app.usage import employee_budget
+from backend.app.models import Agent, InferenceCall, Run, User, WorkloadIncarnation
+from backend.app.usage import user_budget
 
 
 class AdmissionDenied(HTTPException):
@@ -165,30 +165,28 @@ def admit_inference(token: str, run_id: str | None = None, native_model: str | N
                 if agent.runtime_mode != "native" or not agent.inference_override:
                     raise HTTPException(401, "Native OpenRouter access is inactive")
                 model = native_model or agent.inference_override["model_id"]
-            if agent.employee_id is None:
+            if agent.user_id is None:
                 raise AdmissionDenied(
                     403,
-                    "employee_assignment_required",
-                    "Assign this agent to an employee before using a provider through Talos",
+                    "user_assignment_required",
+                    "Assign this agent to a user before using a provider through Talos",
                 )
-            employee = session.get(
-                Employee, agent.employee_id, with_for_update=True, populate_existing=True
-            )
+            user = session.get(User, agent.user_id, with_for_update=True, populate_existing=True)
             admitted_at = datetime.now(UTC)
             if incarnation.expires_at <= admitted_at:
                 raise HTTPException(401, "Agent identity expired while awaiting admission")
-            budget = employee_budget(session, employee, admitted_at)
+            budget = user_budget(session, user, admitted_at)
             if budget["status"] == "exhausted":
                 raise AdmissionDenied(
                     402,
-                    "employee_budget_exceeded",
-                    "Employee monthly allowance reached; increase the allowance "
+                    "user_budget_exceeded",
+                    "User monthly budget reached; increase the budget "
                     "or wait for the next UTC month",
                 )
             call = InferenceCall(
                 agent_id=agent.id,
                 incarnation_id=incarnation.id,
-                employee_id=agent.employee_id,
+                user_id=agent.user_id,
                 run_id=UUID(run_id) if run_id else None,
                 model=model,
                 admitted_at=admitted_at,
@@ -204,12 +202,10 @@ def admit_inference(token: str, run_id: str | None = None, native_model: str | N
 
 def record_inference(call_id: UUID, report: dict):
     with session_factory().begin() as session:
-        # Attribution is immutable. Lock employee before call, matching admission and edits.
-        employee_id = session.scalar(
-            select(InferenceCall.employee_id).where(InferenceCall.id == call_id)
-        )
-        if employee_id is not None:
-            session.get(Employee, employee_id, with_for_update=True)
+        # Attribution is immutable. Lock user before call, matching admission and edits.
+        user_id = session.scalar(select(InferenceCall.user_id).where(InferenceCall.id == call_id))
+        if user_id is not None:
+            session.get(User, user_id, with_for_update=True)
         call = session.get(InferenceCall, call_id, with_for_update=True)
         if call.completed_at is not None:
             return

@@ -15,22 +15,13 @@ from threading import RLock
 
 from docker.errors import NotFound
 
+from backend.app.applications import application_fingerprint
+
 from .runtime import STATE_PATH, OwnershipError, RuntimeReadinessError, require_labels
 
 BEGIN = "<!-- TALOS SETUP BEGIN -->"
 END = "<!-- TALOS SETUP END -->"
 SETUP_HELPER_LOCK = RLock()
-
-
-def application_fingerprint(application):
-    payload = {
-        key: value
-        for key, value in application.items()
-        if key not in {"fingerprint", "restart", "legacy_receipt"}
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
 
 
 def connector_name(identifier):
@@ -57,7 +48,7 @@ def connector_tool_name(runtime_kind, identifier, tool):
 
 
 def setup_permissions(application, runtime_kind):
-    """Expand base role permissions with only the selected setup's grants."""
+    """Expand base profile permissions with only the selected setup's grants."""
     policy = deepcopy(application["permissions"])
     manifest = (application.get("setup") or {}).get("manifest") or {}
     grants = set(application.get("connector_grants", []))

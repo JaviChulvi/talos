@@ -19,7 +19,7 @@ from tests.integration.test_lifecycle import (
     ProcessDied,
     client,
     database_engine,
-    role_agent,
+    profile_agent,
     session_maker,
     worker,
 )
@@ -30,8 +30,8 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def running_role_agent(client, worker, session_maker, role_agent):
-    agent_id, role, writer = role_agent
+def running_profile_agent(client, worker, session_maker, profile_agent):
+    agent_id, profile, writer = profile_agent
     path = f"/api/v1/agents/{agent_id}"
     started = client.post(path + "/start", headers={"Idempotency-Key": "initial-start"})
     assert started.status_code == 202
@@ -47,7 +47,7 @@ def running_role_agent(client, worker, session_maker, role_agent):
     return SimpleNamespace(
         id=UUID(agent_id),
         path=path,
-        role=role,
+        profile=profile,
         writer=writer,
         incarnation=incarnation,
         container=worker.owned_container(incarnation),
@@ -56,8 +56,8 @@ def running_role_agent(client, worker, session_maker, role_agent):
     )
 
 
-def apply_role(client, running, key):
-    response = client.post(running.path + "/apply-role", headers={"Idempotency-Key": key})
+def apply_profile(client, running, key):
+    response = client.post(running.path + "/apply-profile", headers={"Idempotency-Key": key})
     assert response.status_code == 202
     return UUID(response.json()["id"])
 
@@ -82,23 +82,23 @@ def require_prepared_volume(monkeypatch, writer):
 
 
 def test_preflight_failure_preserves_running_identity_and_applied_snapshot(
-    client, worker, session_maker, running_role_agent, monkeypatch
+    client, worker, session_maker, running_profile_agent, monkeypatch
 ):
-    running = running_role_agent
+    running = running_profile_agent
     client.put(
-        "/api/v1/roles/" + running.role["id"],
+        "/api/v1/profiles/" + running.profile["id"],
         json={"name": "Sales", "capabilities": ["web_research"]},
     )
     prepare = Mock(side_effect=RuntimeReadinessError("Unsupported setup architecture"))
     monkeypatch.setattr("worker.lifecycle.prepare_setup", prepare)
     creations = worker.client.containers.creations
-    operation_id = apply_role(client, running, "bad-preflight")
+    operation_id = apply_profile(client, running, "bad-preflight")
     assert worker.process_one()
     with session_maker() as session:
         operation = session.get(Operation, operation_id)
         agent = session.get(Agent, running.id)
         incarnation = session.get(WorkloadIncarnation, running.incarnation.id)
-        assert operation.status == "failed" and operation.step == "apply_role"
+        assert operation.status == "failed" and operation.step == "apply_profile"
         assert operation.next_retry_at is None
         assert agent.desired_state == "running" and agent.observed_state == "ready"
         assert agent.current_incarnation_id == incarnation.id == running.incarnation.id
@@ -113,11 +113,11 @@ def test_preflight_failure_preserves_running_identity_and_applied_snapshot(
 
 
 def test_application_error_after_stop_boundary_stays_stopped_across_retry(
-    client, worker, session_maker, running_role_agent, monkeypatch
+    client, worker, session_maker, running_profile_agent, monkeypatch
 ):
-    running = running_role_agent
+    running = running_profile_agent
     running.writer.side_effect = RuntimeReadinessError("Native setup validation failed")
-    operation_id = apply_role(client, running, "bad-after-stop")
+    operation_id = apply_profile(client, running, "bad-after-stop")
     assert worker.process_one()
     with session_maker.begin() as session:
         operation = session.get(Operation, operation_id)
@@ -151,10 +151,10 @@ def test_application_error_after_stop_boundary_stays_stopped_across_retry(
 
 
 def test_persisted_stop_boundary_survives_crash_before_first_docker_mutation(
-    client, worker, session_maker, running_role_agent, monkeypatch
+    client, worker, session_maker, running_profile_agent, monkeypatch
 ):
-    running = running_role_agent
-    operation_id = apply_role(client, running, "crash-at-stop-boundary")
+    running = running_profile_agent
+    operation_id = apply_profile(client, running, "crash-at-stop-boundary")
     with monkeypatch.context() as patch:
         patch.setattr(worker, "ensure_incarnation", Mock(side_effect=ProcessDied()))
         with pytest.raises(ProcessDied):
@@ -182,9 +182,9 @@ def test_persisted_stop_boundary_survives_crash_before_first_docker_mutation(
 
 @pytest.mark.parametrize("crash_point", ["retired_config", "first_allocation", "next_allocation"])
 def test_retry_prepares_only_after_successor_config_volume_exists(
-    client, worker, session_maker, role_agent, monkeypatch, crash_point
+    client, worker, session_maker, profile_agent, monkeypatch, crash_point
 ):
-    agent_id, _, writer = role_agent
+    agent_id, _, writer = profile_agent
     path = f"/api/v1/agents/{agent_id}"
     previous = None
     if crash_point != "first_allocation":
@@ -196,7 +196,7 @@ def test_retry_prepares_only_after_successor_config_volume_exists(
             previous = session.get(WorkloadIncarnation, agent.current_incarnation_id)
         writer.reset_mock()
     preparation = require_prepared_volume(monkeypatch, writer)
-    response = client.post(path + "/apply-role", headers={"Idempotency-Key": "volume-crash"})
+    response = client.post(path + "/apply-profile", headers={"Idempotency-Key": "volume-crash"})
     assert response.status_code == 202
     operation_id = UUID(response.json()["id"])
     with monkeypatch.context() as patch:
@@ -257,12 +257,12 @@ def test_retry_prepares_only_after_successor_config_volume_exists(
 
 
 def test_new_apply_recovers_revoked_incarnation_without_a_config_volume(
-    client, worker, session_maker, role_agent, monkeypatch
+    client, worker, session_maker, profile_agent, monkeypatch
 ):
-    agent_id, _, writer = role_agent
+    agent_id, _, writer = profile_agent
     path = f"/api/v1/agents/{agent_id}"
     preparation = require_prepared_volume(monkeypatch, writer)
-    response = client.post(path + "/apply-role", headers={"Idempotency-Key": "exhaust-identity"})
+    response = client.post(path + "/apply-profile", headers={"Idempotency-Key": "exhaust-identity"})
     assert response.status_code == 202
     operation_id = UUID(response.json()["id"])
     with session_maker.begin() as session:
@@ -288,7 +288,7 @@ def test_new_apply_recovers_revoked_incarnation_without_a_config_volume(
     preparation.assert_not_called()
     writer.assert_not_called()
 
-    response = client.post(path + "/apply-role", headers={"Idempotency-Key": "new-apply"})
+    response = client.post(path + "/apply-profile", headers={"Idempotency-Key": "new-apply"})
     assert response.status_code == 202
     assert worker.process_one()
     with session_maker() as session:
@@ -308,21 +308,21 @@ def test_new_apply_recovers_revoked_incarnation_without_a_config_volume(
 
 
 def test_failed_first_install_can_be_removed_with_an_empty_application(
-    client, worker, session_maker, role_agent
+    client, worker, session_maker, profile_agent
 ):
-    agent_id, _, writer = role_agent
+    agent_id, _, writer = profile_agent
     path = f"/api/v1/agents/{agent_id}"
-    response = client.post(path + "/apply-role", headers={"Idempotency-Key": "first-install"})
+    response = client.post(path + "/apply-profile", headers={"Idempotency-Key": "first-install"})
     assert response.status_code == 202
     operation_id = UUID(response.json()["id"])
     with session_maker.begin() as session:
         operation = session.get(Operation, operation_id)
-        selected = deepcopy(operation.role_application)
+        selected = deepcopy(operation.profile_application)
         # Artifact I/O is mocked by the lifecycle harness. This records a failed
         # first setup without relying on the bundle API in a lifecycle-only test.
         selected["setup"] = {"artifact_hash": "a" * 64, "manifest": {"instructions": "Fixture"}}
         selected["fingerprint"] = application_fingerprint(selected)
-        operation.role_application = selected
+        operation.profile_application = selected
         operation.attempts = 4  # Exercise the final bounded attempt directly.
         session.get(Agent, UUID(agent_id)).selected_application = {
             k: v for k, v in selected.items() if k != "restart"
@@ -337,7 +337,7 @@ def test_failed_first_install_can_be_removed_with_an_empty_application(
         assert agent.observed_state == agent.desired_state == "stopped"
     assert writer.call_args.args[4]["setup"] is not None
     writer.reset_mock(side_effect=True)
-    removal = client.post(path + "/apply-role", headers={"Idempotency-Key": "remove-partial"})
+    removal = client.post(path + "/apply-profile", headers={"Idempotency-Key": "remove-partial"})
     assert removal.status_code == 202
     assert worker.process_one()
     writer.assert_called_once()
@@ -362,9 +362,17 @@ def test_failed_first_install_can_be_removed_with_an_empty_application(
     ],
 )
 def test_recovery_checks_applied_receipt_and_grandfathers_legacy_agents(
-    client, worker, session_maker, running_role_agent, monkeypatch, legacy, error, expected, caplog
+    client,
+    worker,
+    session_maker,
+    running_profile_agent,
+    monkeypatch,
+    legacy,
+    error,
+    expected,
+    caplog,
 ):
-    running = running_role_agent
+    running = running_profile_agent
     _, network = worker.names(running.id)
     worker.client.networks.create(name=network, labels=worker.labels(running.id), internal=True)
     if legacy:
@@ -388,7 +396,7 @@ def test_recovery_checks_applied_receipt_and_grandfathers_legacy_agents(
     if legacy:
         inspect.assert_not_called()
         # The first successful adapter application retires the migration marker.
-        operation_id = apply_role(client, running, "upgrade-legacy-receipt")
+        operation_id = apply_profile(client, running, "upgrade-legacy-receipt")
         inspect.side_effect = None
         assert worker.process_one()
         with session_maker() as session:
@@ -410,19 +418,19 @@ def test_recovery_checks_applied_receipt_and_grandfathers_legacy_agents(
 
 
 def test_migrated_legacy_container_recreation_recovers_crash_after_create(
-    client, worker, session_maker, running_role_agent, monkeypatch
+    client, worker, session_maker, running_profile_agent, monkeypatch
 ):
-    running = running_role_agent
+    running = running_profile_agent
     # Reconstruct the durable pre-0014 state after Docker creation but before
-    # database completion: captured old role keys and no application receipt.
+    # database completion: captured old profile keys and no application receipt.
     legacy = {
-        "role": {
+        "profile": {
             key: value
-            for key, value in running.application["role"].items()
+            for key, value in running.application["profile"].items()
             if key in {"id", "name", "revision", "capabilities"}
         },
         "permissions": running.application["permissions"],
-        "employee_id": running.application["employee_id"],
+        "user_id": running.application["user_id"],
         "restart": True,
         "legacy_receipt": True,
     }
@@ -435,11 +443,11 @@ def test_migrated_legacy_container_recreation_recovers_crash_after_create(
             )
         )
         operation.status, operation.step = "running", "start"
-        operation.role_application = legacy
+        operation.profile_application = legacy
         operation_id = operation.id
         agent = session.get(Agent, running.id)
         agent.applied_application = None
-        agent.applied_role = None
+        agent.applied_profile = None
         agent.selected_application = {
             key: value for key, value in legacy.items() if key != "restart"
         }
@@ -459,11 +467,11 @@ def test_migrated_legacy_container_recreation_recovers_crash_after_create(
         operation = session.get(Operation, operation_id)
         incarnation = session.get(WorkloadIncarnation, running.incarnation.id)
         assert operation.status == "running" and operation.step == "applying_setup"
-        assert operation.role_application["setup"] is None
-        assert operation.role_application["connector_grants"] == []
-        assert operation.role_application["role"]["setup_revision_id"] is None
-        assert operation.role_application["fingerprint"] == application_fingerprint(
-            operation.role_application
+        assert operation.profile_application["setup"] is None
+        assert operation.profile_application["connector_grants"] == []
+        assert operation.profile_application["profile"]["setup_revision_id"] is None
+        assert operation.profile_application["fingerprint"] == application_fingerprint(
+            operation.profile_application
         )
         # A recorded old ID would make adoption of the replacement fail ownership.
         assert incarnation.container_id is None

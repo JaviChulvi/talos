@@ -48,7 +48,7 @@ def main():
             entry.type, entry.mode, entry.uid, entry.gid = tarfile.DIRTYPE, 0o700, 10000, 10000
             archive.addfile(entry)
             entry = tarfile.TarInfo("private/state.txt")
-            body = b"fake-token-only\nkeep this employee memory"
+            body = b"fake-token-only\nkeep this user memory"
             entry.mode, entry.uid, entry.gid, entry.size = 0o600, 10000, 10000, len(body)
             archive.addfile(entry, io.BytesIO(body))
 

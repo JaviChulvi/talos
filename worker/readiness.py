@@ -96,7 +96,7 @@ class Readiness:
             if response.status_code != 200:
                 code = {
                     401: "provider_credentials_invalid",
-                    402: "allowance_or_credit_exhausted",
+                    402: "budget_or_credit_exhausted",
                     403: "provider_permission_denied",
                     404: "model_unavailable",
                     429: "provider_rate_limited",

@@ -173,9 +173,9 @@ def test_restore_sanitizes_credentials_pending_work_and_channel_ingress():
         ChannelCursor,
         ChannelInbox,
         ChannelOutbox,
-        EmployeeChannel,
         Operation,
         Run,
+        UserChannel,
         WorkloadIncarnation,
     )
 
@@ -183,14 +183,14 @@ def test_restore_sanitizes_credentials_pending_work_and_channel_ingress():
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         administrator = Administrator(id=1, password_hash="fake")
-        agent = Agent(display_name="Employee", employee_label="Test", desired_state="running")
+        agent = Agent(display_name="User", user_label="Test", desired_state="running")
         connection = Connection(name="Telegram", purpose="channel")
         session.add_all([administrator, agent, connection])
         session.flush()
         incarnation = WorkloadIncarnation(
             agent_id=agent.id, generation=1, gateway_token_hash="x" * 64, container_id="old"
         )
-        channel = EmployeeChannel(
+        channel = UserChannel(
             provider="telegram", name="Chat", enabled=True, connection_id=connection.id
         )
         session.add_all([incarnation, channel])
@@ -216,7 +216,7 @@ def test_restore_sanitizes_credentials_pending_work_and_channel_ingress():
             channel_id=channel.id,
             channel_revision=1,
             event_id="event",
-            external_user_id="employee",
+            external_user_id="user",
             destination="chat",
             code="accepted",
         )
@@ -241,7 +241,7 @@ def test_restore_sanitizes_credentials_pending_work_and_channel_ingress():
         cursor = session.get(ChannelCursor, channel.id)
         assert cursor.reconnect_required and cursor.offset == 0 and cursor.accept_after is None
         assert cursor.code == "restore_reconnect_required"
-        # Sanitization preserves the employee content and audit identity.
+        # Sanitization preserves the user content and audit identity.
         assert run.message == "action" and run.agent_id == agent.id
         assert session.get(Administrator, 1).password_hash == "fake"
 
@@ -625,7 +625,7 @@ def test_standalone_sanitize_registers_connection_tables_in_fresh_process(tmp_pa
 
     from backend.app.connections import Connection
     from backend.app.db import Base
-    from backend.app.models import ChannelCursor, EmployeeChannel, InstallationState
+    from backend.app.models import ChannelCursor, InstallationState, UserChannel
 
     url = "sqlite:///" + str(tmp_path / "restored.sqlite")
     engine = create_engine(url)
@@ -634,8 +634,8 @@ def test_standalone_sanitize_registers_connection_tables_in_fresh_process(tmp_pa
         connection = Connection(name="Restored Telegram", purpose="channel")
         session.add(connection)
         session.flush()
-        channel = EmployeeChannel(
-            provider="telegram", name="Employee messages", connection_id=connection.id
+        channel = UserChannel(
+            provider="telegram", name="User messages", connection_id=connection.id
         )
         session.add_all(
             [
@@ -675,7 +675,7 @@ def test_standalone_sanitize_registers_connection_tables_in_fresh_process(tmp_pa
         cursor = session.get(ChannelCursor, channel_id)
         assert cursor is not None and cursor.reconnect_required
         assert cursor.state == "restored" and cursor.offset == 0
-        assert not session.get(EmployeeChannel, channel_id).enabled
+        assert not session.get(UserChannel, channel_id).enabled
 
 
 def test_rollback_restarts_only_owned_database_after_stop_before_checkpoint_crash(

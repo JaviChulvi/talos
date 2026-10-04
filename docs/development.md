@@ -17,7 +17,7 @@ Build Talos from source, run local checks, and inspect runtime acceptance eviden
 | Runtimes | OpenClaw 2026.9.6 (Gateway v4) and Hermes 0.21.5, pinned by image digest |
 | Packaging | uv, pnpm, Docker Compose |
 
-`frontend/` contains the dashboard; `backend/` owns the API and database models; `worker/` owns Docker lifecycle and native runtime access; `connector/` owns employee channel admission and delivery; `gateway/` owns workload authentication and model routing. `compose.yaml` starts the platform, `deploy/` contains its image build and runtime pin, and `tests/` contains focused backend and runtime checks. See [runtime versions and connectivity](runtimes.md) for native image behavior. Node.js is used for frontend tooling; each native image carries its own runtime dependencies.
+`frontend/` contains the dashboard; `backend/` owns the API and database models; `worker/` owns Docker lifecycle and native runtime access; `connector/` owns user channel admission and delivery; `gateway/` owns workload authentication and model routing. `compose.yaml` starts the platform, `deploy/` contains its image build and runtime pin, and `tests/` contains focused backend and runtime checks. See [runtime versions and connectivity](runtimes.md) for native image behavior. Node.js is used for frontend tooling; each native image carries its own runtime dependencies.
 
 ## Run locally
 
@@ -90,7 +90,7 @@ uv run python -m tests.reliability
 This builds the current verification image and both native test images from the
 repository's pinned upstream digests. It uses an isolated internal network,
 disposable PostgreSQL, RAM-backed agent volumes, fake credentials, and local
-model/channel fixtures. It does not require employee recipients or provider keys.
+model/channel fixtures. It does not require user recipients or provider keys.
 The trusted test runner mounts Docker's socket; agent containers do not.
 The runner removes its containers, volumes and network and writes `results.xml`,
 `pytest.log`, and `environment.json` under `.data/reliability/<run-id>/`.
@@ -103,14 +103,14 @@ during initial network allocation.
 | --- | --- |
 | Worker killed before acknowledgment, during a tool, or before result commit | Durable send intent becomes `unknown`; a fixture's independent action journal contains exactly one action; Telegram/Slack redelivery reuses the original turn without sending again. |
 | Connector killed after its provider accepts a response | The outbox becomes `uncertain`; restart does not resend the response. |
-| Employee access revoked, channel disabled, credentials rotated, identity reassigned, or verification withdrawn during work | The worker persists cancellation and requests native abort; unauthorized channel delivery is blocked. Rejected cancellation retains `unknown`. |
+| User access revoked, channel disabled, credentials rotated, identity reassigned, or verification withdrawn during work | The worker persists cancellation and requests native abort; unauthorized channel delivery is blocked. Rejected cancellation retains `unknown`. |
 | Native restart and tool denial | Both pinned native containers retain separate channel histories. OpenClaw also rejects a denied native read invocation and closes a synthetic provider stream when each channel's access is revoked. |
 | Runtime version selected, default tag rebuilt, or catalog changed | Creation saves one concrete release; replay recovers the original selection. Restart keeps the initialized image ID; unapproved versions and mismatched image release labels are rejected. Saved setup artifacts remain readable after catalog removal. |
 | Budget exhausted or accounting unavailable | Existing gateway tests reject new paid calls before provider dispatch. This is admission against known spending; already admitted/concurrent calls can overshoot, and missing costs remain explicit. |
 | Incompatible setup or unsupported receipt schema | Preflight or inspection fails before changing managed state. New receipts pin their schema version, runtime image ID, architecture, labels, and applied policy. Original unversioned receipts remain readable and are versioned on explicit Apply. |
 | Setup upgraded or helper process exits during publication | Explicitly selecting the previous immutable setup restores its skills, instructions and policy. Tests compare private fixture history and a SQLite memory file byte for byte across rollback. |
 
-Employee access is exercised through Telegram and Slack admission/delivery. The
+User access is exercised through Telegram and Slack admission/delivery. The
 dashboard is an administrator/testing surface. Revocation is observed by the
 worker between runtime events (normally within its 250 ms event wait); native
 cancellation cannot retract completed external actions. Process-kill tests use a
@@ -123,7 +123,7 @@ The next reliability backlog is deliberately narrower than a universal security 
 | Workstream | Remaining acceptance criterion |
 | --- | --- |
 | Recovery | For each supported business-action tool, retain a durable action identity, prove provider-side idempotency or require reconciliation, and inject failure after provider acceptance but before the tool result. An uncertain run alone does not establish exactly-once business actions. |
-| Permissions | Add an employee approval broker for sensitive channel actions with durable, argument-bound, expiring decisions; test revoked decisions before execution. Before offering employee website access, apply the same identity, admission, history and delivery contract to that adapter. Test cross-employee containers with real granted file and network tools. |
+| Permissions | Add a user approval broker for sensitive channel actions with durable, argument-bound, expiring decisions; test revoked decisions before execution. Before offering user website access, apply the same identity, admission, history and delivery contract to that adapter. Test cross-user containers with real granted file and network tools. |
 | Version compatibility | Pin hosted MCP input/output schemas and reject shape changes even when tool names are unchanged. Local connector payloads and skill assets are content-hashed today; hosted schemas can still drift. |
 | Runtime/memory upgrades | Execute the release installer's stopped-runtime backup/restore acceptance on supported hosts, then validate a real old/new runtime image pair, native memory schema migration failure, and downgrade. This suite proves setup rollback under one runtime image, not safe rollback after arbitrary upstream memory migrations. Restore code, PostgreSQL, artifacts, secrets and runtime state together. |
 

@@ -1,23 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { EmployeeAccess, EmployeeChannel } from "./api";
+import type { UserAccess, UserChannel } from "./api";
 import { onboardingProgress, type OnboardingAgent, type HandoffReceipt } from "./onboarding.ts";
 
 const agent: OnboardingAgent = {
-  id: "agent", display_name: "Alex’s agent", employee_id: "employee", employee_name: "Alex",
+  id: "agent", display_name: "Alex’s agent", user_id: "user", user_name: "Alex",
   runtime_mode: "native", runtime_kind: "openclaw", runtime_release: "openclaw-2026.9.6",
   desired_state: "running", observed_state: "ready", permissions_pending: false,
-  role: { id: "role", name: "Support", revision: 1, capabilities: [] },
-  applied_role: { id: "role", name: "Support", revision: 1, capabilities: [] },
+  profile: { id: "profile", name: "Support", revision: 1, capabilities: [] },
+  applied_profile: { id: "profile", name: "Support", revision: 1, capabilities: [] },
   inference_override: { model_id: "provider/model" },
 };
-const channel: EmployeeChannel = {
+const channel: UserChannel = {
   id: "channel", provider: "telegram", name: "Telegram", enabled: true, verified: true,
   revision: 1, workspace_id: "workspace", credential_fields: [], credentials_configured: true,
   identity: {}, availability: { state: "ok", checked_at: null, expires_at: null, action: "" },
 };
-const access: EmployeeAccess = {
-  id: "access", channel_id: "channel", agent_id: "agent", employee_id: "employee",
+const access: UserAccess = {
+  id: "access", channel_id: "channel", agent_id: "agent", user_id: "user",
   external_user_id: "123", external_scope: "workspace", state: "active", revision: 1,
 };
 const receipt: HandoffReceipt = {
@@ -25,7 +25,7 @@ const receipt: HandoffReceipt = {
   receipt: { run_id: "run", accepted_parts: 2, total_parts: 2 },
 };
 
-test("saved current identity and complete employee reply finish setup", () => {
+test("saved current identity and complete user reply finish setup", () => {
   const progress = onboardingProgress(agent, true, [channel], [access], { access: [receipt] });
   assert.ok(Object.values(progress).every(Boolean));
 });
@@ -47,7 +47,7 @@ test("stale, unconfirmed, or incomplete responses cannot finish setup", () => {
 test("revoked or reassigned access never reuses a previous delivery", () => {
   for (const invalid of [
     { ...access, state: "disabled" as const }, { ...access, agent_id: "another-agent" },
-    { ...access, employee_id: "another-employee" }, { ...access, external_user_id: null },
+    { ...access, user_id: "another-user" }, { ...access, external_user_id: null },
     { ...access, external_scope: "another-workspace" },
   ]) assert.equal(onboardingProgress(agent, true, [channel], [invalid], { access: [receipt] }).delivery, false);
   for (const invalid of [{ ...channel, enabled: false }, { ...channel, verified: false }]) {
@@ -56,13 +56,13 @@ test("revoked or reassigned access never reuses a previous delivery", () => {
 });
 
 test("pending permissions, stopped runtime, and missing provider remain incomplete", () => {
-  assert.equal(onboardingProgress({ ...agent, permissions_pending: true }, true, [], [], {}).employee, false);
+  assert.equal(onboardingProgress({ ...agent, permissions_pending: true }, true, [], [], {}).user, false);
   assert.equal(onboardingProgress({ ...agent, desired_state: "stopped" }, true, [], [], {}).runtime, false);
   assert.equal(onboardingProgress(agent, false, [], [], {}).model, false);
   assert.equal(onboardingProgress(undefined, true, [channel], [access], { access: [receipt] }).delivery, false);
 });
 
-test("native provider setup requires an actual current employee response", () => {
+test("native provider setup requires an actual current user response", () => {
   const native = { ...agent, inference_override: null };
   assert.equal(onboardingProgress(native, false, [channel], [access], {}).model, false);
   assert.equal(onboardingProgress(native, false, [channel], [access], { access: [receipt] }).model, true);

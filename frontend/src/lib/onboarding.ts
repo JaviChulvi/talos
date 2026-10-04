@@ -1,4 +1,4 @@
-import type { AgentPermissions, EmployeeAccess, EmployeeChannel } from "./api";
+import type { AgentPermissions, UserAccess, UserChannel } from "./api";
 
 export type OnboardingAgent = AgentPermissions & {
   runtime_kind: string;
@@ -16,13 +16,13 @@ export type HandoffReceipt = {
 export function onboardingProgress(
   agent: OnboardingAgent | undefined,
   providerConfigured: boolean,
-  channels: EmployeeChannel[],
-  accesses: EmployeeAccess[],
+  channels: UserChannel[],
+  accesses: UserAccess[],
   handoffs: Record<string, HandoffReceipt[]>,
 ) {
   const approved = accesses.filter((access) =>
     agent?.runtime_mode === "native" &&
-    access.agent_id === agent.id && access.employee_id === agent.employee_id &&
+    access.agent_id === agent.id && access.user_id === agent.user_id &&
     access.state === "active" && !!access.external_user_id &&
     channels.some((channel) => channel.id === access.channel_id && channel.enabled &&
       channel.verified && channel.workspace_id === access.external_scope),
@@ -35,8 +35,8 @@ export function onboardingProgress(
   const model = agent?.inference_override?.model_id;
   return {
     model: model ? providerConfigured && model !== "fixture" : delivery,
-    employee: !!agent?.employee_id && !!agent.role && !!agent.applied_role &&
-      agent.role.id === agent.applied_role.id && !agent.permissions_pending &&
+    user: !!agent?.user_id && !!agent.profile && !!agent.applied_profile &&
+      agent.profile.id === agent.applied_profile.id && !agent.permissions_pending &&
       !agent.setup_pending && !agent.setup_blockers?.length,
     runtime: agent?.runtime_mode === "native" && agent.desired_state === "running" &&
       ["ready", "running"].includes(agent.observed_state),

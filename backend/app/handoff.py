@@ -18,18 +18,18 @@ from backend.app.models import (
     ChannelInbox,
     ChannelOutbox,
     DeliveryChallenge,
-    EmployeeAccess,
-    EmployeeChannel,
     Run,
+    UserAccess,
+    UserChannel,
 )
 
-router = APIRouter(prefix="/api/v1/employee-accesses", tags=["delivery verification"])
+router = APIRouter(prefix="/api/v1/user-accesses", tags=["delivery verification"])
 
 
 def current_challenge(session, challenge, access=None):
-    access = access or session.get(EmployeeAccess, challenge.access_id, populate_existing=True)
+    access = access or session.get(UserAccess, challenge.access_id, populate_existing=True)
     agent = session.get(Agent, challenge.agent_id, populate_existing=True)
-    channel = session.get(EmployeeChannel, access.channel_id, populate_existing=True)
+    channel = session.get(UserChannel, access.channel_id, populate_existing=True)
     connection = session.get(Connection, channel.connection_id, populate_existing=True)
     return bool(
         agent
@@ -48,7 +48,7 @@ def current_challenge(session, challenge, access=None):
 @router.post("/{access_id}/challenge", status_code=201)
 def create_challenge(access_id: UUID, response: Response, session: Database):
     initial = access_row(session, access_id, lock=False)
-    agent = assigned_agent(session, initial.employee_id, initial.agent_id)
+    agent = assigned_agent(session, initial.user_id, initial.agent_id)
     access = access_row(session, access_id)
     if not authorized_access(session, access, agent):
         raise HTTPException(409, "Approve the identity and verify an enabled channel first")
@@ -87,7 +87,7 @@ def claim_challenge(session, inbox, token):
     now = datetime.now(UTC)
     if not challenge or challenge.consumed_at or challenge.expires_at <= now:
         return None
-    access = session.get(EmployeeAccess, challenge.access_id, populate_existing=True)
+    access = session.get(UserAccess, challenge.access_id, populate_existing=True)
     if (
         access.channel_id != inbox.channel_id
         or access.external_scope != inbox.external_scope
@@ -111,7 +111,7 @@ def record_acceptance(session, inbox, outbox):
     if not inbox.run_id:
         return
     run = session.get(Run, inbox.run_id)
-    if run.status != "completed" or run.source != "employee" or not run.output.strip():
+    if run.status != "completed" or run.source != "user" or not run.output.strip():
         return
     if "".join(outbox.parts) != run.output:
         outbox.code = "response_truncated"
@@ -123,7 +123,7 @@ def record_acceptance(session, inbox, outbox):
             DeliveryChallenge.access_revision == inbox.access_revision,
             DeliveryChallenge.accepted_at.is_not(None),
             DeliveryChallenge.receipt_at.is_(None),
-            # The employee can reply before our confirmation send is acknowledged.
+            # The user can reply before our confirmation send is acknowledged.
             DeliveryChallenge.consumed_at <= run.created_at,
             DeliveryChallenge.fingerprint == run.availability_fingerprint,
         )

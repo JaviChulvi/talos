@@ -17,8 +17,8 @@ from tests.integration.test_channel_runs import (
     client,
     database_engine,
     lifecycle_sessions,
+    profile_agent,
     ready_accesses,
-    role_agent,
     session_maker,
     worker,
 )
@@ -38,13 +38,13 @@ def receive(sessions, pair, text, event=1):
 
 
 def challenge(client, pair):
-    response = client.post(f"/api/v1/employee-accesses/{pair[0]['id']}/challenge")
+    response = client.post(f"/api/v1/user-accesses/{pair[0]['id']}/challenge")
     assert response.status_code == 201 and response.headers["cache-control"] == "no-store"
     return response.json()
 
 
 def proof(client, pair):
-    response = client.get(f"/api/v1/employee-accesses/{pair[0]['id']}/handoff")
+    response = client.get(f"/api/v1/user-accesses/{pair[0]['id']}/handoff")
     assert response.status_code == 200
     return response.json()["history"][0]
 
@@ -90,7 +90,7 @@ def test_challenge_then_native_reply_verifies_delivery(
         assert evidence["snapshot"]["configuration_fingerprint"] == run.availability_fingerprint
     assert evidence["receipt"]["accepted_parts"] == evidence["receipt"]["total_parts"] == 1
     assert request["token"] not in str(evidence)
-    client.post(f"/api/v1/employee-accesses/{pair[0]['id']}/disable")
+    client.post(f"/api/v1/user-accesses/{pair[0]['id']}/disable")
     old = proof(client, pair)
     assert old["verified_at"] == evidence["verified_at"] and not old["current"]
 
@@ -118,7 +118,7 @@ def test_challenge_scope_and_config_are_rechecked(
         with session_maker.begin() as session:
             session.get(Agent, agent_id).inference_override = {"model_id": "changed"}
     else:
-        client.post(f"/api/v1/employee-accesses/{pair[0]['id']}/disable")
+        client.post(f"/api/v1/user-accesses/{pair[0]['id']}/disable")
     inbox = receive(session_maker, pair, "/verify " + request["token"])
     assert inbox.code == (
         "channel_changed" if invalidator == "credentials" else "challenge_invalid"
@@ -164,7 +164,7 @@ def test_unconfirmed_transport_never_verifies(client, session_maker, ready_acces
         assert delivery.claim(UUID(pair[1]["id"]))
         delivery.recover()
     else:
-        client.post(f"/api/v1/employee-accesses/{pair[0]['id']}/disable")
+        client.post(f"/api/v1/user-accesses/{pair[0]['id']}/disable")
         send(session_maker, pair).send.assert_not_awaited()
     evidence = proof(client, pair)
     assert evidence["transport_accepted_at"] is None and evidence["verified_at"] is None
@@ -232,15 +232,13 @@ def test_bounded_reply_receipt_requires_complete_output(
 
 
 @pytest.mark.parametrize("case", ["empty", "failed", "unknown", "admin", "uncertain_send"])
-def test_only_confirmed_employee_replies_complete_handoff(
-    client, session_maker, ready_accesses, case
-):
+def test_only_confirmed_user_replies_complete_handoff(client, session_maker, ready_accesses, case):
     _, pairs = ready_accesses
     pair = pairs[0]
     request = challenge(client, pair)
     receive(session_maker, pair, "/verify " + request["token"])
     send(session_maker, pair)
-    inbox = receive(session_maker, pair, "First employee message", 2)
+    inbox = receive(session_maker, pair, "First user message", 2)
     asyncio.run(
         DiagnosticManager(session_maker, AsyncMock(return_value=FakeDriver()))._execute(
             inbox.run_id
@@ -277,7 +275,7 @@ def test_agent_change_after_challenge_receive_blocks_confirmation(
 
 def test_pending_access_cannot_create_delivery_challenge(client, ready_accesses):
     _, pairs = ready_accesses
-    path = f"/api/v1/employee-accesses/{pairs[0][0]['id']}"
+    path = f"/api/v1/user-accesses/{pairs[0][0]['id']}"
     client.post(path + "/disable")
     assert client.post(path + "/challenge").status_code == 409
 
@@ -294,7 +292,7 @@ def test_reply_before_confirmation_acknowledgment_verifies_delivery(
 
     async def confirmation_send(*_):
         # The provider has delivered confirmation; its HTTP acknowledgment is pending.
-        turn = receive(session_maker, pair, "Immediate employee reply", 2)
+        turn = receive(session_maker, pair, "Immediate user reply", 2)
         turns.append(turn)
         await DiagnosticManager(session_maker, AsyncMock(return_value=FakeDriver()))._execute(
             turn.run_id

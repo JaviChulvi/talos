@@ -8,14 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, errorMessage, type EmployeeAccess, type EmployeeChannel } from "@/lib/api";
+import { api, errorMessage, type UserAccess, type UserChannel } from "@/lib/api";
 import { onboardingProgress, type HandoffReceipt, type OnboardingAgent } from "@/lib/onboarding";
 
 type Snapshot = {
   agents: OnboardingAgent[];
   configured: boolean;
-  channels: EmployeeChannel[];
-  accesses: EmployeeAccess[];
+  channels: UserChannel[];
+  accesses: UserAccess[];
   handoffs: Record<string, HandoffReceipt[]>;
 };
 
@@ -34,15 +34,15 @@ export function Onboarding({ query }: { query: string }) {
         const [allAgents, provider, channels, accesses] = await Promise.all([
           api<OnboardingAgent[]>("/agents", options),
           api<{ configured: boolean }>("/inference/provider", options),
-          api<EmployeeChannel[]>("/channels", options),
-          api<EmployeeAccess[]>("/employee-accesses", options),
+          api<UserChannel[]>("/channels", options),
+          api<UserAccess[]>("/user-accesses", options),
         ]);
         const agents = allAgents.filter((item) => item.runtime_mode === "native");
         const agent = selectedId ? agents.find((item) => item.id === selectedId) : agents[0];
         const handoffs = await Promise.all(accesses.filter((access) =>
-          access.agent_id === agent?.id && access.employee_id === agent.employee_id,
+          access.agent_id === agent?.id && access.user_id === agent.user_id,
         ).map(async (access) => [access.id, (await api<{ history: HandoffReceipt[] }>(
-          `/employee-accesses/${access.id}/handoff`, options,
+          `/user-accesses/${access.id}/handoff`, options,
         )).history] as const));
         if (!controller.signal.aborted) {
           setSnapshot({ agents, configured: provider.configured, channels, accesses, handoffs: Object.fromEntries(handoffs) });
@@ -72,37 +72,37 @@ export function Onboarding({ query }: { query: string }) {
       detail: agent?.inference_override?.model_id
         ? `${agent.inference_override.model_id} · ${snapshot?.configured ? "OpenRouter key configured" : "OpenRouter key needed"}.`
         : progress?.model
-          ? "The native provider responded to the employee’s verified conversation."
+          ? "The native provider responded to the user’s verified conversation."
           : "Save an OpenRouter key below, then choose OpenRouter and a model when creating your agent. Advanced native-provider setup remains available in agent settings.",
       href: settingsLink, action: "Choose model",
     },
     {
-      key: "employee" as const,
-      title: "Assign an employee and permissions",
-      detail: agent?.employee_id
-        ? `${agent.employee_name} · ${agent.role?.name ?? "No role"}. ${progress?.employee ? "Permissions applied." : "Review and apply pending permissions in agent settings."}`
-        : "Create a role with the tools this employee needs, then create the employee and assign that role.",
-      href: "#employees", action: "Manage employees",
+      key: "user" as const,
+      title: "Assign a user and permissions",
+      detail: agent?.user_id
+        ? `${agent.user_name} · ${agent.profile?.name ?? "No profile"}. ${progress?.user ? "Permissions applied." : "Review and apply pending permissions in agent settings."}`
+        : "Create a profile with the tools this user needs, then create the user and assign that profile.",
+      href: "#users", action: "Manage users",
     },
     {
       key: "runtime" as const,
-      title: "Start the employee’s agent",
+      title: "Start the user’s agent",
       detail: agent
         ? `${agent.runtime_release} · ${agent.observed_state.replaceAll("_", " ")}. Change assignment or start the agent from its settings.`
-        : "Use New agent in the sidebar. Choose the employee, OpenClaw or Hermes, and the supported version; Latest supported is the default.",
+        : "Use New agent in the sidebar. Choose the user, OpenClaw or Hermes, and the supported version; Latest supported is the default.",
       href: settingsLink, action: "Agent settings",
     },
     {
       key: "identity" as const,
-      title: "Connect Telegram or Slack and approve the employee",
-      detail: "In Access & availability below, save channel credentials, check and enable the channel, then review and approve the employee’s external identity.",
+      title: "Connect Telegram or Slack and approve the user",
+      detail: "In Access & availability below, save channel credentials, check and enable the channel, then review and approve the user’s external identity.",
     },
     {
       key: "delivery" as const,
-      title: "Verify the first employee conversation",
+      title: "Verify the first user conversation",
       detail: progress?.delivery
-        ? "The channel provider accepted every part of an agent reply after the employee’s verification message. This confirms delivery, not that the message was read."
-        : "Create a delivery test below and share its instructions. The employee sends the verification message, then a normal message. Completion requires the full agent reply to be accepted by the channel provider.",
+        ? "The channel provider accepted every part of an agent reply after the user’s verification message. This confirms delivery, not that the message was read."
+        : "Create a delivery test below and share its instructions. The user sends the verification message, then a normal message. Completion requires the full agent reply to be accepted by the channel provider.",
     },
   ];
 
@@ -110,7 +110,7 @@ export function Onboarding({ query }: { query: string }) {
     <section aria-labelledby="onboarding-heading" className="mx-auto max-w-3xl space-y-8">
       <div className="page-heading">
         <div>
-          <h1 id="onboarding-heading">Set up your first employee</h1>
+          <h1 id="onboarding-heading">Set up your first user</h1>
           <p>Finish with a working conversation in Telegram or Slack. Saved settings determine your progress when you return.</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => setRefresh((value) => value + 1)}><RefreshCw />Refresh</Button>
@@ -120,14 +120,14 @@ export function Onboarding({ query }: { query: string }) {
       {snapshot && <>
         <div className="space-y-3">
           {snapshot.agents.length > 0 ? <>
-            <Label htmlFor="onboarding-agent">Employee agent</Label>
+            <Label htmlFor="onboarding-agent">Agent</Label>
             <Select value={agent?.id ?? ""} onValueChange={(id) => { window.location.hash = `onboarding?agent_id=${encodeURIComponent(id)}`; }}>
               <SelectTrigger id="onboarding-agent" className="w-full"><SelectValue placeholder="Choose a saved agent" /></SelectTrigger>
-              <SelectContent>{snapshot.agents.map((item) => <SelectItem key={item.id} value={item.id}>{item.display_name} · {item.employee_name || "Unassigned"}</SelectItem>)}</SelectContent>
+              <SelectContent>{snapshot.agents.map((item) => <SelectItem key={item.id} value={item.id}>{item.display_name} · {item.user_name || "Unassigned"}</SelectItem>)}</SelectContent>
             </Select>
-          </> : <p className="text-sm text-muted-foreground">No native agents yet. Start with a provider and employee, then use New agent in the sidebar.</p>}
+          </> : <p className="text-sm text-muted-foreground">No native agents yet. Start with a provider and user, then use New agent in the sidebar.</p>}
           {selectedId && !agent && <p role="status" className="text-sm text-destructive">This agent is no longer available. Select another saved agent to continue.</p>}
-          <p role="status" className="text-sm">{complete ? "First employee setup verified." : `${progress ? Object.values(progress).filter(Boolean).length : 0} of 5 steps complete.`}</p>
+          <p role="status" className="text-sm">{complete ? "First access setup verified." : `${progress ? Object.values(progress).filter(Boolean).length : 0} of 5 steps complete.`}</p>
         </div>
         <ol className="divide-y border-y">
           {steps.map((step, index) => <li key={step.key} className="space-y-2 py-5">
@@ -137,7 +137,7 @@ export function Onboarding({ query }: { query: string }) {
             </div>
             <p className="max-w-prose text-sm leading-relaxed text-muted-foreground">{step.detail}</p>
             {step.href && <a href={step.href} className="inline-block text-sm text-primary underline underline-offset-4">{step.action}</a>}
-            {step.key === "employee" && <a href="#roles" className="ml-4 inline-block text-sm text-primary underline underline-offset-4">Manage roles</a>}
+            {step.key === "user" && <a href="#profiles" className="ml-4 inline-block text-sm text-primary underline underline-offset-4">Manage agent profiles</a>}
           </li>)}
         </ol>
       </>}

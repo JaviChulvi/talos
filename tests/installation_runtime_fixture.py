@@ -21,11 +21,11 @@ from backend.app.db import session_factory
 from backend.app.models import (
     AdministratorSession,
     Agent,
-    Employee,
-    EmployeeChannel,
+    AgentProfile,
     Operation,
-    Role,
     Run,
+    User,
+    UserChannel,
 )
 
 FACTORY = session_factory()
@@ -92,7 +92,7 @@ def bootstrap_fixture():
             session.add(connection)
             session.flush()
             session.add(
-                EmployeeChannel(
+                UserChannel(
                     provider=provider,
                     name="Synthetic " + provider,
                     enabled=True,
@@ -104,19 +104,19 @@ def bootstrap_fixture():
 
 def seed():
     with FACTORY.begin() as session:
-        role = Role(name="Acceptance employee role", capabilities=[])
-        session.add(role)
+        profile = AgentProfile(name="Acceptance user profile", capabilities=[])
+        session.add(profile)
         session.flush()
-        employee = Employee(name="Synthetic installation employee", role_id=role.id)
-        session.add(employee)
+        user = User(name="Synthetic installation user", profile_id=profile.id)
+        session.add(user)
         session.flush()
-        employee_id = employee.id
+        user_id = user.id
     for family in ("openclaw", "hermes"):
         for state in ("running", "stopped", "uncertain"):
             body = CreateAgent(
                 runtime_kind=family,
                 runtime_mode="native",
-                employee_id=employee_id,
+                user_id=user_id,
                 display_name=f"acceptance-{family}-{state}",
                 dashboard_password="synthetic-acceptance-password" if family == "hermes" else None,
             )

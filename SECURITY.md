@@ -5,7 +5,7 @@
 For a public Talos repository with private vulnerability reporting enabled, use
 [Report a vulnerability](https://github.com/JaviChulvi/talos/security/advisories/new).
 Reports submitted there are private to the maintainers and invited collaborators.
-Do not put vulnerabilities, credentials, or private employee data in public issues
+Do not put vulnerabilities, credentials, or private user data in public issues
 or pull requests. A useful report includes the affected commit/version, deployment
 and runtime, expected boundary, reproducible steps with synthetic data, and impact.
 
@@ -26,15 +26,15 @@ runtime to Talos as well as following the upstream project's disclosure policy.
 
 ## Trust boundaries
 
-An installation serves one organization with a single administrator and trusted host
-operators. The worker controls Docker; employee agent containers do not receive the
+An installation uses a single shared workspace with a single administrator and trusted host
+operators. The worker controls Docker; user agent containers do not receive the
 Docker socket. Containers share a kernel and do not establish hostile-tenant isolation.
 The dashboard and native runtime interfaces are for administration and testing.
-Employees use approved private Telegram or Slack identities.
+Users use approved private Telegram or Slack identities.
 
 Native tools and runtime-owned credentials remain powerful. Tool permissions are not
 arbitrary-code containment, and prompt injection cannot be universally prevented.
-Only Talos-routed model traffic contributes to its spending ledger; allowances are
+Only Talos-routed model traffic contributes to its spending ledger; budgets are
 not a guaranteed maximum bill. Cancellation cannot undo completed external actions.
 Unknown deliveries require reconciliation and are not blindly replayed.
 

@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 
 from backend.app.availability import availability
 from backend.app.channels import authorized_access, claim_invitation
-from backend.app.diagnostics import admit_employee_run, authorized_run
+from backend.app.diagnostics import admit_user_run, authorized_run
 from backend.app.handoff import claim_challenge, current_challenge, record_acceptance
 from backend.app.installation import ensure_writable, writable
 from backend.app.models import (
@@ -17,9 +17,9 @@ from backend.app.models import (
     ChannelInbox,
     ChannelOutbox,
     DeliveryChallenge,
-    EmployeeAccess,
-    EmployeeChannel,
     Run,
+    UserAccess,
+    UserChannel,
 )
 
 
@@ -67,7 +67,7 @@ def ingest(
     )
     if previous:
         return previous
-    channel = session.get(EmployeeChannel, channel_id, populate_existing=True)
+    channel = session.get(UserChannel, channel_id, populate_existing=True)
     inbox = ChannelInbox(
         channel_id=channel_id,
         channel_revision=revision,
@@ -101,10 +101,10 @@ def ingest(
             return inbox
     else:
         access = session.scalar(
-            select(EmployeeAccess).where(
-                EmployeeAccess.channel_id == channel_id,
-                EmployeeAccess.external_scope == scope,
-                EmployeeAccess.external_user_id == user,
+            select(UserAccess).where(
+                UserAccess.channel_id == channel_id,
+                UserAccess.external_scope == scope,
+                UserAccess.external_user_id == user,
             )
         )
         agent = session.get(Agent, access.agent_id) if access else None
@@ -146,7 +146,7 @@ def ingest(
             response = "Envía un mensaje de texto de hasta 4000 caracteres."
         else:
             try:
-                run = admit_employee_run(
+                run = admit_user_run(
                     session, access.id, message, f"channel:{inbox.id}", channel_revision=revision
                 )
                 inbox.run_id = run.id
@@ -168,8 +168,8 @@ def ingest(
 
 
 def inbox_authorized(session, inbox: ChannelInbox) -> bool:
-    access = session.get(EmployeeAccess, inbox.access_id, populate_existing=True)
-    channel = session.get(EmployeeChannel, inbox.channel_id, populate_existing=True)
+    access = session.get(UserAccess, inbox.access_id, populate_existing=True)
+    channel = session.get(UserChannel, inbox.channel_id, populate_existing=True)
     if (
         not access
         or access.revision != inbox.access_revision

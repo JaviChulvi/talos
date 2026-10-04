@@ -730,16 +730,16 @@ def test_dashboard_handoff_rewrites_both_addresses_without_changing_agent_state(
 
 
 @pytest.fixture
-def role_agent(client, worker, session_maker, monkeypatch):
-    role = client.post("/api/v1/roles", json={"name": "Sales"}).json()
-    employee = client.post("/api/v1/employees", json={"name": "Alex", "role_id": role["id"]}).json()
+def profile_agent(client, worker, session_maker, monkeypatch):
+    profile = client.post("/api/v1/profiles", json={"name": "Sales"}).json()
+    user = client.post("/api/v1/users", json={"name": "Alex", "profile_id": profile["id"]}).json()
     created = client.post(
         "/api/v1/agents",
         json={
             "display_name": "Alex helper",
-            "employee_id": employee["id"],
+            "user_id": user["id"],
         },
-        headers={"Idempotency-Key": "role-agent"},
+        headers={"Idempotency-Key": "profile-agent"},
     ).json()
     monkeypatch.setattr(worker, "ensure_network", lambda *a, **kw: None)
     monkeypatch.setattr(worker.client.images, "get", lambda _: SimpleNamespace(id=IMAGE))
@@ -759,18 +759,19 @@ def role_agent(client, worker, session_maker, monkeypatch):
     monkeypatch.setattr("worker.lifecycle.prepare_setup", Mock())
     monkeypatch.setattr("worker.lifecycle.verify_setup", Mock())
     worker.process_one()
-    return created["agent_id"], role, writer
+    return created["agent_id"], profile, writer
 
 
-def test_role_application_captures_snapshot_recovers_and_leaves_new_edit_pending(
-    client, worker, session_maker, role_agent, monkeypatch
+def test_profile_application_captures_snapshot_recovers_and_leaves_new_edit_pending(
+    client, worker, session_maker, profile_agent, monkeypatch
 ):
-    agent_id, role, writer = role_agent
+    agent_id, profile, writer = profile_agent
     path = "/api/v1/agents/" + agent_id
-    operation = client.post(path + "/start", headers={"Idempotency-Key": "start-role"}).json()
+    operation = client.post(path + "/start", headers={"Idempotency-Key": "start-profile"}).json()
     # Saving during an operation must not mutate its captured policy.
     client.put(
-        "/api/v1/roles/" + role["id"], json={"name": "Sales", "capabilities": ["web_research"]}
+        "/api/v1/profiles/" + profile["id"],
+        json={"name": "Sales", "capabilities": ["web_research"]},
     )
     complete = worker.complete
     monkeypatch.setattr(worker, "complete", Mock(side_effect=ProcessDied()))
@@ -780,24 +781,24 @@ def test_role_application_captures_snapshot_recovers_and_leaves_new_edit_pending
     assert worker.process_one()
     assert writer.call_count == 1  # Adopts the same configured incarnation on recovery.
     agent = client.get(path).json()
-    assert agent["applied_role"]["revision"] == 1 and agent["permissions_pending"]
-    replay = client.post(path + "/start", headers={"Idempotency-Key": "start-role"}).json()
+    assert agent["applied_profile"]["revision"] == 1 and agent["permissions_pending"]
+    replay = client.post(path + "/start", headers={"Idempotency-Key": "start-profile"}).json()
     assert replay["id"] == operation["id"] and replay["status"] == "succeeded"
-    applied = client.post(path + "/apply-role", headers={"Idempotency-Key": "apply"}).json()
-    assert applied["action"] == "apply_role"
+    applied = client.post(path + "/apply-profile", headers={"Idempotency-Key": "apply"}).json()
+    assert applied["action"] == "apply_profile"
     assert worker.process_one()
     agent = client.get(path).json()
     assert agent["observed_state"] == "ready" and not agent["permissions_pending"]
-    assert agent["applied_role"]["capabilities"] == ["web_research"]
+    assert agent["applied_profile"]["capabilities"] == ["web_research"]
     assert writer.call_count == 2
 
 
-def test_stopped_role_application_never_starts_and_failure_stays_stopped(
-    client, worker, session_maker, role_agent
+def test_stopped_profile_application_never_starts_and_failure_stays_stopped(
+    client, worker, session_maker, profile_agent
 ):
-    agent_id, role, writer = role_agent
+    agent_id, profile, writer = profile_agent
     path = "/api/v1/agents/" + agent_id
-    client.post(path + "/apply-role", headers={"Idempotency-Key": "stopped-apply"})
+    client.post(path + "/apply-profile", headers={"Idempotency-Key": "stopped-apply"})
     worker.process_one()
     assert client.get(path).json()["observed_state"] == "stopped"
     assert not client.get(path).json()["permissions_pending"]
@@ -818,10 +819,10 @@ def test_stopped_role_application_never_starts_and_failure_stays_stopped(
 
 
 @pytest.mark.parametrize("ownership_conflict", [False, True])
-def test_role_stop_failure_is_durable_and_does_not_block_other_agents(
-    client, worker, session_maker, role_agent, monkeypatch, ownership_conflict
+def test_profile_stop_failure_is_durable_and_does_not_block_other_agents(
+    client, worker, session_maker, profile_agent, monkeypatch, ownership_conflict
 ):
-    agent_id, _, _ = role_agent
+    agent_id, _, _ = profile_agent
     path = "/api/v1/agents/" + agent_id
     client.post(path + "/start", headers={"Idempotency-Key": "start-before-stop-failure"})
     worker.process_one()
@@ -835,7 +836,7 @@ def test_role_stop_failure_is_durable_and_does_not_block_other_agents(
     else:
         monkeypatch.setattr(container, "stop", Mock(side_effect=OSError("Docker unavailable")))
     operation = client.post(
-        path + "/apply-role", headers={"Idempotency-Key": "stop-failure"}
+        path + "/apply-profile", headers={"Idempotency-Key": "stop-failure"}
     ).json()
     attempts = 1 if ownership_conflict else 5
     for attempt in range(1, attempts + 1):
@@ -976,7 +977,7 @@ def test_replacement_releases_old_run_only_after_runtime_stops(
 
 @pytest.mark.parametrize("kind", ["openclaw", "hermes"])
 def test_native_restart_retains_image_after_tag_and_catalog_change(
-    client, worker, session_maker, role_agent, monkeypatch, kind
+    client, worker, session_maker, profile_agent, monkeypatch, kind
 ):
     from copy import deepcopy
 
@@ -995,7 +996,7 @@ def test_native_restart_retains_image_after_tag_and_catalog_change(
     }
     lookup = Mock(side_effect=images.__getitem__)
     monkeypatch.setattr(worker.client.images, "get", lookup)
-    payload = {"display_name": "Pinned", "employee_label": "Alex", "runtime_kind": kind}
+    payload = {"display_name": "Pinned", "user_label": "Alex", "runtime_kind": kind}
     if kind == "hermes":
         payload["dashboard_password"] = "synthetic-version-password"
     created = client.post(
@@ -1047,7 +1048,7 @@ def test_native_restart_retains_image_after_tag_and_catalog_change(
 
 @pytest.mark.parametrize("declared", [None, "openclaw-2026.9.6"])
 def test_added_version_requires_matching_installed_image_before_start(
-    client, worker, session_maker, role_agent, monkeypatch, declared
+    client, worker, session_maker, profile_agent, monkeypatch, declared
 ):
     from copy import deepcopy
 
@@ -1068,7 +1069,7 @@ def test_added_version_requires_matching_installed_image_before_start(
     )
     created = client.post(
         "/api/v1/agents",
-        json={"display_name": "Mismatch", "employee_label": "Alex", "runtime_version": "2026.9.10"},
+        json={"display_name": "Mismatch", "user_label": "Alex", "runtime_version": "2026.9.10"},
         headers={"Idempotency-Key": "mismatched-version"},
     )
     assert created.status_code == 202

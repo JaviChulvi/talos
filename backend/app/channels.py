@@ -1,4 +1,4 @@
-"""Admin-only channel setup and explicit employee identity approval."""
+"""Admin-only channel setup and explicit user identity approval."""
 
 import hashlib
 import re
@@ -15,9 +15,9 @@ from sqlalchemy.orm import Session
 
 from backend.app.connections import Connection, CredentialsInput, rotate_credentials
 from backend.app.db import Database
-from backend.app.models import AccessInvitation, Agent, Employee, EmployeeAccess, EmployeeChannel
+from backend.app.models import AccessInvitation, Agent, User, UserAccess, UserChannel
 
-router = APIRouter(prefix="/api/v1", tags=["employee channels"])
+router = APIRouter(prefix="/api/v1", tags=["user channels"])
 CREDENTIAL_FIELDS = {"telegram": ["bot_token"], "slack": ["app_token", "bot_token"]}
 
 
@@ -44,13 +44,13 @@ class ChannelChange(BaseModel):
 class AccessInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     channel_id: UUID
-    employee_id: UUID
+    user_id: UUID
     agent_id: UUID
     external_scope: str = Field(default="", max_length=40)
     external_user_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
-def channel_response(session: Session, channel: EmployeeChannel) -> dict:
+def channel_response(session: Session, channel: UserChannel) -> dict:
     from backend.app.readiness import channel_status
 
     connection = session.get(Connection, channel.connection_id)
@@ -75,13 +75,13 @@ def channel_response(session: Session, channel: EmployeeChannel) -> dict:
     }
 
 
-def access_response(access: EmployeeAccess) -> dict:
+def access_response(access: UserAccess) -> dict:
     return {
         key: getattr(access, key)
         for key in (
             "id",
             "channel_id",
-            "employee_id",
+            "user_id",
             "agent_id",
             "external_scope",
             "external_user_id",
@@ -92,20 +92,18 @@ def access_response(access: EmployeeAccess) -> dict:
     }
 
 
-def channel_row(session: Session, channel_id: UUID, *, lock=False) -> EmployeeChannel:
-    channel = session.get(EmployeeChannel, channel_id)
+def channel_row(session: Session, channel_id: UUID, *, lock=False) -> UserChannel:
+    channel = session.get(UserChannel, channel_id)
     if channel is None:
         raise HTTPException(404, "Channel not found")
     if lock:
         # Credential rotation uses this same connection -> channel lock order.
         session.get(Connection, channel.connection_id, with_for_update=True)
-        channel = session.get(
-            EmployeeChannel, channel_id, with_for_update=True, populate_existing=True
-        )
+        channel = session.get(UserChannel, channel_id, with_for_update=True, populate_existing=True)
     return channel
 
 
-def validate_identity(channel: EmployeeChannel, scope: str, user_id: str | None):
+def validate_identity(channel: UserChannel, scope: str, user_id: str | None):
     if scope != channel.workspace_id:
         raise HTTPException(422, "Identity must belong to the channel workspace")
     if user_id is not None:
@@ -114,18 +112,18 @@ def validate_identity(channel: EmployeeChannel, scope: str, user_id: str | None)
             raise HTTPException(422, "Use the stable platform user ID, not a name or email")
 
 
-def assigned_agent(session: Session, employee_id: UUID, agent_id: UUID) -> Agent:
+def assigned_agent(session: Session, user_id: UUID, agent_id: UUID) -> Agent:
     agent = session.get(Agent, agent_id, with_for_update=True, populate_existing=True)
     if (
         agent is None
         or agent.observed_state == "deleted"
         or agent.desired_state == "deleted"
         or agent.runtime_mode != "native"
-        or agent.employee_id != employee_id
+        or agent.user_id != user_id
     ):
-        raise HTTPException(409, "Choose a native agent assigned to this employee")
-    if session.get(Employee, employee_id) is None:
-        raise HTTPException(404, "Employee not found")
+        raise HTTPException(409, "Choose a native agent assigned to this user")
+    if session.get(User, user_id) is None:
+        raise HTTPException(404, "User not found")
     return agent
 
 
@@ -134,14 +132,14 @@ def commit(session: Session):
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise HTTPException(409, "Channel or employee identity already exists") from None
+        raise HTTPException(409, "Channel or user identity already exists") from None
 
 
 @router.get("/channels")
 def list_channels(session: Database):
     return [
         channel_response(session, channel)
-        for channel in session.scalars(select(EmployeeChannel).order_by(EmployeeChannel.provider))
+        for channel in session.scalars(select(UserChannel).order_by(UserChannel.provider))
     ]
 
 
@@ -150,13 +148,13 @@ def create_channel(body: ChannelInput, session: Database):
     connection_id = uuid4()
     connection = Connection(
         id=connection_id,
-        name=f"Employee channel {body.provider} {connection_id.hex[:8]}",
+        name=f"User channel {body.provider} {connection_id.hex[:8]}",
         purpose="channel",
         fields=CREDENTIAL_FIELDS[body.provider],
     )
     session.add(connection)
     session.flush()
-    channel = EmployeeChannel(**body.model_dump(), connection_id=connection.id)
+    channel = UserChannel(**body.model_dump(), connection_id=connection.id)
     session.add(channel)
     commit(session)
     return channel_response(session, channel)
@@ -176,9 +174,9 @@ def change_channel(channel_id: UUID, body: ChannelChange, session: Database):
         channel.revision += 1
         # Workspace-local identities and outstanding invitations need fresh approval.
         session.execute(
-            update(EmployeeAccess)
-            .where(EmployeeAccess.channel_id == channel.id)
-            .values(state="pending", revision=EmployeeAccess.revision + 1)
+            update(UserAccess)
+            .where(UserAccess.channel_id == channel.id)
+            .values(state="pending", revision=UserAccess.revision + 1)
         )
         channel.enabled = False
     elif channel.enabled != body.enabled:
@@ -196,38 +194,38 @@ def channel_credentials(channel_id: UUID, body: CredentialsInput, session: Datab
     return channel_response(session, channel)
 
 
-@router.get("/employee-accesses")
+@router.get("/user-accesses")
 def list_accesses(session: Database, agent_id: UUID | None = None):
-    query = select(EmployeeAccess).order_by(EmployeeAccess.created_at, EmployeeAccess.id)
+    query = select(UserAccess).order_by(UserAccess.created_at, UserAccess.id)
     if agent_id is not None:
-        query = query.where(EmployeeAccess.agent_id == agent_id)
+        query = query.where(UserAccess.agent_id == agent_id)
     return [access_response(access) for access in session.scalars(query)]
 
 
-@router.post("/employee-accesses", status_code=201)
+@router.post("/user-accesses", status_code=201)
 def create_access(body: AccessInput, session: Database):
-    assigned_agent(session, body.employee_id, body.agent_id)
+    assigned_agent(session, body.user_id, body.agent_id)
     channel = channel_row(session, body.channel_id)
     validate_identity(channel, body.external_scope, body.external_user_id)
-    access = EmployeeAccess(**body.model_dump())
+    access = UserAccess(**body.model_dump())
     session.add(access)
     commit(session)
     return access_response(access)
 
 
-def access_row(session: Session, access_id: UUID, *, lock=True) -> EmployeeAccess:
-    access = session.get(EmployeeAccess, access_id, with_for_update=lock, populate_existing=True)
+def access_row(session: Session, access_id: UUID, *, lock=True) -> UserAccess:
+    access = session.get(UserAccess, access_id, with_for_update=lock, populate_existing=True)
     if access is None:
-        raise HTTPException(404, "Employee access not found")
+        raise HTTPException(404, "User access not found")
     return access
 
 
-@router.put("/employee-accesses/{access_id}")
+@router.put("/user-accesses/{access_id}")
 def change_access(access_id: UUID, body: AccessInput, session: Database):
-    assigned_agent(session, body.employee_id, body.agent_id)
+    assigned_agent(session, body.user_id, body.agent_id)
     access = access_row(session, access_id)
-    if access.channel_id != body.channel_id or access.employee_id != body.employee_id:
-        raise HTTPException(409, "Create a separate access for another channel or employee")
+    if access.channel_id != body.channel_id or access.user_id != body.user_id:
+        raise HTTPException(409, "Create a separate access for another channel or user")
     channel = channel_row(session, body.channel_id)
     validate_identity(channel, body.external_scope, body.external_user_id)
     for key, value in body.model_dump().items():
@@ -238,18 +236,18 @@ def change_access(access_id: UUID, body: AccessInput, session: Database):
     return access_response(access)
 
 
-@router.post("/employee-accesses/{access_id}/approve")
+@router.post("/user-accesses/{access_id}/approve")
 def approve_access(access_id: UUID, session: Database):
     existing = access_row(session, access_id, lock=False)
-    target = (existing.employee_id, existing.agent_id)
+    target = (existing.user_id, existing.agent_id)
     assigned_agent(session, *target)
     access = access_row(session, access_id)
-    if target != (access.employee_id, access.agent_id):
-        raise HTTPException(409, "Access changed; review the employee and agent again")
+    if target != (access.user_id, access.agent_id):
+        raise HTTPException(409, "Access changed; review the user and agent again")
     channel = channel_row(session, access.channel_id)
     validate_identity(channel, access.external_scope, access.external_user_id)
     if access.external_user_id is None:
-        raise HTTPException(409, "Wait for the employee identity before approval")
+        raise HTTPException(409, "Wait for the user identity before approval")
     if access.state != "active":
         access.state = "active"
         access.revision += 1
@@ -257,7 +255,7 @@ def approve_access(access_id: UUID, session: Database):
     return access_response(access)
 
 
-@router.post("/employee-accesses/{access_id}/disable")
+@router.post("/user-accesses/{access_id}/disable")
 def disable_access(access_id: UUID, session: Database):
     access = access_row(session, access_id)
     if access.state != "disabled":
@@ -267,7 +265,7 @@ def disable_access(access_id: UUID, session: Database):
     return access_response(access)
 
 
-@router.post("/employee-accesses/{access_id}/invitation", status_code=201)
+@router.post("/user-accesses/{access_id}/invitation", status_code=201)
 def invite(access_id: UUID, session: Database, response: Response):
     access = access_row(session, access_id)
     if access.state == "active":
@@ -301,7 +299,7 @@ def claim_invitation(
     scope: str,
     *,
     now: datetime | None = None,
-) -> EmployeeAccess:
+) -> UserAccess:
     """Called only by the trusted connector; claiming never grants conversational access."""
     now = now or datetime.now(UTC)
     identifier = session.scalar(
@@ -347,7 +345,7 @@ def claim_invitation(
 
 def authorized_access(
     session: Session,
-    access: EmployeeAccess | None,
+    access: UserAccess | None,
     agent: Agent,
     *,
     access_revision: int | None = None,
@@ -359,13 +357,13 @@ def authorized_access(
         or access.state != "active"
         or access.external_user_id is None
         or access.agent_id != agent.id
-        or access.employee_id != agent.employee_id
+        or access.user_id != agent.user_id
         or agent.runtime_mode != "native"
         or agent.desired_state == "deleted"
         or (access_revision is not None and access_revision != access.revision)
     ):
         return False
-    channel = session.get(EmployeeChannel, access.channel_id, populate_existing=True)
+    channel = session.get(UserChannel, access.channel_id, populate_existing=True)
     connection = session.get(Connection, channel.connection_id, populate_existing=True)
     return bool(
         channel.enabled

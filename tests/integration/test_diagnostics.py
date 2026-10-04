@@ -75,7 +75,7 @@ def agent_id(sessions):
     with sessions.begin() as session:
         agent = Agent(
             display_name="Diagnostic",
-            employee_label="Tester",
+            user_label="Tester",
             desired_state="running",
             observed_state="ready",
         )
@@ -559,7 +559,7 @@ def test_agent_overrides_inherit_reset_and_snapshot_independently(
     with sessions.begin() as session:
         agent = session.get(Agent, agent_id)
         session.get(WorkloadIncarnation, agent.current_incarnation_id).model_route = "default"
-        other = Agent(display_name="Another agent", employee_label="Test")
+        other = Agent(display_name="Another agent", user_label="Test")
         session.add(other)
         session.flush()
         other_id = other.id
@@ -691,25 +691,25 @@ def ledger_identity(sessions, agent_id, monkeypatch):
     import hashlib
     from datetime import UTC, datetime, timedelta
 
-    from backend.app.models import Employee, Role
+    from backend.app.models import AgentProfile, User
 
     monkeypatch.setattr("gateway.identity.session_factory", lambda: sessions)
     token = "ledger-test-token-at-least-twenty-chars"
     with sessions.begin() as session:
-        role = Role(name=f"role-{uuid4()}")
-        session.add(role)
+        profile = AgentProfile(name=f"profile-{uuid4()}")
+        session.add(profile)
         session.flush()
-        employee = Employee(name="Ledger owner", role_id=role.id)
-        session.add(employee)
+        user = User(name="Ledger owner", profile_id=profile.id)
+        session.add(user)
         session.flush()
         agent = session.get(Agent, agent_id)
-        agent.employee_id = employee.id
+        agent.user_id = user.id
         agent.runtime_mode = "native"
         agent.inference_override = {"model_id": "test/model"}
         incarnation = session.get(WorkloadIncarnation, agent.current_incarnation_id)
         incarnation.gateway_token_hash = hashlib.sha256(token.encode()).hexdigest()
         incarnation.expires_at = datetime.now(UTC) + timedelta(days=1)
-        return token, employee.id
+        return token, user.id
 
 
 def test_ledger_durable_idempotent_and_assignment_snapshot(sessions, agent_id, monkeypatch):
@@ -717,7 +717,7 @@ def test_ledger_durable_idempotent_and_assignment_snapshot(sessions, agent_id, m
 
     from sqlalchemy.exc import IntegrityError
 
-    from backend.app.models import Employee, InferenceCall
+    from backend.app.models import InferenceCall, User
     from gateway.identity import admit_inference, record_inference
 
     token, owner = ledger_identity(sessions, agent_id, monkeypatch)
@@ -728,18 +728,18 @@ def test_ledger_durable_idempotent_and_assignment_snapshot(sessions, agent_id, m
     record_inference(first, {"cost": 99, "outcome": "completed"})
     record_inference(second, {"outcome": "failed"})
     with sessions.begin() as session:
-        session.get(Agent, agent_id).employee_id = None
+        session.get(Agent, agent_id).user_id = None
         session.get(Agent, agent_id).observed_state = "deleted"
     with sessions() as session:
         rows = {c.id: c for c in session.scalars(select(InferenceCall))}
         assert len(rows) == 3
-        assert rows[first].employee_id == owner
+        assert rows[first].user_id == owner
         assert rows[first].cost_usd == Decimal("0.100000000001")
         assert rows[first].outcome == "cancelled"
         assert rows[second].cost_usd is None and rows[second].completed_at is not None
         assert rows[unresolved].cost_usd is None and rows[unresolved].completed_at is None
     with pytest.raises(IntegrityError), sessions.begin() as session:
-        session.delete(session.get(Employee, owner))
+        session.delete(session.get(User, owner))
 
 
 def test_ledger_managed_calls_project_alongside_legacy(client, sessions, agent_id, monkeypatch):
@@ -794,7 +794,7 @@ def test_native_gateway_accounts_without_chat_run(sessions, agent_id, monkeypatc
     assert response.status_code == 200
     with sessions() as session:
         call = session.scalar(select(InferenceCall))
-        assert call.run_id is None and call.employee_id == owner
+        assert call.run_id is None and call.user_id == owner
         assert float(call.cost_usd) == 0.125 and call.outcome == "completed"
 
 
@@ -813,21 +813,20 @@ def test_usage_reporting_filters_history_and_pagination(client, sessions, agent_
     with sessions.begin() as session:
         for call in session.scalars(select(InferenceCall)):
             call.admitted_at = datetime(2026, 8, 31, 23, 59, tzinfo=UTC)
-        session.get(Agent, agent_id).employee_id = None
+        session.get(Agent, agent_id).user_id = None
         session.get(Agent, agent_id).observed_state = "deleted"
-    filters = f"month=2026-08&employee_id={owner}&agent_id={agent_id}"
+    filters = f"month=2026-08&user_id={owner}&agent_id={agent_id}"
     data = client.get(f"/api/v1/usage?{filters}").json()
     assert data["total"]["known_spend_usd"] == "0.300000000003"
     assert data["total"]["calls"] == 4 and data["total"]["reported_cost_calls"] == 2
     assert data["total"]["unresolved_calls"] == 1 and data["total"]["missing_cost_calls"] == 1
     assert data["total"]["input_tokens"] == 4 and data["total"]["output_tokens"] == 8
-    assert data["employees"][0]["id"] == str(owner)
+    assert data["users"][0]["id"] == str(owner)
     assert data["options"]["agents"][0]["deleted"]
     assert data["history_status"] == "before_tracking"
     assert client.get(f"/api/v1/usage?{filters}&month=2026-09").json()["total"]["calls"] == 0
     assert (
-        client.get(f"/api/v1/usage?month=2026-08&employee_id={uuid4()}").json()["total"]["calls"]
-        == 0
+        client.get(f"/api/v1/usage?month=2026-08&user_id={uuid4()}").json()["total"]["calls"] == 0
     )
     seen, cursor = [], ""
     for _ in range(4):

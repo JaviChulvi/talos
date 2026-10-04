@@ -24,7 +24,7 @@ pnpm --dir frontend test
 pnpm --dir frontend build
 ```
 
-The ordinary PR checks require no model credentials, employee accounts, or production
+The ordinary PR checks require no model credentials, user accounts, or production
 services. Docker/PostgreSQL integration and synthetic native-channel checks are
 separate; follow [Development and validation](docs/development.md) when changing
 runtime adapters, lifecycle, authorization, delivery, or recovery. Installation

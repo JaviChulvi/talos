@@ -1,4 +1,4 @@
-"""Immutable role/setup selections shared by previews and lifecycle admission."""
+"""Immutable profile/setup selections shared by previews and lifecycle admission."""
 
 import copy
 import hashlib
@@ -8,13 +8,21 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from backend.app.capabilities import compile_permissions
-from backend.app.models import Agent, Employee, Role, SetupRevision
+from backend.app.models import Agent, AgentProfile, SetupRevision, User
+
+
+def application_identity(application: dict | None) -> dict | None:
+    """Keep the receipt/hash wire format stable across the terminology migration."""
+    if application is None:
+        return None
+    names = {"profile": "role", "user_id": "employee_id"}
+    return {names.get(key, key): value for key, value in application.items()}
 
 
 def application_fingerprint(application: dict) -> str:
     payload = {
         k: v
-        for k, v in application.items()
+        for k, v in application_identity(application).items()
         if k not in {"fingerprint", "restart", "legacy_receipt"}
     }
     return hashlib.sha256(
@@ -25,30 +33,30 @@ def application_fingerprint(application: dict) -> str:
 def normalize_application(application: dict, runtime_kind: str) -> dict:
     result = copy.deepcopy(application)
     result.pop("restart", None)
-    result["role"].setdefault("setup_revision_id", None)
-    result["role"].setdefault("connector_grants", [])
+    result["profile"].setdefault("setup_revision_id", None)
+    result["profile"].setdefault("connector_grants", [])
     result.setdefault("setup", None)
     result.setdefault("connector_grants", [])
     result.setdefault("connections", {})
     result.setdefault(
-        "permissions", compile_permissions(result["role"]["capabilities"], runtime_kind)
+        "permissions", compile_permissions(result["profile"]["capabilities"], runtime_kind)
     )
     result["fingerprint"] = application_fingerprint(result)
     return result
 
 
 def desired_application(session: Session, agent: Agent, *, lock: bool = True) -> dict:
-    if agent.runtime_mode != "native" or agent.employee_id is None:
-        raise HTTPException(409, "Choose an employee for a native agent first")
-    employee = session.get(
-        Employee, agent.employee_id, with_for_update=lock, populate_existing=True
+    if agent.runtime_mode != "native" or agent.user_id is None:
+        raise HTTPException(409, "Choose a user for a native agent first")
+    user = session.get(User, agent.user_id, with_for_update=lock, populate_existing=True)
+    profile = session.get(
+        AgentProfile, user.profile_id, with_for_update=lock, populate_existing=True
     )
-    role = session.get(Role, employee.role_id, with_for_update=lock, populate_existing=True)
     setup = None
     connections = {}
-    grants = sorted(role.connector_grants or [])
-    if role.setup_revision_id:
-        revision = session.get(SetupRevision, role.setup_revision_id)
+    grants = sorted(profile.connector_grants or [])
+    if profile.setup_revision_id:
+        revision = session.get(SetupRevision, profile.setup_revision_id)
         if revision is None:
             raise HTTPException(409, "The selected setup revision is unavailable")
         manifest = revision.manifest
@@ -60,7 +68,7 @@ def desired_application(session: Session, agent: Agent, *, lock: bool = True) ->
             raise HTTPException(409, "This setup does not support the agent's runtime release")
         known = {c["id"] for c in manifest["connectors"]}
         if set(grants) - known:
-            raise HTTPException(409, "Role grants a connector outside its selected setup")
+            raise HTTPException(409, "Agent profile grants a connector outside its selected setup")
         setup = {
             "revision_id": str(revision.id),
             "version": revision.version,
@@ -85,7 +93,7 @@ def desired_application(session: Session, agent: Agent, *, lock: bool = True) ->
         }
         try:
             connections = resolve_bindings(
-                session, needed, role.connection_bindings, employee.connection_overrides, lock=lock
+                session, needed, profile.connection_bindings, user.connection_overrides, lock=lock
             )
         except ConnectionBindingError as error:
             raise HTTPException(409, str(error)) from None
@@ -93,21 +101,21 @@ def desired_application(session: Session, agent: Agent, *, lock: bool = True) ->
         raise HTTPException(409, "Choose a setup before granting its connectors")
     return normalize_application(
         {
-            "employee_id": str(employee.id),
-            "role": {
-                "id": str(role.id),
-                "name": role.name,
-                "revision": role.revision,
-                "capabilities": list(role.capabilities),
-                "setup_revision_id": str(role.setup_revision_id)
-                if role.setup_revision_id
+            "user_id": str(user.id),
+            "profile": {
+                "id": str(profile.id),
+                "name": profile.name,
+                "revision": profile.revision,
+                "capabilities": list(profile.capabilities),
+                "setup_revision_id": str(profile.setup_revision_id)
+                if profile.setup_revision_id
                 else None,
                 "connector_grants": grants,
             },
             "connections": connections,
             "setup": setup,
             "connector_grants": grants,
-            "permissions": compile_permissions(role.capabilities, agent.runtime_kind),
+            "permissions": compile_permissions(profile.capabilities, agent.runtime_kind),
         },
         agent.runtime_kind,
     )
@@ -121,13 +129,13 @@ def application_preview(session: Session, agent: Agent) -> dict:
     applied = agent.applied_application
     changes = []
     if not applied:
-        changes.append("Install this role configuration for the first time")
+        changes.append("Install this profile configuration for the first time")
     else:
         for key, message in (
-            ("role", "Role permissions or setup selection changed"),
+            ("profile", "Agent profile permissions or setup selection changed"),
             ("setup", "Setup version changed"),
             ("connections", "Account connections changed"),
-            ("employee_id", "Employee assignment changed"),
+            ("user_id", "Assigned user changed"),
         ):
             if application.get(key) != applied.get(key):
                 changes.append(message)
@@ -140,7 +148,7 @@ def annotate_agent(session: Session, agent: Agent) -> Agent:
     agent.setup_status = "not_configured"
     agent.setup_pending = False
     agent.setup_blockers = []
-    if agent.runtime_mode != "native" or agent.employee_id is None:
+    if agent.runtime_mode != "native" or agent.user_id is None:
         return agent
     preview = application_preview(session, agent)
     agent.setup_blockers = preview["blockers"]

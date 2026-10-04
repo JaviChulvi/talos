@@ -12,7 +12,7 @@ from backend.app.availability import heartbeat
 from backend.app.connections import Connection, ConnectionBindingError, load_bound_secrets
 from backend.app.db import get_engine, session_factory
 from backend.app.installation import writable
-from backend.app.models import ChannelCursor, ChannelProbe, EmployeeChannel
+from backend.app.models import ChannelCursor, ChannelProbe, UserChannel
 from connector.delivery import Delivery, TransportError
 from connector.slack import Slack
 from connector.telegram import Telegram
@@ -34,7 +34,7 @@ class Connector:
             return [
                 (channel, session.get(Connection, channel.connection_id))
                 for channel in session.scalars(
-                    select(EmployeeChannel).where(EmployeeChannel.enabled.is_(True))
+                    select(UserChannel).where(UserChannel.enabled.is_(True))
                 )
             ]
 
@@ -44,13 +44,13 @@ class Connector:
         with self.sessions.begin() as session:
             if not writable(session):
                 return False
-            channel = session.get(EmployeeChannel, channel_id)
+            channel = session.get(UserChannel, channel_id)
             # Same connection -> channel order as credential rotation.
             connection = session.get(
                 Connection, channel.connection_id, with_for_update=True, populate_existing=True
             )
             channel = session.get(
-                EmployeeChannel, channel_id, with_for_update=True, populate_existing=True
+                UserChannel, channel_id, with_for_update=True, populate_existing=True
             )
             if (
                 (not channel.enabled and not allow_disabled)
@@ -139,7 +139,7 @@ class Connector:
                                 if not writable(session):
                                     return
                                 current = session.get(
-                                    EmployeeChannel, channel.id, populate_existing=True
+                                    UserChannel, channel.id, populate_existing=True
                                 )
                                 if not current.enabled or current.revision != channel.revision:
                                     return
@@ -293,7 +293,7 @@ class Connector:
             )
             if probe is None:
                 return
-            channel = session.get(EmployeeChannel, probe.channel_id)
+            channel = session.get(UserChannel, probe.channel_id)
             probe.status = "running"
         # A single owner replaces its existing consumer while checking a channel.
         self.checking.add(channel.id)

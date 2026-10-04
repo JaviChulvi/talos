@@ -57,7 +57,7 @@ def installation(monkeypatch, tmp_path):
     with sqlite3.connect(memory) as connection:
         connection.executescript(
             "PRAGMA user_version=1; CREATE TABLE memories(value TEXT); "
-            "INSERT INTO memories VALUES('employee-private-memory');"
+            "INSERT INTO memories VALUES('user-private-memory');"
         )
     put_file(client, image.id, state, STATE_PATH, "memory/proof.sqlite", memory.read_bytes(), 1000)
     put_file(

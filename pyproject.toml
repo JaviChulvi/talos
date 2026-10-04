@@ -1,7 +1,7 @@
 [project]
 name = "talos"
 version = "0.1.0"
-description = "Self-hosted employee agent control plane"
+description = "Self-hosted platform for managing AI agents, their tools, access, and usage"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
 authors = [{name = "Javier Chulvi Bernad"}]

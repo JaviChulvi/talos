@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select, tuple_
 
 from backend.app.agents import Database
-from backend.app.models import Agent, Employee, InferenceCall, InferenceConfig
+from backend.app.models import Agent, InferenceCall, InferenceConfig, User
 
 router = APIRouter(prefix="/api/v1/usage")
 Month = Annotated[str | None, Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
@@ -37,11 +37,11 @@ def month_bounds(month: str | None = None) -> tuple[datetime, datetime]:
         raise HTTPException(422, "Invalid UTC calendar month") from None
 
 
-def call_filters(start, end, employee_id, agent_id):
+def call_filters(start, end, user_id, agent_id):
     return [
         InferenceCall.admitted_at >= start,
         InferenceCall.admitted_at < end,
-        *([InferenceCall.employee_id == employee_id] if employee_id else []),
+        *([InferenceCall.user_id == user_id] if user_id else []),
         *([InferenceCall.agent_id == agent_id] if agent_id else []),
     ]
 
@@ -72,16 +72,16 @@ def totals(row):
 def usage(
     session: Database,
     month: Month = None,
-    employee_id: UUID | None = None,
+    user_id: UUID | None = None,
     agent_id: UUID | None = None,
 ):
     start, end = month_bounds(month)
-    filters = call_filters(start, end, employee_id, agent_id)
+    filters = call_filters(start, end, user_id, agent_id)
     columns = aggregate_columns()
     total = totals(session.execute(select(*columns).where(*filters)).mappings().one())
     groups = {}
     for name, column in (
-        ("employees", InferenceCall.employee_id),
+        ("users", InferenceCall.user_id),
         ("agents", InferenceCall.agent_id),
     ):
         rows = session.execute(
@@ -101,25 +101,25 @@ def usage(
         "coverage": COVERAGE,
         "total": total,
         "budgets": [
-            employee_budget(session, employee)
-            for employee in session.scalars(
-                select(Employee)
+            user_budget(session, user)
+            for user in session.scalars(
+                select(User)
                 .where(
-                    Employee.id == employee_id if employee_id else True,
-                    Employee.id.in_(select(Agent.employee_id).where(Agent.id == agent_id))
-                    if agent_id and not employee_id
+                    User.id == user_id if user_id else True,
+                    User.id.in_(select(Agent.user_id).where(Agent.id == agent_id))
+                    if agent_id and not user_id
                     else True,
                 )
-                .order_by(Employee.name, Employee.id)
+                .order_by(User.name, User.id)
             )
         ]
         if start == month_bounds()[0]
         else [],
         **groups,
         "options": {
-            "employees": [
+            "users": [
                 {"id": e.id, "name": e.name}
-                for e in session.scalars(select(Employee).order_by(Employee.name, Employee.id))
+                for e in session.scalars(select(User).order_by(User.name, User.id))
             ],
             "agents": [
                 {
@@ -140,13 +140,13 @@ def usage(
 def calls(
     session: Database,
     month: Month = None,
-    employee_id: UUID | None = None,
+    user_id: UUID | None = None,
     agent_id: UUID | None = None,
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
     start, end = month_bounds(month)
-    query = select(InferenceCall).where(*call_filters(start, end, employee_id, agent_id))
+    query = select(InferenceCall).where(*call_filters(start, end, user_id, agent_id))
     if cursor:
         try:
             if len(cursor) > 512:
@@ -184,7 +184,7 @@ def calls(
     fields = (
         "id",
         "agent_id",
-        "employee_id",
+        "user_id",
         "run_id",
         "model",
         "generation_id",
@@ -211,30 +211,30 @@ def calls(
     }
 
 
-def employee_budget(session, employee: Employee, now: datetime | None = None) -> dict:
+def user_budget(session, user: User, now: datetime | None = None) -> dict:
     start, end = month_bounds((now or datetime.now(UTC)).strftime("%Y-%m"))
     total = totals(
         session.execute(
-            select(*aggregate_columns()).where(*call_filters(start, end, employee.id, None))
+            select(*aggregate_columns()).where(*call_filters(start, end, user.id, None))
         )
         .mappings()
         .one()
     )
-    allowance = employee.monthly_allowance_usd
+    limit = user.monthly_budget_usd
     spend = Decimal(total["known_spend_usd"])
     status = (
         "unlimited"
-        if allowance is None
+        if limit is None
         else "exhausted"
-        if spend >= allowance
+        if spend >= limit
         else "warning"
-        if spend >= allowance * Decimal("0.8")
+        if spend >= limit * Decimal("0.8")
         else "available"
     )
     return {
-        "employee_id": employee.id,
-        "employee_name": employee.name,
-        "monthly_allowance_usd": str(allowance) if allowance is not None else None,
+        "user_id": user.id,
+        "user_name": user.name,
+        "monthly_budget_usd": str(limit) if limit is not None else None,
         "period": {"start": start, "end": end, "timezone": "UTC"},
         "status": status,
         **total,

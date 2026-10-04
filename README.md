@@ -1,18 +1,18 @@
 # Talos
 
-**Employee AI agents, managed on your infrastructure.**
+**AI agents, managed on your infrastructure.**
 
-Talos is a self-hosted platform for managing employee agents powered by
-[OpenClaw](https://github.com/openclaw/openclaw) and
-[Hermes](https://github.com/NousResearch/hermes-agent). Administrators configure
-agents, roles, integrations, and Talos-routed model spending from one dashboard.
-Employees work with their assigned agents through approved Telegram or Slack accounts.
+Talos is a self-hosted platform for managing AI agents, their tools, access, and usage.
+Run agents powered by [OpenClaw](https://github.com/openclaw/openclaw) and
+[Hermes](https://github.com/NousResearch/hermes-agent). Configure agent profiles,
+connections, and Talos-routed model spending from one dashboard. Users work with
+their assigned agents through approved Telegram or Slack accounts.
 
-[Get started](#get-started) · [First employee](#your-first-employee-agent) ·
+[Get started](#get-started) · [First agent](#your-first-agent) ·
 [Documentation](#documentation) · [Development](#development) ·
 [Status and limits](#status-and-limits)
 
-![Talos administrator dashboard showing model spending by employee and agent](docs/assets/dashboard.png)
+![Talos administrator dashboard showing model spending by user and agent](docs/assets/dashboard.jpg)
 
 *The Talos Usage screen with synthetic demonstration data. Amounts shown are illustrative.*
 
@@ -21,10 +21,10 @@ Employees work with their assigned agents through approved Telegram or Slack acc
 | Capability | How it helps |
 | --- | --- |
 | **Run OpenClaw or Hermes** | Choose an approved runtime version. Each agent has its own container and persistent workspace. |
-| **Assign employees and roles** | Select native tools and apply permission changes explicitly to the employee's agent. |
-| **Connect Telegram and Slack** | Invite and approve employee identities, revoke access, and verify conversation delivery. |
-| **Reuse agent setups** | Publish versioned instructions, skills, and MCP connectors, then apply them through roles. |
-| **Manage models and spending** | Share an OpenRouter key without copying it into agents; report Talos-routed usage and set employee monthly allowances. |
+| **Manage users and agent profiles** | Select native tools and apply permission changes explicitly to the user's agent. |
+| **Connect Telegram and Slack** | Invite and approve user identities, revoke access, and verify conversation delivery. |
+| **Reuse agent setups** | Publish versioned instructions, skills, and MCP connectors, then apply them through profiles. |
+| **Manage models and spending** | Share an OpenRouter key without copying it into agents; report Talos-routed usage and set user monthly budgets. |
 | **Inspect availability and recovery** | Track asynchronous operations, expiring health evidence, and uncertain deliveries that require review. |
 
 ## How it works
@@ -32,7 +32,7 @@ Employees work with their assigned agents through approved Telegram or Slack acc
 ```mermaid
 flowchart LR
     Admin[Administrator] --> Talos[Talos dashboard and services]
-    Employee[Employee] <-->|Private messages| Channels[Telegram or Slack]
+    User[User] <-->|Private messages| Channels[Telegram or Slack]
     Channels <-->|Approved access| Talos
     Talos <--> Agent[OpenClaw or Hermes]
     Agent --- State[Private persistent workspace]
@@ -41,9 +41,9 @@ flowchart LR
 
 Talos manages assignment, configuration, access, and lifecycle. OpenClaw and Hermes
 run the conversations and tools. The dashboard and native interfaces serve
-administration and testing; employees use their approved messaging channel.
+administration and testing; users chat through their approved messaging channel.
 Only inference routed through the Talos gateway contributes to its spending ledger
-and allowance checks.
+and budget checks.
 
 ## Get started
 
@@ -96,41 +96,41 @@ follow [Installation and recovery](docs/installation.md). That guide covers
 prebuilt installation, HTTPS, encrypted backups, restore, and platform updates.
 Publication requires successful native-host acceptance for the exact release bundle.
 
-## Your first employee agent
+## Your first agent
 
-Open **Employee setup** in the dashboard to follow saved progress through these steps:
+Open **Access setup** in the dashboard to follow saved progress through these steps:
 
 1. **Connect a model.** Save and verify an OpenRouter key, then choose OpenRouter
    and a model for the agent. Alternatively, configure a provider in its native interface.
-2. **Create a role and employee.** Select the tools the role needs, create the
-   employee, and assign that role. Optionally set a monthly allowance for Talos-routed usage.
-3. **Create and start the agent.** Choose the employee, OpenClaw or Hermes, and an
+2. **Create an agent profile and user.** Select the tools the profile needs, create the
+   user, and assign that profile. Optionally set a monthly budget for Talos-routed usage.
+3. **Create and start the agent.** Choose the user, OpenClaw or Hermes, and an
    approved version. Wait for creation to finish, then start it. First start applies
-   the role; later role edits require **Apply saved role**.
+   the profile; later profile edits require **Apply saved profile**.
 4. **Approve channel access.** In **Access & availability**, configure Telegram or
-   Slack, check and enable the channel, then invite and approve the employee's identity.
-5. **Verify a conversation.** Use **Verify delivery**, have the employee send the
+   Slack, check and enable the channel, then invite and approve the user's identity.
+5. **Verify a conversation.** Use **Verify delivery**, have the user send the
    verification message and then a normal message, and confirm the full reply was
    accepted by the channel provider.
 
-A ready container alone does not confirm a working employee conversation.
-[Employee access](docs/administration.md#employee-and-role-administration) explains
+A ready container alone does not confirm a working user conversation.
+[User access](docs/administration.md#user-and-profile-administration) explains
 channel credentials, invitations, revocation, and delivery evidence.
 
 ## Status and limits
 
-Talos currently serves one organization with a single built-in administrator and
+Talos currently uses a single shared workspace with a single built-in administrator and
 trusted host operators. The bundled runtime catalog contains OpenClaw **2026.9.6**
 and Hermes **0.21.5**; it does not automatically follow upstream releases.
 
 - **Isolation:** agents have separate containers, internal networks, and state
   volumes, but share the host kernel. This is not hostile-tenant isolation. Native
   terminal tools can access files and networks beyond dedicated tool permissions.
-- **Access:** employee access is through approved private Telegram/Slack identities.
-  Employee website access and an approval broker for sensitive tool actions remain
+- **Access:** user access is through approved private Telegram/Slack identities.
+  User website access and an approval broker for sensitive tool actions remain
   outside the current implementation.
 - **Spending:** direct-provider traffic, external tools, and infrastructure costs
-  are excluded. Concurrent calls and unknown costs mean allowances are not a
+  are excluded. Concurrent calls and unknown costs mean budgets are not a
   guaranteed maximum provider bill.
 - **Recovery:** uncertain work and delivery require reconciliation; Talos does not
   blindly resend them. Stopping or cancelling cannot undo completed external actions.
@@ -149,8 +149,8 @@ and [reliability evidence and remaining work](docs/development.md#repeatable-nat
 | Install, back up, restore, or update a release | [Installation and recovery](docs/installation.md) |
 | Build from source or run checks | [Development and validation](docs/development.md) |
 | Choose runtime versions and understand connectivity | [Runtimes and native tools](docs/runtimes.md) |
-| Manage administrator login, roles, and employee channels | [Administration and employee access](docs/administration.md) |
-| Configure providers, inspect usage, and set allowances | [Models and spending](docs/models-and-spending.md) |
+| Manage administrator login, profiles, and user channels | [Administration and user access](docs/administration.md) |
+| Configure providers, inspect usage, and set budgets | [Models and spending](docs/models-and-spending.md) |
 | Capture and publish reusable skills and connectors | [Agent setups](docs/setups.md) |
 | Inspect API operations or troubleshoot failures | [Operations and troubleshooting](docs/operations.md) |
 

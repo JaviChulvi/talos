@@ -2,7 +2,7 @@
 
 [← Talos](../README.md) · [Documentation index](../README.md#documentation)
 
-Talos runs pinned OpenClaw and Hermes wrappers with persistent private state. See [source setup](development.md#run-locally) for native UI access and [role permissions](administration.md#applying-role-permissions) for tool configuration.
+Talos runs pinned OpenClaw and Hermes wrappers with persistent private state. See [source setup](development.md#run-locally) for native UI access and [profile permissions](administration.md#applying-profile-permissions) for tool configuration.
 
 ## Runtime version selection
 
@@ -52,7 +52,7 @@ The OpenClaw native image extends the pinned upstream image with `@openclaw/para
 
 Hermes extends the pinned official image with browser dependencies, with its bundled Parallel key-free search selected at first boot. Search still depends on the external service's availability and limits. Native shell and file tools run as UID 10000 in `/opt/data/workspace`; `/opt/data` persists across starts. No OpenRouter account is required to provision either runtime.
 
-For employee Telegram and Slack access managed by Talos, use the [channel setup guide](administration.md#employee-and-role-administration). Additional integrations configured directly inside a runtime use its own plugins and account setup; they are not preconnected and do not inherit Talos employee-access checks. Install/configure the required native plugin and supply your own account credentials. HTTP(S) clients must honor the supplied proxy variables or their integration's explicit proxy setting; raw TCP/UDP, inbound webhooks, LAN services, and tools requiring host privileges are not enabled by this setup. Telegram polling and Slack Socket Mode avoid public inbound ports, but channel-specific proxy support and credentials must be checked during setup. No external messages are sent by Talos provisioning.
+For user Telegram and Slack access managed by Talos, use the [channel setup guide](administration.md#user-and-profile-administration). Additional integrations configured directly inside a runtime use its own plugins and account setup; they are not preconnected and do not inherit Talos user-access checks. Install/configure the required native plugin and supply your own account credentials. HTTP(S) clients must honor the supplied proxy variables or their integration's explicit proxy setting; raw TCP/UDP, inbound webhooks, LAN services, and tools requiring host privileges are not enabled by this setup. Telegram polling and Slack Socket Mode avoid public inbound ports, but channel-specific proxy support and credentials must be checked during setup. No external messages are sent by Talos provisioning.
 
 Both native images include Chromium. Hermes also bundles pinned `agent-browser`
 and `browser-use` CLIs so the first browser call does not install dependencies.
@@ -73,4 +73,4 @@ configurations are user-owned and are not overwritten: copy the `browser` block
 from `worker/runtime.py:native_config` into their native settings when opting in.
 Host package installation and Docker-backed nested sandboxes remain unavailable.
 
-Native instances keep internal Docker bridges. A shared Squid proxy allows public HTTP on port 80 and HTTPS CONNECT on port 443, denying private, loopback, link-local, and reserved destinations after DNS resolution. A separate small TCP relay per instance forwards only to that instance's UI and publishes only on `127.0.0.1`. Neither the relay nor the proxy mounts agent state or credentials. These are container/network boundaries for a trusted local administrator, not enterprise tenant isolation or protection against all prompt injection. External content can influence an agent with full native tools and its configured credentials.
+Native instances keep internal Docker bridges. A shared Squid proxy allows public HTTP on port 80 and HTTPS CONNECT on port 443, denying private, loopback, link-local, and reserved destinations after DNS resolution. A separate small TCP relay per instance forwards only to that instance's UI and publishes only on `127.0.0.1`. Neither the relay nor the proxy mounts agent state or credentials. These are container/network boundaries for a trusted local administrator, not isolation between untrusted tenants or protection against all prompt injection. External content can influence an agent with full native tools and its configured credentials.

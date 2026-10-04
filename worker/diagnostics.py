@@ -117,7 +117,7 @@ class DiagnosticManager:
                 return None
             if not authorized_run(session, run, agent):
                 run.status = "interrupted"
-                run.error = "Employee access changed before dispatch"
+                run.error = "User access changed before dispatch"
                 append_event(session, run, "interrupted", {"reason": "access_changed"})
                 return None
             run.status = "dispatching"
@@ -145,7 +145,7 @@ class DiagnosticManager:
                 return False
             if not authorized_run(session, run, agent):
                 run.status = "interrupted"
-                run.error = "Employee access changed before dispatch"
+                run.error = "User access changed before dispatch"
                 append_event(session, run, "interrupted", {"reason": "access_changed"})
                 return False
             return True

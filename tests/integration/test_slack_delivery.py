@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import select
 
-from backend.app.models import ChannelCursor, ChannelInbox, ChannelOutbox, EmployeeChannel, Run
+from backend.app.models import ChannelCursor, ChannelInbox, ChannelOutbox, Run, UserChannel
 from connector.delivery import Delivery
 from connector.slack import Slack
 
@@ -17,8 +17,8 @@ from tests.integration.test_channel_runs import (
     client,
     database_engine,
     lifecycle_sessions,
+    profile_agent,
     ready_accesses,
-    role_agent,
     session_maker,
     worker,
 )
@@ -53,7 +53,7 @@ def receive(sessions, pair, data=None):
     with sessions.begin() as session:
         return transport.receive(
             session,
-            session.get(EmployeeChannel, UUID(channel["id"])),
+            session.get(UserChannel, UUID(channel["id"])),
             channel["revision"],
             data or payload(),
         )
@@ -105,7 +105,7 @@ def test_registration_is_private_text_and_never_an_agent_turn(
 ):
     _, pairs = ready_accesses
     access, _ = pairs[1]
-    path = f"/api/v1/employee-accesses/{access['id']}"
+    path = f"/api/v1/user-accesses/{access['id']}"
     client.post(path + "/disable")
     token = client.post(path + "/invitation").json()["token"]
     inbox = receive(session_maker, pairs[1], payload(text=f"register {token}"))
@@ -115,13 +115,13 @@ def test_registration_is_private_text_and_never_an_agent_turn(
         outbox = session.scalar(select(ChannelOutbox))
         assert token not in str(outbox.parts)
     current = next(
-        row for row in client.get("/api/v1/employee-accesses").json() if row["id"] == access["id"]
+        row for row in client.get("/api/v1/user-accesses").json() if row["id"] == access["id"]
     )
     assert current["state"] == "pending" and current["external_user_id"] == "U12345"
 
 
 @pytest.mark.parametrize("text", ["agent help", "agent status"])
-def test_slack_employee_commands_do_not_dispatch(session_maker, ready_accesses, text):
+def test_slack_user_commands_do_not_dispatch(session_maker, ready_accesses, text):
     _, pairs = ready_accesses
     inbox = receive(session_maker, pairs[1], payload(text=text))
     assert inbox.code == "command" and inbox.run_id is None
@@ -163,7 +163,7 @@ def test_envelope_ack_happens_after_commit_and_not_on_storage_failure(
 ):
     _, pairs = ready_accesses
     with session_maker() as session:
-        channel = session.get(EmployeeChannel, UUID(pairs[1][1]["id"]))
+        channel = session.get(UserChannel, UUID(pairs[1][1]["id"]))
 
     class Socket:
         def __init__(self, **kwargs):

@@ -43,9 +43,9 @@ The default data directory is `~/.talos`. Use `--directory /absolute/path` to ch
 it. The installer checks Docker and available resources, pulls exact images, creates
 private secrets, runs database migrations, starts services, and prompts for the
 administrator password in a terminal. Follow the displayed URL and setup checklist
-to connect OpenRouter, assign a role and employee, choose a supported runtime, and
-verify the employee's Telegram or Slack conversation. Administrator testing views
-are separate from the employee's channel.
+to connect OpenRouter, assign a profile and user, choose a supported runtime, and
+verify the user's Telegram or Slack conversation. Administrator testing views
+are separate from the user's channel.
 
 Rerun the same command after an interrupted download or installation. Retain the
 installation directory: it holds the identity, secrets, selected release, and
@@ -74,7 +74,7 @@ ACME overrides are not a production fallback.
 Linux services recover after the Docker daemon starts on reboot. On macOS, recovery
 starts after Docker Desktop starts following sign-in. This is not an unattended
 pre-login Mac service. Workers recheck durable intent, runtime ownership, permissions,
-credentials, and pinned images. Intentionally stopped employees stay stopped;
+credentials, and pinned images. Intentionally stopped users stay stopped;
 unresolved work remains fenced for explicit reconciliation.
 
 ## Status and manual maintenance
@@ -87,13 +87,13 @@ bash talos-release/talos doctor
 bash talos-release/talos backup --archive /absolute/backups/talos.tar --identity /absolute/recovery/talos.age
 ```
 
-Stop every employee agent first and resolve uncertain operations. Backup and update
+Stop every user agent first and resolve uncertain operations. Backup and update
 will refuse a running native runtime; conversation counters alone do not demonstrate
-that an employee's tools are idle. Maintenance fences new work and pauses remaining
+that a user's tools are idle. Maintenance fences new work and pauses remaining
 writers before capturing state. There are no scheduled backups or unattended updates.
 
 If a gateway or connector crash left unfinished inference or uncertain delivery,
-inspect the provider's outcome and stop every employee before explicitly acknowledging
+inspect the provider's outcome and stop every user before explicitly acknowledging
 that uncertainty:
 
 ```sh
@@ -129,7 +129,7 @@ bash talos-release/talos restore --directory /absolute/new-talos --bundle "$PWD/
 installation identity. Restore does not overwrite another installation. The restored
 installation invalidates runtime identities and administrator sessions, leaves agents
 stopped and channels disabled, and quarantines pending/uncertain deliveries. Reconnect
-channels explicitly with a fresh ingress boundary before resuming employee work.
+channels explicitly with a fresh ingress boundary before resuming user work.
 
 An interrupted restore can be retried with the identical snapshot and destination
 host options. Its journal authorizes replacing only the partial restore's owned
@@ -148,7 +148,7 @@ The target must declare compatibility with the installed release and database re
 Talos validates/pulls the candidate before maintenance, creates a verified backup,
 applies migrations, and verifies readiness. Failure before traffic resumes restores
 the prior database, volumes, configuration, and release. It never automatically rolls
-back after reopening traffic. Existing employee runtime versions remain pinned;
+back after reopening traffic. Existing user runtime versions remain pinned;
 platform updates do not migrate OpenClaw/Hermes memory or select newer agent versions.
 
 An interrupted maintenance operation remains visible through `status`. Resume that
@@ -187,13 +187,13 @@ Provision two dedicated disposable SSH hosts for each protected GitHub environme
 
 The controller checks host sentinels before writes, executes the real launcher,
 interrupts its management container, reboots the first host, and restores an encrypted
-disk-backed backup on the second. It starts actual OpenClaw and Hermes employees in
+disk-backed backup on the second. It starts actual OpenClaw and Hermes users in
 running, stopped, and uncertain-work states; verifies recovery preserves identities,
 does not replay uncertain work, and preserves native volume bytes/Unix permissions;
 then stops agents explicitly before backup. A synthetic local candidate crashes its
 API to exercise pre-admission update rollback. The prebuilt reliability image runs
 the existing fake-provider Telegram/Slack acceptance for both runtimes. There are no
-real employee recipients or model-provider credentials.
+real user recipients or model-provider credentials.
 
 The same prebuilt image must execute the installer, backup, update, access, and
 maintenance tests. The promotion gate checks that the required failure cases ran:

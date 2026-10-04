@@ -1,4 +1,4 @@
-"""Local administrator records; employee identities are not login accounts."""
+"""Local administrator records; user identities are not login accounts."""
 
 from decimal import Decimal
 from uuid import UUID
@@ -10,13 +10,13 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.app.agents import Database
 from backend.app.capabilities import CAPABILITIES
-from backend.app.models import Employee, Role, SetupRevision
-from backend.app.usage import employee_budget
+from backend.app.models import AgentProfile, SetupRevision, User
+from backend.app.usage import user_budget
 
 router = APIRouter(prefix="/api/v1")
 
 
-class RoleInput(BaseModel):
+class AgentProfileInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=120, pattern=r"^[^\x00]*$")
     description: str = Field(default="", max_length=2000, pattern=r"^[^\x00]*$")
@@ -33,21 +33,21 @@ class RoleInput(BaseModel):
         return sorted(set(value))
 
 
-class RoleResponse(RoleInput):
+class AgentProfileResponse(AgentProfileInput):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     revision: int
 
 
-class EmployeeInput(BaseModel):
+class UserInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=160, pattern=r"^[^\x00]*$")
     email: str | None = Field(default=None, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-    role_id: UUID
+    profile_id: UUID
     connection_overrides: dict[str, str] = Field(default_factory=dict)
 
 
-class EmployeeResponse(EmployeeInput):
+class UserResponse(UserInput):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
 
@@ -57,9 +57,9 @@ def capabilities():
     return [{"id": key, **value} for key, value in CAPABILITIES.items()]
 
 
-@router.get("/roles", response_model=list[RoleResponse])
-def roles(session: Database):
-    return session.scalars(select(Role).order_by(Role.name, Role.id)).all()
+@router.get("/profiles", response_model=list[AgentProfileResponse])
+def profiles(session: Database):
+    return session.scalars(select(AgentProfile).order_by(AgentProfile.name, AgentProfile.id)).all()
 
 
 def validate_bindings(bindings: dict, session: Database):
@@ -71,7 +71,7 @@ def validate_bindings(bindings: dict, session: Database):
         raise HTTPException(400, str(error)) from None
 
 
-def validate_role_setup(body: RoleInput, session: Database):
+def validate_profile_setup(body: AgentProfileInput, session: Database):
     validate_bindings(body.connection_bindings, session)
     if body.setup_revision_id is None:
         if body.connector_grants or body.connection_bindings:
@@ -88,124 +88,122 @@ def validate_role_setup(body: RoleInput, session: Database):
         raise HTTPException(400, "Connector is not in the selected setup")
 
 
-@router.post("/roles", response_model=RoleResponse, status_code=201)
-def create_role(body: RoleInput, session: Database):
-    validate_role_setup(body, session)
-    role = Role(**body.model_dump())
-    session.add(role)
+@router.post("/profiles", response_model=AgentProfileResponse, status_code=201)
+def create_profile(body: AgentProfileInput, session: Database):
+    validate_profile_setup(body, session)
+    profile = AgentProfile(**body.model_dump())
+    session.add(profile)
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise HTTPException(409, "A role with that name already exists") from None
-    return role
+        raise HTTPException(409, "A profile with that name already exists") from None
+    return profile
 
 
-@router.put("/roles/{role_id}", response_model=RoleResponse)
-def update_role(role_id: UUID, body: RoleInput, session: Database):
-    role = session.get(Role, role_id, with_for_update=True)
-    if role is None:
-        raise HTTPException(404, "Role not found")
-    validate_role_setup(body, session)
+@router.put("/profiles/{profile_id}", response_model=AgentProfileResponse)
+def update_profile(profile_id: UUID, body: AgentProfileInput, session: Database):
+    profile = session.get(AgentProfile, profile_id, with_for_update=True)
+    if profile is None:
+        raise HTTPException(404, "Agent profile not found")
+    validate_profile_setup(body, session)
     if (
-        role.capabilities != body.capabilities
-        or role.setup_revision_id != body.setup_revision_id
-        or role.connector_grants != body.connector_grants
-        or role.connection_bindings != body.connection_bindings
+        profile.capabilities != body.capabilities
+        or profile.setup_revision_id != body.setup_revision_id
+        or profile.connector_grants != body.connector_grants
+        or profile.connection_bindings != body.connection_bindings
     ):
-        role.revision += 1
+        profile.revision += 1
     for key, value in body.model_dump().items():
-        setattr(role, key, value)
+        setattr(profile, key, value)
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise HTTPException(409, "A role with that name already exists") from None
-    return role
+        raise HTTPException(409, "A profile with that name already exists") from None
+    return profile
 
 
-@router.delete("/roles/{role_id}", status_code=204)
-def delete_role(role_id: UUID, session: Database):
-    role = session.get(Role, role_id)
-    if role is None:
-        raise HTTPException(404, "Role not found")
-    session.delete(role)
+@router.delete("/profiles/{profile_id}", status_code=204)
+def delete_profile(profile_id: UUID, session: Database):
+    profile = session.get(AgentProfile, profile_id)
+    if profile is None:
+        raise HTTPException(404, "Agent profile not found")
+    session.delete(profile)
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise HTTPException(409, "Role is assigned to employees") from None
+        raise HTTPException(409, "Agent profile is assigned to users") from None
     return Response(status_code=204)
 
 
-@router.get("/employees", response_model=list[EmployeeResponse])
-def employees(session: Database):
-    return session.scalars(select(Employee).order_by(Employee.name, Employee.id)).all()
+@router.get("/users", response_model=list[UserResponse])
+def users(session: Database):
+    return session.scalars(select(User).order_by(User.name, User.id)).all()
 
 
-@router.post("/employees", response_model=EmployeeResponse, status_code=201)
-def create_employee(body: EmployeeInput, session: Database):
-    # Hold the role row until the FK is committed, serializing concurrent deletion.
-    if session.get(Role, body.role_id, with_for_update=True) is None:
-        raise HTTPException(404, "Role not found")
+@router.post("/users", response_model=UserResponse, status_code=201)
+def create_user(body: UserInput, session: Database):
+    # Hold the profile row until the FK is committed, serializing concurrent deletion.
+    if session.get(AgentProfile, body.profile_id, with_for_update=True) is None:
+        raise HTTPException(404, "Agent profile not found")
     validate_bindings(body.connection_overrides, session)
-    employee = Employee(**body.model_dump())
-    session.add(employee)
+    user = User(**body.model_dump())
+    session.add(user)
     session.commit()
-    return employee
+    return user
 
 
-@router.put("/employees/{employee_id}", response_model=EmployeeResponse)
-def update_employee(employee_id: UUID, body: EmployeeInput, session: Database):
-    employee = session.get(Employee, employee_id, with_for_update=True)
-    if employee is None:
-        raise HTTPException(404, "Employee not found")
-    if session.get(Role, body.role_id, with_for_update=True) is None:
-        raise HTTPException(404, "Role not found")
+@router.put("/users/{user_id}", response_model=UserResponse)
+def update_user(user_id: UUID, body: UserInput, session: Database):
+    user = session.get(User, user_id, with_for_update=True)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    if session.get(AgentProfile, body.profile_id, with_for_update=True) is None:
+        raise HTTPException(404, "Agent profile not found")
     validate_bindings(body.connection_overrides, session)
     for key, value in body.model_dump().items():
-        setattr(employee, key, value)
+        setattr(user, key, value)
     session.commit()
-    return employee
+    return user
 
 
-@router.delete("/employees/{employee_id}", status_code=204)
-def delete_employee(employee_id: UUID, session: Database):
-    employee = session.get(Employee, employee_id)
-    if employee is None:
-        raise HTTPException(404, "Employee not found")
-    session.delete(employee)
+@router.delete("/users/{user_id}", status_code=204)
+def delete_user(user_id: UUID, session: Database):
+    user = session.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    session.delete(user)
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise HTTPException(
-            409, "Employee is assigned to agents, including retained history"
-        ) from None
+        raise HTTPException(409, "User is assigned to agents, including retained history") from None
     return Response(status_code=204)
 
 
 class BudgetInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    monthly_allowance_usd: Decimal | None = Field(
+    monthly_budget_usd: Decimal | None = Field(
         ..., ge=0, max_digits=24, decimal_places=12, allow_inf_nan=False
     )
 
 
-@router.get("/employees/{employee_id}/budget")
-def get_budget(employee_id: UUID, session: Database):
-    employee = session.get(Employee, employee_id)
-    if employee is None:
-        raise HTTPException(404, "Employee not found")
-    return employee_budget(session, employee)
+@router.get("/users/{user_id}/budget")
+def get_budget(user_id: UUID, session: Database):
+    user = session.get(User, user_id)
+    if user is None:
+        raise HTTPException(404, "User not found")
+    return user_budget(session, user)
 
 
-@router.put("/employees/{employee_id}/budget")
-def put_budget(employee_id: UUID, body: BudgetInput, session: Database):
+@router.put("/users/{user_id}/budget")
+def put_budget(user_id: UUID, body: BudgetInput, session: Database):
     with session.begin():
-        employee = session.get(Employee, employee_id, with_for_update=True)
-        if employee is None:
-            raise HTTPException(404, "Employee not found")
-        employee.monthly_allowance_usd = body.monthly_allowance_usd
+        user = session.get(User, user_id, with_for_update=True)
+        if user is None:
+            raise HTTPException(404, "User not found")
+        user.monthly_budget_usd = body.monthly_budget_usd
         session.flush()
-        return employee_budget(session, employee)
+        return user_budget(session, user)

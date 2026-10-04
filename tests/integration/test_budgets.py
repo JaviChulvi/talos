@@ -11,8 +11,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError
 
-from backend.app.models import Agent, Employee, InferenceCall, Run, WorkloadIncarnation
-from backend.app.usage import employee_budget, month_bounds
+from backend.app.models import Agent, InferenceCall, Run, User, WorkloadIncarnation
+from backend.app.usage import month_bounds, user_budget
 from gateway import identity, main, openrouter
 from tests.integration import test_diagnostics as diagnostics
 
@@ -25,57 +25,54 @@ ledger_identity = diagnostics.ledger_identity
 pytestmark = pytest.mark.integration
 
 
-def set_limit(client, employee, limit):
-    response = client.put(
-        f"/api/v1/employees/{employee}/budget", json={"monthly_allowance_usd": limit}
-    )
+def set_limit(client, user, limit):
+    response = client.put(f"/api/v1/users/{user}/budget", json={"monthly_budget_usd": limit})
     assert response.status_code == 200, response.text
     return response.json()
 
 
-def test_allowance_edits_unknown_cost_and_warning(client, sessions, agent_id, monkeypatch):
+def test_budget_edits_unknown_cost_and_warning(client, sessions, agent_id, monkeypatch):
     token, owner = ledger_identity(sessions, agent_id, monkeypatch)
     assert set_limit(client, owner, None)["status"] == "unlimited"
     for value in (-1, "NaN", "Infinity", True, "1000000000000", "0.0000000000001"):
         assert (
             client.put(
-                f"/api/v1/employees/{owner}/budget", json={"monthly_allowance_usd": value}
+                f"/api/v1/users/{owner}/budget", json={"monthly_budget_usd": value}
             ).status_code
             == 422
         )
     assert set_limit(client, owner, "0")["status"] == "exhausted"
     with pytest.raises(identity.AdmissionDenied) as error:
         identity.admit_inference(token)
-    assert error.value.code == "employee_budget_exceeded"
+    assert error.value.code == "user_budget_exceeded"
     set_limit(client, owner, "1")
     missing = identity.admit_inference(token)
     identity.record_inference(missing, {"outcome": "cancelled"})
     first = identity.admit_inference(token)
     identity.record_inference(first, {"cost": Decimal("0.8"), "outcome": "completed"})
-    status = client.get(f"/api/v1/employees/{owner}/budget").json()
+    status = client.get(f"/api/v1/users/{owner}/budget").json()
     assert status["status"] == "warning" and status["missing_cost_calls"] == 1
     inflight = identity.admit_inference(token)
     assert set_limit(client, owner, "0.5")["status"] == "exhausted"
-    # Lowering the allowance never revokes an already admitted call.
+    # Lowering the budget never revokes an already admitted call.
     assert identity.validate_token(token)
     identity.record_inference(inflight, {"cost": Decimal("0.4"), "outcome": "completed"})
     assert set_limit(client, owner, "2")["known_spend_usd"] == "1.200000000000"
     identity.admit_inference(token)
     assert set_limit(client, owner, None)["status"] == "unlimited"
-    # Normal employee saves cannot erase or replace a budget.
+    # Normal user saves cannot erase or replace a budget.
     with sessions() as session:
-        employee = session.get(Employee, owner)
-        role = str(employee.role_id)
+        user = session.get(User, owner)
+        profile = str(user.profile_id)
     set_limit(client, owner, "7")
     assert (
         client.put(
-            f"/api/v1/employees/{owner}", json={"name": "Renamed", "role_id": role}
+            f"/api/v1/users/{owner}", json={"name": "Renamed", "profile_id": profile}
         ).status_code
         == 200
     )
     assert (
-        client.get(f"/api/v1/employees/{owner}/budget").json()["monthly_allowance_usd"]
-        == "7.000000000000"
+        client.get(f"/api/v1/users/{owner}/budget").json()["monthly_budget_usd"] == "7.000000000000"
     )
 
 
@@ -115,14 +112,14 @@ def test_rejected_requests_never_reach_provider(
     with TestClient(main.app) as gateway:
         response = gateway.post(endpoint, headers=headers, json=body)
         assert response.status_code == 402
-        assert response.json()["error"]["code"] == "employee_budget_exceeded"
+        assert response.json()["error"]["code"] == "user_budget_exceeded"
         with sessions.begin() as session:
-            session.get(Agent, agent_id).employee_id = None
+            session.get(Agent, agent_id).user_id = None
         response = gateway.post(endpoint, headers=headers, json=body)
         assert response.status_code == 403
-        assert response.json()["error"]["code"] == "employee_assignment_required"
+        assert response.json()["error"]["code"] == "user_assignment_required"
         if not native:
-            # Explicit simulator remains usable without an employee or budget.
+            # Explicit simulator remains usable without a user or budget.
             response = gateway.post(endpoint, headers=headers, json={**body, "model": "fixture"})
             assert response.status_code == 200
         with sessions() as session:
@@ -137,7 +134,7 @@ def test_rejected_requests_never_reach_provider(
         assert response.json()["error"]["code"] == "accounting_unavailable"
 
 
-def test_shared_allowance_and_simultaneous_overshoot(client, sessions, agent_id, monkeypatch):
+def test_shared_budget_and_simultaneous_overshoot(client, sessions, agent_id, monkeypatch):
     import hashlib
 
     token, owner = ledger_identity(sessions, agent_id, monkeypatch)
@@ -145,8 +142,8 @@ def test_shared_allowance_and_simultaneous_overshoot(client, sessions, agent_id,
     with sessions.begin() as session:
         second = Agent(
             display_name="Second",
-            employee_label="",
-            employee_id=owner,
+            user_label="",
+            user_id=owner,
             runtime_mode="native",
             inference_override={"model_id": "test/model"},
             desired_state="running",
@@ -173,35 +170,30 @@ def test_shared_allowance_and_simultaneous_overshoot(client, sessions, agent_id,
     with ThreadPoolExecutor(2) as pool:
         ids = list(pool.map(admit, [token, second_token]))
         list(pool.map(lambda call: identity.record_inference(call, {"cost": Decimal("0.6")}), ids))
-    assert (
-        client.get(f"/api/v1/employees/{owner}/budget").json()["known_spend_usd"]
-        == "1.200000000000"
-    )
+    assert client.get(f"/api/v1/users/{owner}/budget").json()["known_spend_usd"] == "1.200000000000"
     for value in (token, second_token):
         with pytest.raises(identity.AdmissionDenied):
             identity.admit_inference(value)
-    # Another employee's allowance is independent; past charges retain their owner.
+    # Another user's limit is independent; past charges retain their owner.
     new_token, new_owner = ledger_identity(sessions, agent_id, monkeypatch)
     identity.admit_inference(new_token)
-    assert (
-        Decimal(client.get(f"/api/v1/employees/{new_owner}/budget").json()["known_spend_usd"]) == 0
-    )
+    assert Decimal(client.get(f"/api/v1/users/{new_owner}/budget").json()["known_spend_usd"]) == 0
 
 
-def test_allowance_edit_serializes_with_admission(client, sessions, agent_id, monkeypatch):
+def test_budget_edit_serializes_with_admission(client, sessions, agent_id, monkeypatch):
     token, owner = ledger_identity(sessions, agent_id, monkeypatch)
     set_limit(client, owner, "1")
     waiting = Event()
 
     def before_execute(conn, cursor, statement, parameters, context, executemany):
-        if "employees" in statement and "FOR UPDATE" in statement:
+        if "users" in statement and "FOR UPDATE" in statement:
             waiting.set()
 
     engine = sessions.kw["bind"]
     with ThreadPoolExecutor(1) as pool:
         with sessions.begin() as writer:
-            employee = writer.get(Employee, owner, with_for_update=True)
-            employee.monthly_allowance_usd = Decimal(0)
+            user = writer.get(User, owner, with_for_update=True)
+            user.monthly_budget_usd = Decimal(0)
             writer.flush()
             event.listen(engine, "before_cursor_execute", before_execute)
             pending = pool.submit(identity.admit_inference, token)
@@ -244,7 +236,7 @@ def test_month_boundary_and_duplicate_finalization(client, sessions, agent_id, m
         after = session.get(InferenceCall, current)
         assert before.admitted_at < end and before.completed_at == end
         assert before.cost_usd == Decimal("1.5") and after.admitted_at == end
-        status = employee_budget(session, session.get(Employee, owner), end)
+        status = user_budget(session, session.get(User, owner), end)
         assert Decimal(status["known_spend_usd"]) == 0 and status["status"] == "available"
 
 
@@ -274,7 +266,7 @@ def test_failed_finalization_remains_visible(client, sessions, agent_id, monkeyp
             headers={"Authorization": f"Bearer {token}"},
         )
     assert result.status_code == 200
-    status = client.get(f"/api/v1/employees/{owner}/budget").json()
+    status = client.get(f"/api/v1/users/{owner}/budget").json()
     assert status["unresolved_calls"] == 1 and Decimal(status["known_spend_usd"]) == 0
     with sessions() as session:
         call = session.scalar(select(InferenceCall))
@@ -354,11 +346,11 @@ def test_gateway_records_allowed_calls_then_blocks(
             == 402
         )
     assert len(provider_calls) == 2
-    report = client.get(f"/api/v1/employees/{owner}/budget").json()
+    report = client.get(f"/api/v1/users/{owner}/budget").json()
     assert report["known_spend_usd"] == "1.600000000000" and report["unresolved_calls"] == 0
 
 
-def test_expiry_is_rechecked_after_employee_lock(sessions, agent_id, monkeypatch):
+def test_expiry_is_rechecked_after_user_lock(sessions, agent_id, monkeypatch):
     from fastapi import HTTPException
 
     token, _ = ledger_identity(sessions, agent_id, monkeypatch)

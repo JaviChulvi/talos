@@ -253,7 +253,7 @@ def _stopped(client, installation):
         }
     )
     if rows:
-        raise BackupError("Stop every employee runtime before backup or update")
+        raise BackupError("Stop every user runtime before backup or update")
 
 
 def _inventory(client, installation, database):
@@ -438,7 +438,7 @@ def backup(
         runtime = _control(installation, "inventory", operation_id, journal["kind"])
         present = {volume["name"] for volume in volumes}
         if set(runtime["volumes"]) - present:
-            raise BackupError("A recorded employee volume is missing; maintenance remains active")
+            raise BackupError("A recorded user volume is missing; maintenance remains active")
         with tempfile.TemporaryDirectory(
             prefix=".talos-encrypted-", dir=destination.parent
         ) as temp:
@@ -747,7 +747,7 @@ def list_restore_images(archive: Path, identity: Path) -> list[str]:
         for versions in manifest["release"]["runtime_versions"][platform].values():
             references.update(versions.values())
         # Updates retain the installation's approved catalog, which may differ
-        # from the current release even when no employee uses an older image yet.
+        # from the current release even when no user uses an older image yet.
         from backend.app.runtime_versions import validate_catalog
 
         environment = dict(
@@ -1078,14 +1078,14 @@ def restore(
             else:
                 installation.journal("restore", "reopening")
             # Leave all writers stopped and admission fenced. The caller verifies readiness,
-            # then resumes explicitly; restore never reconnects employees automatically.
+            # then resumes explicitly; restore never reconnects users automatically.
             return manifest["operation_id"]
     finally:
         client.close()
 
 
 def sanitize_restored_database(session):
-    """Preserve employee data while making restored credentials and queues inert."""
+    """Preserve user data while making restored credentials and queues inert."""
     from sqlalchemy import delete, select, update
 
     # The management subprocess does not import API routers. Register the target
@@ -1102,11 +1102,11 @@ def sanitize_restored_database(session):
         ChannelOutbox,
         ChannelProbe,
         DeliveryChallenge,
-        EmployeeAccess,
-        EmployeeChannel,
         InferenceCall,
         Operation,
         Run,
+        UserAccess,
+        UserChannel,
         WorkloadIncarnation,
     )
 
@@ -1134,16 +1134,14 @@ def sanitize_restored_database(session):
         )
     )
     session.execute(
-        update(EmployeeChannel).values(
+        update(UserChannel).values(
             enabled=False,
-            revision=EmployeeChannel.revision + 1,
+            revision=UserChannel.revision + 1,
             verified_version_id=None,
             verified_at=None,
         )
     )
-    session.execute(
-        update(EmployeeAccess).values(state="disabled", revision=EmployeeAccess.revision + 1)
-    )
+    session.execute(update(UserAccess).values(state="disabled", revision=UserAccess.revision + 1))
     session.execute(update(DeliveryChallenge).values(expires_at=now))
     session.execute(
         update(ChannelOutbox)
@@ -1175,7 +1173,7 @@ def sanitize_restored_database(session):
         .where(ChannelProbe.status.in_(("queued", "running")))
         .values(status="stale", code="restored_quarantine", completed_at=now)
     )
-    for channel in session.scalars(select(EmployeeChannel)):
+    for channel in session.scalars(select(UserChannel)):
         cursor = session.get(ChannelCursor, channel.id)
         if cursor is None:
             cursor = ChannelCursor(channel_id=channel.id)

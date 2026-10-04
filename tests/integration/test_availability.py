@@ -12,7 +12,7 @@ from backend.app.models import Agent
 from tests.integration.test_lifecycle import (
     client,
     database_engine,
-    role_agent,
+    profile_agent,
     session_maker,
     worker,
 )
@@ -20,8 +20,8 @@ from tests.integration.test_lifecycle import (
 pytestmark = pytest.mark.integration
 
 
-def test_missing_evidence_and_stopped_agent(client, role_agent):
-    agent_id, _, _ = role_agent
+def test_missing_evidence_and_stopped_agent(client, profile_agent):
+    agent_id, _, _ = profile_agent
     response = client.get(f"/api/v1/agents/{agent_id}/availability")
     assert response.status_code == 200
     result = response.json()
@@ -29,8 +29,8 @@ def test_missing_evidence_and_stopped_agent(client, role_agent):
     assert next(c for c in result["checks"] if c["kind"] == "model")["state"] == "unknown"
 
 
-def test_worker_expiry_and_revision_invalidation(session_maker, role_agent):
-    agent_id, _, _ = role_agent
+def test_worker_expiry_and_revision_invalidation(session_maker, profile_agent):
+    agent_id, _, _ = profile_agent
     now = datetime.now(UTC)
     with session_maker.begin() as session:
         agent = session.get(Agent, agent_id)
@@ -51,9 +51,9 @@ def test_worker_expiry_and_revision_invalidation(session_maker, role_agent):
 
 
 def test_pending_role_edit_does_not_invalidate_applied_evidence(
-    client, session_maker, worker, role_agent
+    client, session_maker, worker, profile_agent
 ):
-    agent_id, role, _ = role_agent
+    agent_id, profile, _ = profile_agent
     path = f"/api/v1/agents/{agent_id}"
     client.post(path + "/start", headers={"Idempotency-Key": "availability-start"})
     worker.process_one()
@@ -61,14 +61,14 @@ def test_pending_role_edit_does_not_invalidate_applied_evidence(
         agent = session.get(Agent, agent_id)
         heartbeat(session, "worker")
         record_check(session, agent, "model", "ok", "model_responded")
-    client.put(f"/api/v1/roles/{role['id']}", json={"name": "Changed", "capabilities": []})
+    client.put(f"/api/v1/profiles/{profile['id']}", json={"name": "Changed", "capabilities": []})
     result = client.get(path + "/availability").json()
     assert result["status"] == "available"
     assert result["update_available"]
 
 
-def test_lifecycle_records_runtime_evidence(client, worker, role_agent):
-    agent_id, _, _ = role_agent
+def test_lifecycle_records_runtime_evidence(client, worker, profile_agent):
+    agent_id, _, _ = profile_agent
     path = f"/api/v1/agents/{agent_id}"
     client.post(path + "/start", headers={"Idempotency-Key": "runtime-evidence"})
     worker.process_one()
@@ -78,14 +78,14 @@ def test_lifecycle_records_runtime_evidence(client, worker, role_agent):
     assert result["status"] == "unverified"
 
 
-def test_get_does_not_probe_network(client, role_agent, monkeypatch):
+def test_get_does_not_probe_network(client, profile_agent, monkeypatch):
     import socket
 
     def forbidden(*_, **__):
         raise AssertionError("GET made an external probe")
 
     monkeypatch.setattr(socket, "create_connection", forbidden)
-    assert client.get(f"/api/v1/agents/{role_agent[0]}/availability").status_code == 200
+    assert client.get(f"/api/v1/agents/{profile_agent[0]}/availability").status_code == 200
 
 
 def test_platform_status_uses_recent_heartbeats(client, session_maker, monkeypatch):
@@ -100,8 +100,8 @@ def test_platform_status_uses_recent_heartbeats(client, session_maker, monkeypat
     assert result["worker"] == "stale" and result["status"] == "degraded"
 
 
-def test_expired_runtime_identity_is_blocked(client, session_maker, worker, role_agent):
-    agent_id, _, _ = role_agent
+def test_expired_runtime_identity_is_blocked(client, session_maker, worker, profile_agent):
+    agent_id, _, _ = profile_agent
     path = f"/api/v1/agents/{agent_id}"
     client.post(path + "/start", headers={"Idempotency-Key": "expire-runtime"})
     worker.process_one()

@@ -190,7 +190,7 @@ if [ -n "$acme_directory" ]; then
   args+=(--acme-directory "$acme_directory" --acme-root "$install_dir/acceptance-acme-root.pem")
 fi
 run_args=(run --rm); if [ -t 0 ] && [ -t 1 ]; then run_args+=(-it); fi
-# A restored employee may retain an older pullable image outside this release's catalog.
+# A restored user may retain an older pullable image outside this release's catalog.
 # Authenticate the archive without networking; let the host client perform every private pull.
 if [ "$command" = restore ]; then
   [ -n "$archive" ] && [ -n "$identity" ] || fail 'restore requires --archive and --identity'

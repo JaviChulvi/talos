@@ -56,7 +56,7 @@ def main(argv=None):
                 installation.ready(timeout=15)
                 print(
                     "Platform services are running; "
-                    "this check does not prove employee channel delivery."
+                    "this check does not prove user channel delivery."
                 )
             return 0
         if args.command in ("install", "update") and shutil.disk_usage("/").free < 30 * 1024**3:
@@ -137,12 +137,10 @@ def main(argv=None):
                     resume(installation, operation_id)
                     installation.journal("restore", "complete")
                     print(
-                        "Restored with employee agents stopped, "
-                        "channels disabled and sessions revoked."
+                        "Restored with user agents stopped, channels disabled and sessions revoked."
                     )
                     print(
-                        "Keep the old installation fenced; "
-                        "explicitly reconnect each employee channel."
+                        "Keep the old installation fenced; explicitly reconnect each user channel."
                     )
                 elif args.command == "update":
                     from backend.management.update import update
