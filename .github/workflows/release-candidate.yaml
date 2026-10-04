@@ -57,6 +57,10 @@ jobs:
         run: |
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker buildx create --use
+      - name: Install checksum-pinned image inventory tool
+        run: |
+          python3 -m deploy.install_syft
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build immutable candidate images
         env:
           ARCH: ${{ matrix.arch }}
@@ -67,7 +71,9 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: images-${{ matrix.arch }}
-          path: candidate-images/images-${{ matrix.arch }}.json
+          path: |
+            candidate-images/images-${{ matrix.arch }}.json
+            candidate-images/licenses-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
   bundle:
     needs: build

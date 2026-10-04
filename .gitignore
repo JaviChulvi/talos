@@ -20,3 +20,5 @@ docs/*
 docs/assets/*
 !docs/assets/dashboard.png
 specs/
+
+!THIRD_PARTY_NOTICES.md

@@ -1,0 +1,71 @@
+[
+  {
+    "file": "LICENSE",
+    "origin": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  {
+    "file": "licenses/openclaw-LICENSE.txt",
+    "origin": "https://raw.githubusercontent.com/openclaw/openclaw/eb377ac59e6c9fd6c7705028034812becf00271b/LICENSE",
+    "sha256": "73571b25326281d369087f469842c02444fe39faaecebda4d82ed21ff3a1c29d"
+  },
+  {
+    "file": "licenses/openclaw-THIRD_PARTY_NOTICES.txt",
+    "origin": "https://raw.githubusercontent.com/openclaw/openclaw/eb377ac59e6c9fd6c7705028034812becf00271b/THIRD_PARTY_NOTICES.md",
+    "sha256": "c1d1bbc550feee74853eba104e347341569cbbbe37a9f77659993ca0766277d5"
+  },
+  {
+    "file": "licenses/hermes-LICENSE.txt",
+    "origin": "https://raw.githubusercontent.com/NousResearch/hermes-agent/749220ef0007f8d87bd1531f1c24b0fe93816385/LICENSE",
+    "sha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6"
+  },
+  {
+    "file": "licenses/age-LICENSE.txt",
+    "origin": "https://raw.githubusercontent.com/FiloSottile/age/v1.2.1/LICENSE",
+    "sha256": "f5bbba1618a84c37b9b89fa6995b3e917a888999b179fac1a2dd5e059a527283"
+  },
+  {
+    "file": "licenses/docker-cli-LICENSE.txt",
+    "origin": "https://raw.githubusercontent.com/docker/cli/v28.5.2/LICENSE",
+    "sha256": "2d81ea060825006fc8f3fe28aa5dc0ffeb80faf325b612c955229157b8c10dc0"
+  },
+  {
+    "file": "licenses/docker-cli-NOTICE.txt",
+    "origin": "https://raw.githubusercontent.com/docker/cli/v28.5.2/NOTICE",
+    "sha256": "a8c869fbda819afb8d80e0ac19bac52e766bc6c19cb38cf94f52d64c4be2aab6"
+  },
+  {
+    "file": "licenses/docker-compose-LICENSE.txt",
+    "origin": "https://raw.githubusercontent.com/docker/compose/v2.40.3/LICENSE",
+    "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+  },
+  {
+    "file": "licenses/docker-compose-NOTICE.txt",
+    "origin": "https://raw.githubusercontent.com/docker/compose/v2.40.3/NOTICE",
+    "sha256": "b7dca0a6b01fa7365e4892877a6321179ee343d72ee87a96cfc222141b99a1e6"
+  },
+  {
+    "file": "licenses/shadcn-ui-LICENSE.txt",
+    "origin": "https://raw.githubusercontent.com/shadcn-ui/ui/295a1f114a138f23b5dfee0e0c6812394dfeb90c/LICENSE.md",
+    "sha256": "1564074e13439397221ffd522e2e504d56561994a23d371aa5e3ad43e4f5423f",
+    "note": "Project-level notice; original copied component revision has not been recorded."
+  },
+  {
+    "file": "licenses/frontend/react-remove-scroll-bar-2.3.8.txt",
+    "origin": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE",
+    "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84",
+    "note": "Upstream project notice at recorded revision; package metadata declares this license."
+  },
+  {
+    "file": "licenses/frontend/_rolldown_binding-1.2.11.txt",
+    "origin": "https://raw.githubusercontent.com/rolldown/rolldown/1aef0a40637f5dbc0c5acf9c129b37005d491356/LICENSE",
+    "sha256": "23ecfff35a5a2e80d92142f75228912c3b1abc4b5a8337a821ff4397e2f9f734",
+    "note": "Upstream project notice at recorded revision; package metadata declares this license."
+  },
+  {
+    "file": "licenses/frontend/_humanfs_types-0.15.0.txt",
+    "origin": "https://registry.npmjs.org/@humanfs/types/0.15.0",
+    "sha256": "5bef34767387ea6b25badf0ff9b41e57b051891e5e88b19be8f634a5a1f63cae",
+    "note": "Package attribution from installed metadata; standard Apache-2.0 text; no upstream NOTICE file supplied in package."
+  }
+]

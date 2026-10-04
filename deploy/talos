@@ -114,6 +114,8 @@ if [ -n "$version" ]; then
   gh release download "$version" --repo JaviChulvi/talos --dir "$bundle" \
     --pattern manifest.json --pattern talos --pattern checksums.txt --pattern release.env \
     --pattern compose.release.yaml --pattern 'images-*.txt' --pattern 'Caddyfile*' \
+    --pattern LICENSE --pattern NOTICE --pattern THIRD_PARTY_NOTICES.md \
+    --pattern 'license*.tar.gz' \
     || fail 'Private release download failed. Check GitHub repository access; retry retains installation state.'
 fi
 if [ -z "$bundle" ]; then

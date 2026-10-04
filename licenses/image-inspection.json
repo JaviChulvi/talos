@@ -1,0 +1,162 @@
+[
+  {
+    "image": {
+      "userInput": "ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15",
+      "imageID": "sha256:d7ab75c627f361d362fff6b1a495c0901aca110c80c7d89add0a6a4bd0df63db",
+      "manifestDigest": "sha256:52ee077ddb74bd2c7766c0e099afc872e2479385055fb527ab32906033815c61",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "openclaw-base",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 1773,
+    "missing_license": 194,
+    "review_required": 385,
+    "sbom_sha256": "dd6879a7d51183365a8fc18c96a99cdf288551288e1e8a365461ff6c47144479"
+  },
+  {
+    "image": {
+      "userInput": "nousresearch/hermes-agent@sha256:d4da4a40cd7a28aba983775d9fd31d94cbf153eeb0cb9e844d6d0f612b7c24db",
+      "imageID": "sha256:1032a0c581a06e4aaa41e0ea4aa2f9d484048f7598642debfb00abb5ce2e469f",
+      "manifestDigest": "sha256:ad185e6d15f3ba1b55860534cb33e642f06dac4dc93af9c2ad5c91e722f70b34",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "hermes-base",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 2537,
+    "missing_license": 1055,
+    "review_required": 1546,
+    "sbom_sha256": "e2b405e1251ead6cc32498b2503d87ff2bf2bb3625bc2b5a256cb2b4f80f03f3"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:platform",
+      "imageID": "sha256:5a77bf56f1e1954d55a36d727b033e2fd56a172dbc0566b98b3634e5bd388ce0",
+      "manifestDigest": "sha256:6740b9440c17a42c98258dd109f28e8683255c729b4a76ce11a9cb11c22ff03d",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "platform",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 688,
+    "missing_license": 500,
+    "review_required": 607,
+    "sbom_sha256": "189410e392e867b57d04b8261013fedb9d8907b331f190e3035cd3d47d5b6f30"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:management",
+      "imageID": "sha256:30a4a9c4c3a1a71fcd14c086bbeab0b759674da636ebb6c6c1cfb601d24f799d",
+      "manifestDigest": "sha256:a7fb41858ddde7ebba63834e0b51b14f864d1e9d80d8e9ec869ebccbcf7e730f",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "management",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 883,
+    "missing_license": 690,
+    "review_required": 797,
+    "sbom_sha256": "a785188906fc539df3e09c9051d37c53c0b70e1745e2e57a029dc8442a399ca7"
+  },
+  {
+    "image": {
+      "userInput": "sha256:6671fad4ea20303651b16ff649870dcf25407daca141f39551f0a243655681ca",
+      "imageID": "sha256:f7d015050ce1822093247bdf1a5f87565cd9cdae23d82bed9a6c4acdc7176691",
+      "manifestDigest": "sha256:7722b6fc00d6511925651f5c82145f27254a59d8f6bb04a583045b739d5d0415",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "verification",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 708,
+    "missing_license": 503,
+    "review_required": 610,
+    "sbom_sha256": "028273c3cdf61ed3e209900f1c2e85548a0226621fa555b320fff77606c95993"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:native-runtime",
+      "imageID": "sha256:08d7b2c54569079affb4e76ad58e09b786ead06bab41ed21893bc3f59822e29d",
+      "manifestDigest": "sha256:e32f4aa7a25cc6b33e086fe077f8ace5473ffa7b723ac6ccabe6110b6079bb0a",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "native-runtime",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 1933,
+    "missing_license": 195,
+    "review_required": 535,
+    "sbom_sha256": "1eb9a41f65449455ab100352d3d220dbb673b947928d261761f17496a4b0c8b9"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:hermes-runtime",
+      "imageID": "sha256:a58043e7e6d3d3f4f27464c269324f67c479495f24d53c7ea8a1c759c1d7851c",
+      "manifestDigest": "sha256:db8acbd4ff9579d77d371dec7e0271bfbf3f22e5cdafd1f5e0bdbaf42ec15f6f",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "hermes-runtime",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 2753,
+    "missing_license": 1066,
+    "review_required": 1627,
+    "sbom_sha256": "d4d7dc42cbbde0d4eb4387664b77e1839b26dfe829cd0e95dde0f07771cd3ca8"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:egress",
+      "imageID": "sha256:4b4648c08d833324b842c305192cef5c0e115924189ef4de0772b323e78e217a",
+      "manifestDigest": "sha256:1e29fa7681d78d17f39217dfa77eac29036f44c8fbe81c6321aefd89e25a84d3",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "egress",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 133,
+    "missing_license": 7,
+    "review_required": 130,
+    "sbom_sha256": "30936d30dadf79edda45a3876d96c68ceb3285b2626203920316f41a124324e5"
+  },
+  {
+    "image": {
+      "userInput": "postgres:17-bookworm@sha256:639ab7ceb90e13123085b741fb31ef493fba25463002f6da665352e7b534b652",
+      "imageID": "sha256:3300775c2560bfb0d4176741a76e4a8fc3f42a4a6ce93213ac24e22c13fc6993",
+      "manifestDigest": "sha256:75731e2765e7d0c8bb7dea960ef3bdcde68d16314991ab2057a2a74ea0fff257",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "postgres",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 148,
+    "missing_license": 1,
+    "review_required": 141,
+    "sbom_sha256": "9ca2e734dcb6548817dbda85585284cf1b7909e4239e359d107f0a184cc8b7bd"
+  },
+  {
+    "image": {
+      "userInput": "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d",
+      "imageID": "sha256:8f5619aac3ed45304632491507becd99711bcaed375aee3e6317c7b703902969",
+      "manifestDigest": "sha256:8dbca3525dd8dce671e495665a0eb297a83ec87ee30f373947d0ea93115949db",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "caddy",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 162,
+    "missing_license": 1,
+    "review_required": 30,
+    "sbom_sha256": "6dbd2f960196beca80639e47eab1a8414920f4a8972f208e8f2f56c9fd456135"
+  }
+]

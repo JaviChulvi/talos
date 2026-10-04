@@ -73,7 +73,16 @@ def test_trusted_candidate_still_requires_valid_bundle_checksums_and_schema(
     if defect == "schema":
         manifest["schema_version"] = 2
     (source / "manifest.json").write_text(json.dumps(manifest))
-    for name in ("talos", "compose.release.yaml"):
+    for name in (
+        "talos",
+        "compose.release.yaml",
+        "LICENSE",
+        "NOTICE",
+        "THIRD_PARTY_NOTICES.md",
+        "license-texts.tar.gz",
+        "licenses-amd64.tar.gz",
+        "licenses-arm64.tar.gz",
+    ):
         (source / name).write_text("fixture")
     env = []
     for platform, images in manifest["images"].items():
