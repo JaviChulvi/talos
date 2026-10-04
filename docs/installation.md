@@ -164,9 +164,12 @@ it does not publish a release. `Installation acceptance` takes that candidate's 
 from `main`. Promotion verifies repository ownership, workflow identity, event,
 commit, manifest hash, exact image references, required scenarios, and executed JUnit
 results without skips. Arbitrary uploaded JSON or a pull-request artifact cannot
-authorize promotion. Workflows do not change repository or package visibility.
-The workflow environment remains named `private-beta-release`. Configure required
-reviewers before promotion and preserve them when opening the repository.
+authorize promotion. Each candidate run/attempt uses separate private packages
+(`talos-candidate-RUN_ID-ATTEMPT-ROLE`). The build refuses existing public or internal
+destinations; subsequent candidates never push into previously published packages.
+Workflows do not change repository or package visibility. The workflow environment
+remains named `private-beta-release`. Configure required reviewers before promotion
+and preserve them when opening the repository.
 
 Provision two dedicated disposable SSH hosts for each protected GitHub environment:
 `installation-acceptance-amd64` and `installation-acceptance-arm64`. Configure:
@@ -217,9 +220,16 @@ and require native-host acceptance of the exact prebuilt candidate. Keep the pro
 release environment and its reviewer approval. Public package visibility cannot be
 reverted to private; do not make experimental package history public unintentionally.
 
-After explicit publication approval, set each required GHCR package to public in its
-package settings. Do not assume repository visibility changes package visibility.
-From a clean Docker credential configuration, pull every digest in each architecture's
+For every release, after successful acceptance and explicit publication approval,
+set only that accepted candidate's GHCR packages to public in their package settings.
+Keep its exact package names and digests: do not rebuild, retag into shared destinations,
+or rewrite the tested manifest. Both architectures can refer to different attempts
+after a partial rerun; use the package names recorded in the accepted manifest.
+Leave failed/unaccepted candidates private. Publication is a manual maintainer step;
+the protected promotion workflow then verifies public access and publishes the
+unchanged release bundle. Do not assume repository visibility changes package visibility.
+From a Docker configuration that disables credential helpers and environment-supplied
+authentication, pull every digest in each architecture's
 `images-*.txt` and the complete runtime catalog. The promotion gate independently
 checks anonymous registry access for every manifest image/runtime reference when the
 repository is public, after all existing acceptance checks and before release creation.

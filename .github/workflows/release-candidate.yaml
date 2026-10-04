@@ -20,6 +20,8 @@ concurrency:
 jobs:
   build:
     if: github.ref == 'refs/heads/main'
+    env:
+      CANDIDATE_REGISTRY: ghcr.io/${{ github.repository }}-candidate-${{ github.run_id }}-${{ github.run_attempt }}
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +34,25 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require private candidate package destinations
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
+        run: |
+          owner_path=users
+          if [ "$OWNER_TYPE" = Organization ]; then owner_path=orgs; fi
+          registry=$(printf '%s' "$CANDIDATE_REGISTRY" | tr '[:upper:]' '[:lower:]')
+          package_prefix="${registry##*/}"
+          for role in platform management verification egress openclaw hermes; do
+            endpoint="/$owner_path/$GITHUB_REPOSITORY_OWNER/packages/container/$package_prefix-$role"
+            if visibility=$(gh api "$endpoint" --jq .visibility 2> package.err); then
+              test "$visibility" = private
+            elif ! grep -q 'HTTP 404' package.err; then
+              cat package.err >&2
+              exit 1
+            fi
+          done
+          printf 'CANDIDATE_REGISTRY=%s\n' "$registry" >> "$GITHUB_ENV"
       - name: Authenticate and create native builder
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,7 +68,8 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           python3 -m deploy.build_release build --platform "linux/$ARCH" \
-            --registry "ghcr.io/${GITHUB_REPOSITORY,,}" --source-revision "$GITHUB_SHA" \
+            --registry "$CANDIDATE_REGISTRY" --source-repository "$GITHUB_REPOSITORY" \
+            --source-revision "$GITHUB_SHA" \
             --output candidate-images
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

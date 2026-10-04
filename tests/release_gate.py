@@ -151,8 +151,15 @@ def validate_evidence(directory, manifest_path, candidate_run, platform):
 
 
 def assert_anonymous_images(manifest):
-    """Query the registry directly with an empty credential store, never local image cache."""
+    """Query registries without ambient credentials or the local image cache."""
+    env = os.environ.copy()
+    env.pop("DOCKER_AUTH_CONFIG", None)
     with tempfile.TemporaryDirectory(prefix="talos-public-registry-") as config:
+        # A nonempty auths map prevents Docker from auto-detecting an OS helper.
+        # Entries contain no credentials; unlisted registries also use the empty file store.
+        (Path(config) / "config.json").write_text(
+            json.dumps({"auths": {"https://index.docker.io/v1/": {}, "ghcr.io": {}}})
+        )
         for platform in PLATFORMS:
             refs = set(manifest["images"][platform].values())
             for versions in manifest["runtime_versions"][platform].values():
@@ -171,6 +178,7 @@ def assert_anonymous_images(manifest):
                         ],
                         text=True,
                         timeout=120,
+                        env=env,
                     )
                 )
                 entries = result if isinstance(result, list) else [result]

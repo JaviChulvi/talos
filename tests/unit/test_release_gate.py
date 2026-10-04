@@ -228,12 +228,16 @@ def test_candidate_visibility_does_not_replace_workflow_provenance(monkeypatch, 
     assert release_gate.candidate("owner/talos", "123", "a" * 40, tmp_path) == manifest
 
 
-def test_public_image_check_uses_empty_credentials_and_rejects_wrong_architecture(monkeypatch):
+def test_public_image_check_disables_ambient_auth_and_rejects_wrong_architecture(monkeypatch):
     manifest = release_manifest()
+    monkeypatch.setenv("DOCKER_AUTH_CONFIG", '{"auths":{"ghcr.io":{"auth":"fixture"}}}')
 
     def inspect(command, **kwargs):
         config = Path(command[command.index("--config") + 1])
-        assert config.is_dir() and list(config.iterdir()) == []
+        settings = json.loads((config / "config.json").read_text())
+        assert settings["auths"] and all(value == {} for value in settings["auths"].values())
+        assert not settings.get("credsStore") and not settings.get("credHelpers")
+        assert "DOCKER_AUTH_CONFIG" not in kwargs["env"]
         assert command[-1].startswith("ghcr.io/example/")
         return json.dumps({"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}}})
 
