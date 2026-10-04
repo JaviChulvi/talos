@@ -2,6 +2,7 @@ import hashlib
 import json
 import shutil
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -217,3 +218,49 @@ def test_host_address_cannot_be_a_shell_or_ssh_option(tmp_path):
     for address in ("", "host;curl attacker", "-oProxyCommand=evil", "--evil", "user@host:/path"):
         with pytest.raises(ValueError):
             installation_acceptance.Host(address, "/tmp/acceptance", tmp_path / "log")
+
+
+def test_candidate_visibility_does_not_replace_workflow_provenance(monkeypatch, tmp_path):
+    manifest = release_manifest()
+    monkeypatch.setattr(release_gate, "api", lambda *_: trusted_run())
+    monkeypatch.setattr(release_gate, "download", lambda *_: None)
+    monkeypatch.setattr(release_gate, "verify_bundle", lambda _: manifest)
+    assert release_gate.candidate("owner/talos", "123", "a" * 40, tmp_path) == manifest
+
+
+def test_public_image_check_disables_ambient_auth_and_rejects_wrong_architecture(monkeypatch):
+    manifest = release_manifest()
+    monkeypatch.setenv("DOCKER_AUTH_CONFIG", '{"auths":{"ghcr.io":{"auth":"fixture"}}}')
+
+    def inspect(command, **kwargs):
+        config = Path(command[command.index("--config") + 1])
+        settings = json.loads((config / "config.json").read_text())
+        assert settings["auths"] and all(value == {} for value in settings["auths"].values())
+        assert not settings.get("credsStore") and not settings.get("credHelpers")
+        assert "DOCKER_AUTH_CONFIG" not in kwargs["env"]
+        assert command[-1].startswith("ghcr.io/example/")
+        return json.dumps({"Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}}})
+
+    monkeypatch.setattr(release_gate.subprocess, "check_output", inspect)
+    with pytest.raises(ValueError, match="linux/arm64"):
+        release_gate.assert_anonymous_images(manifest)
+
+
+def test_public_image_check_includes_additional_runtime_catalog_images(monkeypatch):
+    manifest = release_manifest()
+    extra = "ghcr.io/example/additional@sha256:" + "f" * 64
+    manifest["runtime_versions"]["linux/arm64"]["hermes"]["0.21.6"] = extra
+    seen = set()
+
+    def inspect(command, **kwargs):
+        seen.add(command[-1])
+        return json.dumps(
+            [
+                {"Descriptor": {"platform": {"os": "linux", "architecture": architecture}}}
+                for architecture in ("amd64", "arm64")
+            ]
+        )
+
+    monkeypatch.setattr(release_gate.subprocess, "check_output", inspect)
+    release_gate.assert_anonymous_images(manifest)
+    assert extra in seen

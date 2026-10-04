@@ -1,6 +1,9 @@
 import hashlib
 import io
 import json
+import os
+import subprocess
+import sys
 import tarfile
 from copy import deepcopy
 from pathlib import Path
@@ -208,3 +211,78 @@ def test_unknown_and_reciprocal_licenses_are_never_automatically_cleared():
         "source_or_reciprocity_review_required",
         "retain_notices",
     ]
+
+
+@pytest.mark.parametrize(
+    "visibility,allowed",
+    [
+        ("private", True),
+        ("missing", True),
+        ("public", False),
+        ("internal", False),
+        ("forbidden", False),
+        ("unknown", False),
+    ],
+)
+@pytest.mark.parametrize("owner_type,owner_path", [("User", "users"), ("Organization", "orgs")])
+def test_candidate_workflow_refuses_nonprivate_destinations_before_push(
+    tmp_path, visibility, allowed, owner_type, owner_path
+):
+    workflow = yaml.safe_load(
+        (build_release.ROOT / ".github/workflows/release-candidate.yaml").read_text()
+    )
+    job = workflow["jobs"]["build"]
+    destination = job["env"]["CANDIDATE_REGISTRY"]
+    assert "${{ github.run_id }}" in destination and "${{ github.run_attempt }}" in destination
+    steps = job["steps"]
+    guard = next(
+        step
+        for step in steps
+        if step.get("name") == "Require private candidate package destinations"
+    )
+    builder = next(step for step in steps if step.get("name") == "Build immutable candidate images")
+    assert steps.index(guard) < steps.index(builder)
+    assert '--registry "$CANDIDATE_REGISTRY"' in builder["run"]
+    helper = tmp_path / "gh"
+    helper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "with Path('endpoints').open('a') as log: log.write(sys.argv[2] + '\\n')\n"
+        "state = os.environ['TEST_VISIBILITY']\n"
+        "if state in ('missing', 'forbidden'):\n"
+        "    print('HTTP ' + ('404' if state == 'missing' else '403'), file=sys.stderr)\n"
+        "    sys.exit(1)\n"
+        "assert sys.argv[3:] == ['--jq', '.visibility']\n"
+        "print(state)\n"
+    )
+    helper.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", guard["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+            "TEST_VISIBILITY": visibility,
+            "OWNER_TYPE": owner_type,
+            "GITHUB_REPOSITORY_OWNER": "owner",
+            "CANDIDATE_REGISTRY": "ghcr.io/Owner/Talos-candidate-123-1",
+            "GITHUB_ENV": str(tmp_path / "github-env"),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) == allowed, result.stderr
+    endpoints = (tmp_path / "endpoints").read_text().splitlines()
+    expected = [
+        f"/{owner_path}/owner/packages/container/talos-candidate-123-1-{role}"
+        for role in build_release.TARGETS
+    ]
+    assert endpoints == (expected if allowed else expected[:1])
+
+    if allowed:
+        assert (tmp_path / "github-env").read_text().strip() == (
+            "CANDIDATE_REGISTRY=ghcr.io/owner/talos-candidate-123-1"
+        )
+    else:
+        assert not (tmp_path / "github-env").exists()

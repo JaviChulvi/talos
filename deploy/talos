@@ -8,7 +8,7 @@ usage() {
 Usage: talos {install|status|doctor|backup|restore|update} [options]
   --directory PATH       Installation directory (default ~/.talos)
   --bundle PATH          Downloaded, checksum-verified release assets
-  --version VERSION      Download a private release using authenticated gh
+  --version VERSION      Download a release using configured GitHub CLI
   --domain DOMAIN        Linux HTTPS installation (default loopback HTTP)
   --port PORT            Local HTTP port (default 8000)
   --archive PATH         Manual backup destination / restore source
@@ -18,8 +18,8 @@ Usage: talos {install|status|doctor|backup|restore|update} [options]
   --cancel-maintenance   Cancel a pre-write maintenance operation (status only)
   --reconcile-uncertain  Acknowledge interrupted inference and uncertain sends (status only)
 
-Download all private release assets together, or authenticate gh for --version.
-Authenticate Docker to GHCR using its normal credential store before installation.
+Download all official release assets together, or use gh for --version.
+Public images allow anonymous pulls. Private images require Docker registry access.
 EOF
 }
 [ "$#" -gt 0 ] || { usage; exit 0; }
@@ -108,7 +108,7 @@ if [ "$command" = install ] || [ "$command" = update ]; then
 fi
 if [ -n "$version" ]; then
   case "$version" in *[!a-zA-Z0-9.-]*|'') fail 'Invalid explicit release version' ;; esac
-  command -v gh >/dev/null || fail '--version needs authenticated GitHub CLI, or download release assets in your browser and use --bundle'
+  command -v gh >/dev/null || fail '--version needs configured GitHub CLI; for anonymous access download official assets in your browser and use --bundle'
   mkdir -p "$install_dir/.downloads"
   bundle=$(mktemp -d "$install_dir/.downloads/release.XXXXXX")
   gh release download "$version" --repo JaviChulvi/talos --dir "$bundle" \
@@ -116,7 +116,7 @@ if [ -n "$version" ]; then
     --pattern compose.release.yaml --pattern 'images-*.txt' --pattern 'Caddyfile*' \
     --pattern LICENSE --pattern NOTICE --pattern THIRD_PARTY_NOTICES.md \
     --pattern 'license*.tar.gz' \
-    || fail 'Private release download failed. Check GitHub repository access; retry retains installation state.'
+    || fail 'Release download failed. Check the version and repository access; retry retains installation state.'
 fi
 if [ -z "$bundle" ]; then
   if [ -f "$install_dir/bundle/manifest.json" ]; then bundle=$install_dir/bundle
@@ -146,7 +146,7 @@ done < "$bundle/release.env"
 if [ "$command" = install ] || [ "$command" = update ] || [ "$command" = restore ]; then
   while IFS= read -r reference || [ -n "$reference" ]; do
     [[ "$reference" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$ ]] || fail 'Invalid image in release pull list'
-    docker pull --platform "linux/$arch" "$reference" || fail 'Image pull failed. Check Docker GHCR credentials and disk space, then rerun.'
+    docker pull --platform "linux/$arch" "$reference" || fail 'Image pull failed. Check registry availability/access and disk space, then rerun.'
   done < "$bundle/images-$arch.txt"
 else
   docker image inspect "$manager" >/dev/null 2>&1 || fail 'Pinned management image is unavailable locally; use the original release bundle with install to retrieve it'

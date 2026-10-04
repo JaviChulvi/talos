@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from collections import Counter
 from pathlib import Path
 from xml.etree import ElementTree
@@ -91,8 +92,6 @@ def download(repo, run_id, name, destination):
 
 
 def candidate(repo, run_id, revision, destination):
-    if not api(repo, "").get("private"):
-        raise ValueError("Private beta releases require a private repository")
     trusted_run(repo, run_id, CANDIDATE_WORKFLOW, revision)
     download(repo, run_id, "release-candidate", destination)
     manifest = verify_bundle(destination)
@@ -151,6 +150,47 @@ def validate_evidence(directory, manifest_path, candidate_run, platform):
         raise ValueError("Native reliability evidence is not bound to the candidate images")
 
 
+def assert_anonymous_images(manifest):
+    """Query registries without ambient credentials or the local image cache."""
+    env = os.environ.copy()
+    env.pop("DOCKER_AUTH_CONFIG", None)
+    with tempfile.TemporaryDirectory(prefix="talos-public-registry-") as config:
+        # A nonempty auths map prevents Docker from auto-detecting an OS helper.
+        # Entries contain no credentials; unlisted registries also use the empty file store.
+        (Path(config) / "config.json").write_text(
+            json.dumps({"auths": {"https://index.docker.io/v1/": {}, "ghcr.io": {}}})
+        )
+        for platform in PLATFORMS:
+            refs = set(manifest["images"][platform].values())
+            for versions in manifest["runtime_versions"][platform].values():
+                refs.update(versions.values())
+            for reference in sorted(refs):
+                result = json.loads(
+                    subprocess.check_output(
+                        [
+                            "docker",
+                            "--config",
+                            config,
+                            "manifest",
+                            "inspect",
+                            "--verbose",
+                            reference,
+                        ],
+                        text=True,
+                        timeout=120,
+                        env=env,
+                    )
+                )
+                entries = result if isinstance(result, list) else [result]
+                platforms = {
+                    f"{item.get('os')}/{item.get('architecture')}"
+                    for entry in entries
+                    if (item := entry.get("Descriptor", {}).get("platform", {}))
+                }
+                if platform not in platforms:
+                    raise ValueError(f"Anonymous image does not provide {platform}: {reference}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("candidate", "promote"))
@@ -174,6 +214,11 @@ def main():
         directory = args.directory / name
         download(repo, args.acceptance_run, name, directory)
         validate_evidence(directory, bundle / "manifest.json", args.candidate_run, platform)
+    private = api(repo, "").get("private")
+    if type(private) is not bool:
+        raise ValueError("Cannot establish repository visibility before promotion")
+    if not private:
+        assert_anonymous_images(manifest)
     # No --clobber: an existing immutable release is never silently replaced.
     gh(
         "release",
@@ -187,7 +232,7 @@ def main():
         "--title",
         "Talos " + manifest["version"],
         "--notes",
-        f"Private beta. Acceptance workflow: {args.acceptance_run}.",
+        f"Development preview. Acceptance workflow: {args.acceptance_run}.",
         *[str(path) for path in sorted(bundle.iterdir()) if path.is_file()],
     )
 

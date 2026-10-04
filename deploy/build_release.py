@@ -54,7 +54,7 @@ def check_upstream_platforms():
             raise ValueError(f"Upstream image does not support both architectures: {reference}")
 
 
-def build(platform: str, registry: str, revision: str, output: Path):
+def build(platform: str, registry: str, revision: str, output: Path, source_repository: str):
     output.mkdir(parents=True, exist_ok=True)
     native_arch = subprocess.check_output(
         ["docker", "info", "--format", "{{.Architecture}}"], text=True
@@ -81,7 +81,7 @@ def build(platform: str, registry: str, revision: str, output: Path):
                 "--label",
                 f"org.opencontainers.image.revision={revision}",
                 "--label",
-                f"org.opencontainers.image.source=https://github.com/{registry[8:]}",
+                f"org.opencontainers.image.source=https://github.com/{source_repository}",
                 "--tag",
                 f"{repository}:candidate-{revision}-{native_arch}",
                 "--metadata-file",
@@ -185,6 +185,7 @@ def main():
     build_parser.add_argument("--platform", choices=PLATFORMS, required=True)
     build_parser.add_argument("--registry", required=True)
     build_parser.add_argument("--source-revision", required=True)
+    build_parser.add_argument("--source-repository", required=True)
     build_parser.add_argument("--output", type=Path, required=True)
     bundle_parser = commands.add_parser("bundle")
     bundle_parser.add_argument("--version", required=True)
@@ -199,7 +200,15 @@ def main():
     if args.command == "build":
         if not re.fullmatch(r"ghcr.io/[a-z0-9._-]+/[a-z0-9._-]+", args.registry):
             parser.error("registry must be a GHCR repository")
-        build(args.platform, args.registry, args.source_revision, args.output)
+        if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", args.source_repository):
+            parser.error("source-repository must be a GitHub owner/repository")
+        build(
+            args.platform,
+            args.registry,
+            args.source_revision,
+            args.output,
+            args.source_repository,
+        )
     else:
         if not re.fullmatch(RELEASE_PATTERN, args.version):
             parser.error("version must be an explicit release version")

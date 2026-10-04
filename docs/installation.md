@@ -1,14 +1,14 @@
-# Private beta installation and recovery
+# Preview installation and recovery
 
 [← Talos](../README.md) · [Documentation index](../README.md#documentation)
 
-This guide covers promoted private-beta bundles. For a source checkout, use [Development and validation](development.md#run-locally) and [source-checkout maintenance](operations.md#source-checkout-maintenance).
+This guide covers promoted preview bundles. For a source checkout, use [Development and validation](development.md#run-locally) and [source-checkout maintenance](operations.md#source-checkout-maintenance).
 
 The release installer supports Ubuntu 24.04 x86_64 with local rootful Docker Engine,
 and Apple Silicon macOS with local Docker Desktop. Allocate at least 4 CPUs,
 8 GB RAM, and 30 GiB free disk space. Docker must already be installed and running.
 Remote Docker contexts, rootless Docker, importing source-checkout installations,
-and restoring across CPU architectures are outside this beta.
+and restoring across CPU architectures are outside this preview.
 
 Release candidates are not installable releases until both native-host acceptance
 jobs pass and the promotion workflow publishes the exact tested bundle. A successful
@@ -16,11 +16,12 @@ unit test run alone does not establish installation or recovery support.
 
 ## Install a published release
 
-You need access to the private GitHub repository and its private GHCR packages.
-Authenticate GitHub CLI for release downloads (`gh auth login`) and Docker for
-GHCR (`docker login ghcr.io`). Use the ordinary host credential store; the installer
-does not copy registry credentials into Talos. A GitHub personal access token used
-for package downloads needs `read:packages` and access to the private packages.
+For public releases, download the assets from the official GitHub Releases page;
+public GHCR images allow anonymous pulls. The `--bundle` path needs no GitHub CLI
+or registry login. While previews remain private, authenticate GitHub CLI for
+release downloads (`gh auth login`) and Docker for GHCR (`docker login ghcr.io`).
+Use the ordinary host credential store; the installer does not copy registry
+credentials into Talos. Private package tokens need `read:packages` and access.
 
 Download every asset from one published release into a new directory:
 
@@ -31,12 +32,12 @@ bash talos-release/talos install --bundle "$PWD/talos-release"
 ```
 
 Replace `RELEASE_VERSION` with a published version; `latest` is not an installation
-version. Alternatively, download the assets through the authenticated GitHub UI.
+version. Alternatively, download the complete assets from the official GitHub Releases page.
 Keep `talos`, `manifest.json`, `release.env`, `compose.release.yaml`, image lists,
-and `checksums.txt` together. Customers do not need Python, Node, Git, or source code.
+`checksums.txt`, root license/notice files, and `license*.tar.gz` together. Customers do not need Python, Node, Git, or source code.
 The launcher checks the downloaded checksums before running the pinned management
-container. Checksums detect corruption; private GitHub authentication establishes
-the download's source.
+container. Checksums detect corruption; obtain the bundle through the official HTTPS
+release page. A checksum downloaded beside an artifact is not an independent signature.
 
 The default data directory is `~/.talos`. Use `--directory /absolute/path` to change
 it. The installer checks Docker and available resources, pulls exact images, creates
@@ -116,8 +117,8 @@ exist. Keep it separately, outside the installation and archive, and copy it to 
 recovery location. Losing it means losing access to the backup.
 
 To restore to an empty directory on a second server of the same architecture, stop
-and fence the original server first. Authenticate the target Docker host to the
-registry, obtain the matching release bundle, and copy the archive and recovery
+and fence the original server first. Obtain the matching release bundle, authenticate
+the target Docker host if its images are private, and copy the archive and recovery
 identity securely:
 
 ```sh
@@ -159,11 +160,16 @@ Never delete a maintenance journal or lock to force an operation through.
 
 `Release candidate` builds both native architectures and uploads a workflow artifact;
 it does not publish a release. `Installation acceptance` takes that candidate's run ID.
-`Promote private beta release` takes both successful workflow-run IDs. All three run
+`Promote preview release` takes both successful workflow-run IDs. All three run
 from `main`. Promotion verifies repository ownership, workflow identity, event,
 commit, manifest hash, exact image references, required scenarios, and executed JUnit
 results without skips. Arbitrary uploaded JSON or a pull-request artifact cannot
-authorize promotion. Package/repository visibility remains private.
+authorize promotion. Each candidate run/attempt uses separate private packages
+(`talos-candidate-RUN_ID-ATTEMPT-ROLE`). The build refuses existing public or internal
+destinations; subsequent candidates never push into previously published packages.
+Workflows do not change repository or package visibility. The workflow environment
+remains named `private-beta-release`. Configure required reviewers before promotion
+and preserve them when opening the repository.
 
 Provision two dedicated disposable SSH hosts for each protected GitHub environment:
 `installation-acceptance-amd64` and `installation-acceptance-arm64`. Configure:
@@ -203,3 +209,33 @@ on their disposable hosts for investigation; destroy/reprovision those hosts bef
 the next run. Missing hosts, missing ACME infrastructure, missing credentials, failed
 reboot/sign-in, and skipped tests are failures, not evidence of support. These remote
 host scenarios must be executed before any beta is promoted.
+
+
+## Public launch and image access
+
+Source publication and package visibility are separate actions. Before opening any
+container package, review every tag and historical version that will become visible,
+resolve the license/source obligations in [Third-party notices](../THIRD_PARTY_NOTICES.md),
+and require native-host acceptance of the exact prebuilt candidate. Keep the protected
+release environment and its reviewer approval. Public package visibility cannot be
+reverted to private; do not make experimental package history public unintentionally.
+
+For every release, after successful acceptance and explicit publication approval,
+set only that accepted candidate's GHCR packages to public in their package settings.
+Keep its exact package names and digests: do not rebuild, retag into shared destinations,
+or rewrite the tested manifest. Both architectures can refer to different attempts
+after a partial rerun; use the package names recorded in the accepted manifest.
+Leave failed/unaccepted candidates private. Publication is a manual maintainer step;
+the protected promotion workflow then verifies public access and publishes the
+unchanged release bundle. Do not assume repository visibility changes package visibility.
+From a Docker configuration that disables credential helpers and environment-supplied
+authentication, pull every digest in each architecture's
+`images-*.txt` and the complete runtime catalog. The promotion gate independently
+checks anonymous registry access for every manifest image/runtime reference when the
+repository is public, after all existing acceptance checks and before release creation.
+A private, missing, or architecture-incompatible image prevents public promotion.
+
+Verify the HTTPS clone, public release downloads, image pulls, and private vulnerability
+reporting from an account with no maintainer privileges. Record the source revision,
+architecture, exact digests, checksums, and results. A fresh build cache on an existing
+Docker Desktop daemon does not establish clean native-host/reboot/restore acceptance.
