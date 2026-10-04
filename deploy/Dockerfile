@@ -51,6 +51,8 @@ CMD []
 
 FROM platform AS verification
 USER root
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/
+COPY licenses/ /app/licenses/
 COPY tests/ tests/
 COPY deploy/ deploy/
 RUN uv sync --frozen \
