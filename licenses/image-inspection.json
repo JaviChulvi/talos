@@ -7,11 +7,13 @@
       "architecture": "arm64",
       "os": "linux"
     },
+    "role": "openclaw-base",
     "scanner": "1.54.0",
     "scope": "all-layers",
     "components": 1773,
     "missing_license": 194,
-    "review_required": 385
+    "review_required": 385,
+    "sbom_sha256": "dd6879a7d51183365a8fc18c96a99cdf288551288e1e8a365461ff6c47144479"
   },
   {
     "image": {
@@ -21,10 +23,76 @@
       "architecture": "arm64",
       "os": "linux"
     },
+    "role": "hermes-base",
     "scanner": "1.54.0",
     "scope": "all-layers",
     "components": 2537,
     "missing_license": 1055,
-    "review_required": 1546
+    "review_required": 1546,
+    "sbom_sha256": "e2b405e1251ead6cc32498b2503d87ff2bf2bb3625bc2b5a256cb2b4f80f03f3"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:management",
+      "imageID": "sha256:30a4a9c4c3a1a71fcd14c086bbeab0b759674da636ebb6c6c1cfb601d24f799d",
+      "manifestDigest": "sha256:a7fb41858ddde7ebba63834e0b51b14f864d1e9d80d8e9ec869ebccbcf7e730f",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "management",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 883,
+    "missing_license": 690,
+    "review_required": 797,
+    "sbom_sha256": "a785188906fc539df3e09c9051d37c53c0b70e1745e2e57a029dc8442a399ca7"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:native-runtime",
+      "imageID": "sha256:08d7b2c54569079affb4e76ad58e09b786ead06bab41ed21893bc3f59822e29d",
+      "manifestDigest": "sha256:e32f4aa7a25cc6b33e086fe077f8ace5473ffa7b723ac6ccabe6110b6079bb0a",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "native-runtime",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 1933,
+    "missing_license": 195,
+    "review_required": 535,
+    "sbom_sha256": "1eb9a41f65449455ab100352d3d220dbb673b947928d261761f17496a4b0c8b9"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:hermes-runtime",
+      "imageID": "sha256:a58043e7e6d3d3f4f27464c269324f67c479495f24d53c7ea8a1c759c1d7851c",
+      "manifestDigest": "sha256:db8acbd4ff9579d77d371dec7e0271bfbf3f22e5cdafd1f5e0bdbaf42ec15f6f",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "hermes-runtime",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 2753,
+    "missing_license": 1066,
+    "review_required": 1627,
+    "sbom_sha256": "d4d7dc42cbbde0d4eb4387664b77e1839b26dfe829cd0e95dde0f07771cd3ca8"
+  },
+  {
+    "image": {
+      "userInput": "talos-oss:egress",
+      "imageID": "sha256:4b4648c08d833324b842c305192cef5c0e115924189ef4de0772b323e78e217a",
+      "manifestDigest": "sha256:1e29fa7681d78d17f39217dfa77eac29036f44c8fbe81c6321aefd89e25a84d3",
+      "architecture": "arm64",
+      "os": "linux"
+    },
+    "role": "egress",
+    "scanner": "1.54.0",
+    "scope": "all-layers",
+    "components": 133,
+    "missing_license": 7,
+    "review_required": 130,
+    "sbom_sha256": "30936d30dadf79edda45a3876d96c68ceb3285b2626203920316f41a124324e5"
   }
 ]
